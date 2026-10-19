@@ -120,6 +120,7 @@ def _reattach_scales(mod):
 def _reinit_buffers(M, blk, args, device):
     """to_empty() leaves non-persistent buffers uninitialised; rebuild the ones whose initial
     values matter (freqs_cis, compressor score_state = -inf, zeroed caches)."""
+    M.precompute_freqs_cis.cache_clear()   # construction ran under the meta device and cached meta freqs
     for mod in blk.modules():
         if isinstance(mod, M.Attention):
             ref_freqs = M.precompute_freqs_cis(
