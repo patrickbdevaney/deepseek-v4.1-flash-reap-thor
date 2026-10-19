@@ -14,7 +14,7 @@ fi
 log "free before download: $(df -h ~ | tail -1)"
 for pass in 1 2 3; do
   HF_XET_HIGH_PERFORMANCE=1 ~/leafllm/.venv/bin/hf download --max-workers 16 deepseek-ai/DeepSeek-V4.1-Flash-1017 --revision $REV --local-dir $D \
-    --exclude "model-00047-*" "model-00048-*" >> $L 2>&1 && \
+    --exclude "model-0004[78]-*" >> $L 2>&1 && \
   HF_XET_HIGH_PERFORMANCE=1 ~/leafllm/.venv/bin/hf download --max-workers 16 deepseek-ai/DeepSeek-V4.1-Flash-1017 --revision $REV --local-dir $D >> $L 2>&1 && break
   log "download pass $pass failed, retrying"; sleep 120
 done

@@ -86,8 +86,8 @@ def run_arm(M, args, idx, layers, h, pre_mix, device, *, oracle: bool, reps: int
         h, pre_mix = h.float(), pre_mix.float()
     routes = {}
 
-    def cap(mod, inp, out):
-        routes[mod.layer_id] = out[1].detach().cpu()
+    def cap(mod, inp, out):    # the chunked Block calls the gate once per token chunk: keep every chunk
+        routes.setdefault(mod.layer_id, []).append(out[1].detach().cpu())
     hooks = []
     for b in blocks:
         b.ffn.gate.layer_id = b.layer_id
@@ -100,6 +100,7 @@ def run_arm(M, args, idx, layers, h, pre_mix, device, *, oracle: bool, reps: int
     times = []
     with torch.inference_mode():
         for rep in range(1 if oracle else reps + 1):
+            routes.clear()
             x, pm = h, pre_mix
             for b in blocks[:-1]:
                 x, pm = b(x, 0, pm, None)
@@ -111,6 +112,7 @@ def run_arm(M, args, idx, layers, h, pre_mix, device, *, oracle: bool, reps: int
                 torch.cuda.synchronize()
             if rep > 0 or oracle:
                 times.append(time.perf_counter() - t0)
+    routes = {lid: torch.cat(v, dim=-2) for lid, v in routes.items()}
     routes["_memavail_gib"] = env.mem_available_gib()     # layers + last activations still resident
     for hk in hooks:
         hk.remove()
