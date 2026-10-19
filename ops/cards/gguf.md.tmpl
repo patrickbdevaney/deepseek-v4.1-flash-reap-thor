@@ -1,37 +1,43 @@
 ---
 license: mit
 base_model: {{ base.repo }}
-tags: [deepseek, moe, reap, expert-pruning, gguf]
+tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
 ---
 
 # {{ artifact.name }}
 
-This is a GGUF build for single-box inference. It contains {{ thor.n_routed | int }} routed experts per layer (arm {{ gates.thor_arm }} of the pre-registered A/B).
+GGUF builds of {{ base.repo }} with {{ gguf.n_routed_experts | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer, for the llama.cpp fork named in `{{ gguf.manifest_name }}`. They are converted from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha256 }}`), then requantized per level.
 
-**Expert precision:** {{ thor.expert_bpw | f3 }} bits per weight on average ({{ thor.expert_bytes | gib }} GiB).
+## Levels
 
-{{ thor.description }}
+Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on held-out documents ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals. Only levels that passed the pre-registered GGUF gate are in this repository.
 
-**The dense path is not requantized by us.** Attention, compressor, indexer, the shared expert, the router, the hyper-connections and the norms keep their source precision in the Thor build. The GGUF writer's own dense precision choices are listed in `{{ gguf.manifest_name }}`.
+{{ gguf.levels_table }}
 
-**Arm decision at matched resident expert bytes.** This compares the requantized larger keep-set against the bit-exact smaller one:
-- winner: {{ s10.gates.arm_decision.winner }}
-- reason: {{ s10.gates.arm_decision.why }}
+{{ gguf.offload_note }}
+
+## Precision
+
+The routed experts carry the per-level mix above (the protected layers sit higher). The dense path **is** requantized by the GGUF writer:
+
+{{ gguf.dense_table }}
+
+The DSpark/MTP layers are not included (`--no-mtp`).
+
+## The keep-set
 
 {{ include:_common_eval }}
 
-{{ table_buckets:@thor.arm_name }}
+{{ include:_spec }}
 
-{{ table_bins:@thor.arm_name }}
-
-**Release gate:** {{ gates.thor }}.
+**Release gate:** {{ gguf.gate_status }}.
 
 ## Engram (required, not included)
 
-The Engram tables are read from NVMe at decode time. They are built locally from the base repository's two Engram files:
+The Engram tables are read from NVMe at decode time through row files built locally from the base repository's two Engram files:
 
 {{ engram.list }}
 
-The row-store build script and its format are documented in the runtime repository.
+The row-file format and build script are documented in the runtime repository (`{{ gguf.engram_doc }}`).
 
-**License:** MIT. Keep-set `{{ thor.keepset_sha256 }}`; teacher `{{ base.repo }}` at `{{ base.revision }}`.
+**License:** MIT. Keep-set `{{ gguf.keepset_sha256 }}`; teacher `{{ base.repo }}` at `{{ base.revision }}`; pre-registered gates `{{ s10.gates_sha256 }}`.

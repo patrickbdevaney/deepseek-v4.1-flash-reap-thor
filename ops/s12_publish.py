@@ -7,7 +7,11 @@ Artifacts:
   nvfp4   the s07 NVFP4 repack      ($V41_WORK/s07/manifest_nvfp4_REAP<n>.json) gate: nvfp4
   gguf    the s09 GGUF files        ($V41_WORK/s09/manifest.json, written by the llama.cpp/GGUF
                                      owner: {"repo"?, "files": [{"path", "sha256"}], "dense_precision"?})
-          gate: thor (for the arm s10 chose)
+          gate: $V41_WORK/s09/gates.json (ops/s09_gate.py, s10_gates.json "gguf"): at least one
+          level passed; the manifest lists only passing levels. The card is filled from each level's
+          teacher_kld.json and the writer's dense precision (Q8_0/Q6_K), not from the Thor build.
+Every card carries the s11 speculative-decoding result ($V41_WORK/s11/decision.json, or "not
+measured yet").
 Every card states the teacher revision, corpus spec hash, keep-set fingerprint and the sha256 of
 the pre-registered gates file; Engram instructions come from the pinned HF tree. A repo whose gate
 failed keeps its card but stays PRIVATE.
@@ -72,6 +76,7 @@ def context() -> dict:
         "gates": {"mxfp4_master": pf(g["mxfp4_master"]), "nvfp4": pf(g["nvfp4"]), "thor": pf(g["thor"]),
                   "thor_arm": g["thor_arm"]},
         "engram": {"list": elist},
+        "spec": spec_context(W),
     }
     m5 = W / "s05" / f"manifest_REAP{len(kA['0'])}.json"
     if m5.exists():
@@ -91,6 +96,49 @@ def context() -> dict:
         ctx["thor"] = {"n_routed": tj["n_routed_experts"], "expert_bpw": tj["expert_bpw"], "expert_bytes": tj["expert_bytes"],
                        "description": desc, "keepset_sha256": tj["keepset_sha256"], "arm_name": "thorA" if arm == "A" else "b128"}
     return ctx
+
+
+def spec_context(W: Path) -> dict:
+    f = W / "s11" / "decision.json"
+    if not f.exists():
+        return {"summary": "Not measured yet. The checkpoint's own DSpark head (the three `mtp` layers) is "
+                           "being refit to this keep-set; this section is filled from that result."}
+    from ops import s11_spec
+    return {"summary": s11_spec.summary(json.load(open(f)))}
+
+
+def _ci(m: dict, f: str) -> str:
+    return f"{cards.fmt(m['mean'], f)} [{cards.fmt(m['ci95'][0], f)}, {cards.fmt(m['ci95'][1], f)}]"
+
+
+def gguf_context(m: dict, gate: dict, root: Path | None = None) -> dict:
+    """The GGUF card's values: one row per published level from its own teacher_kld.json stats (carried
+    in the s09 manifest) and the s09 gate; the dense precision the writer used."""
+    rows = ["| level | expert bpw | size (GiB) | kl32 (95% CI) | top-1 agreement | dNLL | GPU layers in the eval |",
+            "|---|---|---|---|---|---|---|"]
+    partial, tokens = [], set()
+    for lv, r in sorted(m["levels"].items()):
+        k = r["kld"]
+        if k is None:
+            raise SystemExit(f"gguf: {lv} is in the manifest without a teacher_kld.json")
+        ngl = gate["levels"][lv].get("ngl") or "all"
+        if ngl != "all":
+            partial.append(lv)
+        rows.append(f"| {lv} | {cards.fmt(r['expert_bpw'], 'f2')} | {cards.fmt(r['bytes'], 'gib')} | {_ci(k['kl_top32'], 'f4')} "
+                    f"| {_ci(k['top1'], 'f4')} | {_ci(k['dnll'], 'f4')} | {ngl} |")
+    for lv in m["levels"]:
+        f = (root or env.WORK / "s09") / lv / "teacher_eval" / "teacher_kld.json"
+        if f.exists():
+            tokens.add(json.load(open(f))["tokens"])
+    if len(tokens) != 1:
+        raise SystemExit(f"gguf: levels were scored on different token sets: {sorted(tokens)}")
+    note = ("Levels marked with a GPU-layer count were too large for full offload on the 128 GB Thor and were scored "
+            "with that many layers on the GPU and the rest on the CPU; the numbers are the same model, only slower."
+            if partial else "Every level was scored fully offloaded to the GPU.")
+    dense = ["| tensors | precision |", "|---|---|"] + [f"| {k} | {v} |" for k, v in m["dense_precision"].items()]
+    return {"manifest_name": "gguf_manifest.json", **m, "levels_table": "\n".join(rows), "offload_note": note,
+            "dense_table": "\n".join(dense), "eval_tokens": tokens.pop(), "engram_doc": m.get("engram", ""),
+            "gate_status": "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
 
 
 def api():
@@ -128,10 +176,14 @@ def publish(a):
             env.log("gguf: s09 manifest not present yet; skipping the GGUF repo (re-run s12 after s09)", STAGE)
         else:
             m = json.load(open(mf))
-            user = None if a.dry_run else h.whoami()["name"]
-            repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{ctx['thor']['n_routed']}-GGUF"
-            ctx["gguf"] = {"manifest_name": "gguf_manifest.json", **m}
-            plan.append(("gguf", repo, g["thor"], {"name": repo.split("/")[-1], "n_routed": ctx["thor"]["n_routed"]},
+            gg = jload(env.WORK / "s09" / "gates.json", "s09 GGUF gate (ops/s09_gate.py)")
+            stray = sorted(set(m["levels"]) - set(gg["passing"]))
+            if stray:
+                raise SystemExit(f"gguf: manifest lists levels that did not pass the s09 gate: {stray}")
+            user = "<user>" if a.dry_run else h.whoami()["name"]
+            repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{m['n_routed_experts']}-GGUF"
+            ctx["gguf"] = gguf_context(m, gg)
+            plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "n_routed": m["n_routed_experts"]},
                          [Path(f["path"]) for f in m["files"]]))
     for kind, repo, passed, art, files in plan:
         c = dict(ctx, artifact={**art, "n_routed_base": N_BASE, "kind": kind})

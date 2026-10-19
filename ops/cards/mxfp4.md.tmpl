@@ -40,6 +40,8 @@ Here is this model's own breakdown (`mxfp4_A`):
 - **Vision caption perplexity:** {{ s10.summaries.mxfp4_A.caption.student_ppl | f3 }}, against {{ s10.summaries.mxfp4_A.caption.teacher_ppl | f3 }} for the teacher, a ratio of {{ s10.summaries.mxfp4_A.caption.ppl_ratio | f3 }} over {{ s10.summaries.mxfp4_A.caption.tokens | int }} caption tokens.
 - **Release gate:** {{ gates.mxfp4_master }}.
 
+{{ include:_spec }}
+
 ## Engram tables (required, not included)
 
 The two Engram tables and their small projection tensors are unchanged by pruning. They are not re-hosted here. Download these two files from the base repository at the pinned revision into this model's directory:

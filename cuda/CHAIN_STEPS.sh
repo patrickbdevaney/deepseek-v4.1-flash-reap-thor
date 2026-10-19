@@ -17,7 +17,7 @@
 #   gemv_bench           GPU  every expert format's GEMV bytes/s vs a streaming read -> $OUT/gemv_bench.json
 #   golden_ref ARM       GPU  reference model.py dump, one layer at a time (tests/golden/ref_dump.py)
 #   golden ARM           GPU  CUDA vs that dump, layer by layer: isolated + chained cosine, argmax agreement;
-#                             then again through the real Engram row store ($ROWS, needs s09 rowfile)
+#   golden_store ARM     GPU  the same comparison through the real Engram row store ($ROWS, needs s09 rowfile)
 #   decode ARM           GPU  whole-model greedy: determinism over 3 runs, graph == no-graph ids, decode-vs-
 #                             prefill consistency, tok/s at 128 and 8k context -> $OUT/decode_<ARM>.json
 #   ctx1m ARM            GPU  state for a 1,048,576-token context: allocation fits, tok/s after a 64k prefill
@@ -27,7 +27,7 @@ cd ~/deepseek-v4.1-flash-reap-thor
 PY=.venv/bin/python; L=ops/logs; mkdir -p $L; C=$L/chain.log
 WORK=${V41_WORK:-$HOME/models/v41-work}; SRC=${V41_SRC:-$HOME/models/DeepSeek-V4.1-Flash-1017}
 ROWS=$WORK/engram_rows; OUT=$WORK/s08; mkdir -p $OUT
-KEEP=$WORK/s04/keepset.json
+keepf() { case "$1" in B*) echo $WORK/s04/keepset_128.json;; *) echo $WORK/s04/keepset.json;; esac; }   # arm B = the 128 keep-set
 B=cuda/build
 log() { echo "[$(date -Is)] s08 $*" | tee -a $C; }
 die() { log "FAIL: $*"; exit 1; }
@@ -40,7 +40,7 @@ reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
   a=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo); log "reclaim after $1: MemAvailable ${a} GiB"
   [ "$a" -ge 100 ] || die "memory did not return to baseline after $1 (${a} GiB)"; }
 ckpt_of() { [ "$1" = src ] && echo $SRC || echo $WORK/thor/$1; }
-keep_of() { [ "$1" = src ] && echo "" || echo "--keepset $KEEP"; }
+keep_of() { [ "$1" = src ] && echo "" || echo "--keepset $(keepf $1)"; }
 # GPU job: detached from the chain's shell (setsid), output to a log, waited on by pid
 gpu() { local name=$1; shift; log "start $name: $*"; setsid "$@" > $L/s08_$name.log 2>&1 < /dev/null & local p=$!
   wait $p; local rc=$?; tail -n 40 $L/s08_$name.log | tee -a $C >/dev/null; return $rc; }
@@ -73,7 +73,7 @@ gemv_bench)
   reclaim gemv_bench; mark gemv_bench ;;
 golden_ref)
   : ${ARM:?ARM}; done_ golden_ref_$ARM && exit 0; quiet
-  extra=""; [ "$ARM" = src ] || extra="--keepset $KEEP --thor $WORK/thor/$ARM"
+  extra=""; [ "$ARM" = src ] || extra="--keepset $(keepf $ARM) --thor $WORK/thor/$ARM"
   gpu golden_ref_$ARM $PY -I cuda/tests/golden/ref_dump.py --out $WORK/golden/$ARM --long $extra || die "ref_dump $ARM"
   reclaim golden_ref_$ARM; mark golden_ref_$ARM ;;
 golden)
@@ -81,17 +81,20 @@ golden)
   done_ golden_ref_$ARM || die "run golden_ref $ARM first"
   gpu golden_$ARM $B/gate_v41_golden --ckpt $(ckpt_of $ARM) --ref $WORK/golden/$ARM $(keep_of $ARM) || die "golden $ARM"
   reclaim golden_$ARM
-  if [ -f $ROWS/engram_L14.v41rows ]; then
-    gpu golden_store_$ARM $B/gate_v41_golden --ckpt $(ckpt_of $ARM) --ref $WORK/golden/$ARM $(keep_of $ARM) --engram $ROWS \
-      || die "golden $ARM through the row store"
-    reclaim golden_store_$ARM
-  else log "no $ROWS yet: golden ran on the dumped Engram rows only (row-store pass deferred)"; fi
+  [ -f $ROWS/engram_L14.v41rows ] || log "no $ROWS yet: golden ran on the dumped Engram rows only (run golden_store $ARM after s09 rowfile)"
   mark golden_$ARM ;;
+golden_store)
+  : ${ARM:?ARM}; done_ golden_store_$ARM && exit 0; quiet
+  done_ golden_ref_$ARM || die "run golden_ref $ARM first"
+  [ -f $ROWS/engram_L14.v41rows ] || die "golden_store $ARM: no Engram row files in $ROWS (s09 rowfile)"
+  gpu golden_store_$ARM $B/gate_v41_golden --ckpt $(ckpt_of $ARM) --ref $WORK/golden/$ARM $(keep_of $ARM) --engram $ROWS \
+    || die "golden $ARM through the row store"
+  reclaim golden_store_$ARM; mark golden_store_$ARM ;;
 decode)
   : ${ARM:?ARM}; [ "$ARM" = src ] && die "decode needs a thor build (the source checkpoint does not fit Thor)"
   done_ decode_$ARM && exit 0; quiet
   [ -f $ROWS/engram_L14.v41rows ] || die "Engram row files missing ($ROWS): run llamacpp/CHAIN_STEPS.sh rowfile"
-  K="--ckpt $(ckpt_of $ARM) --keepset $KEEP --engram $ROWS"
+  K="--ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS"
   gpu decode_$ARM $B/v41_decode $K --chat "Write a short paragraph about the history of the printing press." \
       --n 256 --repeat 3 --consistency 8 --json $OUT/decode_$ARM.json || die "decode $ARM (determinism/consistency)"
   reclaim decode_$ARM
@@ -109,13 +112,13 @@ ctx1m)
   : ${ARM:?ARM}; done_ ctx1m_$ARM && exit 0; quiet
   $PY -c "import numpy as n;t=list(n.load('$WORK/golden/$ARM/long20k/tokens.npy'))*4;print(' '.join(map(str,t[:65536])))" \
     > $OUT/ids64k.txt || die "ids64k (needs golden_ref $ARM --long)"
-  gpu ctx1m_$ARM $B/v41_decode --ckpt $(ckpt_of $ARM) --keepset $KEEP --engram $ROWS --seqmax 1048576 --chunk 128 \
+  gpu ctx1m_$ARM $B/v41_decode --ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS --seqmax 1048576 --chunk 128 \
       --ids-file $OUT/ids64k.txt --n 64 --json $OUT/ctx1m_$ARM.json || die "1M-context state / 64k prefill"
   reclaim ctx1m_$ARM; mark ctx1m_$ARM ;;
 server)
   : ${ARM:?ARM}; done_ server_$ARM && exit 0; quiet
   PORT=18108
-  setsid $B/v41_server --ckpt $(ckpt_of $ARM) --keepset $KEEP --engram $ROWS --port $PORT --host 127.0.0.1 \
+  setsid $B/v41_server --ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS --port $PORT --host 127.0.0.1 \
       > $L/s08_server_$ARM.log 2>&1 < /dev/null & SP=$!
   for i in $(seq 1 180); do curl -sf localhost:$PORT/health >/dev/null && break; kill -0 $SP 2>/dev/null || break; sleep 10; done
   ok=1

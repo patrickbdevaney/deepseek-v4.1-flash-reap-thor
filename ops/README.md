@@ -362,3 +362,64 @@ This implements KQ4 of `notes/long_context_routing_drift.md`.
    rebuilt on the NVMe once the source backbone shards are gone.
 5. The three default-off sources (xlam, Nemotron tool-calling split, AI-CUDA-Engineer) are enabled only after their
    dataset cards are read and recorded (generator + licence).
+
+## chain2: s08 -> s09 -> s12 (GGUF) -> s11 -> s12 (`chain2.sh`)
+
+`ops/chain2.sh` is the post-chain. Launch it detached at any time (`setsid nohup bash ops/chain2.sh > /dev/null 2>&1 < /dev/null &`): it waits for `chain.sh` to log "chain reached the end of implemented stages", exits if `logs/chain.STOP` exists, and takes `/tmp/dsv41-chain2.lock`. It follows chain.sh's rules: `quiet()` before and `reclaim()` after every model-loading step, `done.c2_*` markers (the s08/s09 step files keep `done.s08_*`/`done.s09_*`), and a failure writes `chain.STOP` prefixed `chain2:`.
+
+Step order:
+
+1. **Phase 0 (space).** Delete the dead `*.incomplete` partials of s00's killed first attempt (`$SRC/.cache/huggingface/download`, 17 GiB). Move the losing Thor arm's build (if both exist) to the Seagate, verified against its `thor.json` sha256s.
+2. **Phase A (source still on NVMe).** s09 `build`; s08 `build`, `cpu_gates`; GPU: s08 `units`, `gemv_bench`; s09 `backend_ops`; s08 `golden_ref`/`golden` for `src`, then for the served arm (A192 or B128, from `s10/gates.json`).
+3. **Move the backbone.** Shards 1-43 go to the Seagate, each sha256-checked against the pinned tree, then symlinked. This happens only after s10final. Shards 44-46 (the DSpark head) and the small files stay.
+4. **Phase B.** s09 `rowfile` (Engram rows on NVMe); s08 `golden_store` (the golden comparison through the real row store), `decode`, `ctx1m`, `server`.
+5. **Phase C (GGUF).**
+   - Re-download the REAP master from its private repo (`HF_XET_HIGH_PERFORMANCE=1`) to the Seagate and verify every shard against the s05 manifest.
+   - s09 `convert` (source GGUF on NVMe), then `imatrix`.
+   - `quant` L0..L3, each written to a Seagate directory symlinked as `$V41_WORK/s09/<LV>`.
+   - Delete the source GGUF (regenerable).
+   - Per level: stage the splits to NVMe, run `kld` and `smoke` (partial `-ngl` when a level is over the memory budget), copy the results back, and drop the staged copy.
+   - `ops/s09_gate.py`, then `manifest --levels <passing>`, then `s12_publish.py --only gguf`. If no level passes, it logs that and publishes nothing; this is not a STOP.
+6. **s11** (`ops/s11_spec.py`): `traces` eval/train, `tapdump` eval/train, `bank`, `prune`, `quant`, `accept` native ×2 arms, `refit` ×2, `accept` tuned ×2, `curve`, `e2e`, `decide`, `publish`.
+7. **s12 again**, so every card carries the s11 result. If s11's end-to-end gate is blocked (no draft path in `cuda/`), chain2 ends with a STOP that says so. leafllm stays paused.
+
+### chain2 disk plan (GiB; measured 2026-10-19 unless marked est.)
+
+NVMe is 936 GiB. Before s00b finished there were 715 GiB used and 175 GiB free:
+- the source directory: 397, which includes shard 48 (94.6, mid-move) and 17 of dead partials;
+- everything else on the drive: about 318 (est.).
+
+The source backbone, shards 1-46, is 286.1, of which shards 44-46 are 7.4. The Seagate is 3.7 TiB with 2.1 TiB free.
+
+| point in time | NVMe used | NVMe free | what changed |
+|---|---|---|---|
+| chain2 start, arm A won (est.) | ~751 | ~185 | other 318 + source 303 + thor/A192 ~100 + s03/s04 caches ~30 |
+| chain2 start, arm B won (est.) | ~851 | ~85 | plus thor/B128 ~100 |
+| after phase 0 | ~734 | ~202 | -17 dead partials, -100 losing build (arm B case) |
+| after phase A | ~744 | ~192 | golden dumps ~10 |
+| after the backbone move | ~465 | ~471 | -279 (shards 1-43) |
+| phase B: Engram rows | ~654 | ~282 | +189 (guard: 200 free) |
+| phase C: source GGUF | ~806 | ~130 | +152 (guard: 170 free); the levels go to the Seagate |
+| phase C: after dropping the source GGUF, L0 staged | ~799 | ~137 | -152, +145 (guard: level + 25) |
+| s11 | ~680 | ~256 | taps ~9, heads ~20 |
+
+Seagate use:
+
+| item | GiB | notes |
+|---|---|---|
+| Engram shards (s00b, already there) | 189 | |
+| losing Thor build | ~100 | if any |
+| backbone | 279 | |
+| master | ~152 | guard: 170 free |
+| GGUF levels | ~451 | L0 145, L1 118, L2 100, L3 88 |
+| transient unsplit level | up to 145 | guard: 320 free per level |
+
+That totals about 1.17 TiB, leaving about 0.9 TiB.
+
+s03's NVMe paging (~82 GB for a 2M-token corpus) belongs to chain 1, and s04 drops it (`--drop-s03-stream`) before chain2 starts.
+
+**Never served from the Seagate.** The Seagate is NTFS over USB at ~130 MB/s. It is used only for staging:
+- the s09 row files and every model that a GPU step loads are read from NVMe;
+- `kld` refuses a partial offload from `/media`.
+
+The exception is `s11_tapdump`, which reads the source backbone's dense weights through the symlinks at about 36 min per pass. That is calibration-style sequential reading, not serving.

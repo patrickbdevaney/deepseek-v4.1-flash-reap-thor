@@ -12,6 +12,7 @@
 #   imatrix               CPU  legacy .dat from the s03 bank, remapped to the master's reap_keepset.json, imatrix_verify
 #   quant LEVEL           CPU  plan -> llama-quantize [-> EF] -> gguf-split (<50 GB) -> verify (L0 L1 L2 L3)
 #   kld LEVEL             GPU  paired top-32 KL / top-1 / dNLL vs the cached teacher on the held-out text rows
+#                              (levels over the memory budget: partial -ngl from NVMe, recorded in teacher_eval/ngl.txt)
 #   smoke LEVEL           GPU  llama-server: health, identity (/props model_path), chat turn ends on EOS, no self-talk
 #   manifest              CPU  $V41_WORK/s09/manifest.json for ops/s12_publish.py (verified levels only, sha256 per file)
 # Env: V41_NKEEP (default 192, the arm s10 chose), MASTER, KEEP_SHA, EF_HESSIANS (optional), S09_REPO (optional)
@@ -32,10 +33,17 @@ reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
   a=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo); log "reclaim after $1: MemAvailable ${a} GiB"
   [ "$a" -ge 100 ] || die "memory did not return to baseline after $1 (${a} GiB)"; }
 split1() { ls $G/$1/$NAME-$1-00001-of-*.gguf 2>/dev/null | head -1; }
-fits() {   # a level is GPU-testable on Thor only if its weights + 12 GiB reserve fit the available memory
-  local f bytes avail; bytes=0; for f in $G/$1/$NAME-$1-0*-of-*.gguf; do bytes=$((bytes + $(stat -c%s "$f"))); done
+ngl_for() {  # -> GPU layer count for level $1: 999 if weights + 12 GiB reserve fit, else the layers that fit beside
+  # a 20 GiB margin (the rest stays mmap'd from NVMe page cache, evictable). A partial run from the USB Seagate would
+  # stream ~40-60 GiB per ubatch at ~130 MB/s, so it is refused: stage the level to NVMe first (ops/chain2.sh does).
+  local f bytes avail n per
+  bytes=0; for f in $G/$1/$NAME-$1-0*-of-*.gguf; do bytes=$((bytes + $(stat -c%s "$f"))); done
   avail=$(awk '/MemAvailable/{print $2*1024}' /proc/meminfo)
-  [ $((bytes + 12*1024*1024*1024)) -le "$avail" ] || { log "$1 is $((bytes>>30)) GiB: does not fit Thor, skipped (not a failure)"; return 1; }; }
+  if [ $((bytes + 12*1024*1024*1024)) -le "$avail" ]; then echo 999; return 0; fi
+  case "$(readlink -f "$(split1 $1)")" in /media/*) log "$1 is $((bytes>>30)) GiB on the USB disk: partial offload refused" >&2; return 1;; esac
+  n=$($PY -c "import json;print(json.load(open('${V41_SRC:-$HOME/models/DeepSeek-V4.1-Flash-1017}/inference/config.json'))['n_layers'])")
+  per=$((bytes / (n + 2)))                       # + token_embd/output, roughly a layer each
+  echo $(( (avail - 20*1024*1024*1024) / per - 2 )); }
 export LLAMA_ENGRAM_ROWFILE_DIR=$ROWS
 
 step=${1:?step}; LV=${2:-}
@@ -83,20 +91,22 @@ quant)
   rm -f $G/$LV/$NAME-$LV.gguf    # the unsplit copy; the verified splits are the artifact
   mark quant_$LV ;;
 kld)
-  : "${LV:?kld LEVEL}"; done_ kld_$LV && exit 0; quiet; fits $LV || { mark kld_$LV; exit 0; }
+  : "${LV:?kld LEVEL}"; done_ kld_$LV && exit 0; quiet; NGL=$(ngl_for $LV) || die "kld $LV: stage it to NVMe"
+  [ "$NGL" -ge 1 ] || die "kld $LV: no layer fits on the GPU (ngl $NGL)"
   done_ rowfile || die "row files not built"
   [ -f $G/teacher_eval/meta.json ] || $PY ops/s09_teacher_eval.py prep > $L/s09_kld_prep.log 2>&1 || die "kld prep"
   out=$G/$LV/teacher_eval; mkdir -p $out
-  setsid $BIN/v41-teacher-kld -m "$(split1 $LV)" -i $G/teacher_eval -o $out -c 8192 -b 2048 -ub 512 -ngl 999 \
+  [ "$NGL" = 999 ] && echo all > $out/ngl.txt || { echo $NGL > $out/ngl.txt; log "kld $LV: partial offload, $NGL GPU layers"; }
+  setsid $BIN/v41-teacher-kld -m "$(split1 $LV)" -i $G/teacher_eval -o $out -c 8192 -b 2048 -ub 512 -ngl $NGL \
       > $L/s09_kld_$LV.log 2>&1 || die "kld run $LV"
   reclaim kld_$LV
   $PY ops/s09_teacher_eval.py summarize $LV "$(split1 $LV)" >> $L/s09_kld_$LV.log 2>&1 || die "kld summarize $LV"
   mark kld_$LV ;;
 smoke)
-  : "${LV:?smoke LEVEL}"; done_ smoke_$LV && exit 0; quiet; fits $LV || { mark smoke_$LV; exit 0; }
+  : "${LV:?smoke LEVEL}"; done_ smoke_$LV && exit 0; quiet; NGL=$(ngl_for $LV) || die "smoke $LV: stage it to NVMe"
   M=$(split1 $LV); PORT=18089
   # exec, so the recorded pid IS the server (a subshell pid would orphan it; eval-orphaned-server lesson)
-  setsid bash -c "exec $BIN/llama-server -m '$M' -c 8192 -ngl 999 --jinja --port $PORT --host 127.0.0.1" \
+  setsid bash -c "exec $BIN/llama-server -m '$M' -c 8192 -ngl $NGL --jinja --port $PORT --host 127.0.0.1" \
       > $L/s09_smoke_$LV.log 2>&1 < /dev/null & SPID=$!
   trap 'kill $SPID 2>/dev/null; sleep 5; kill -9 $SPID 2>/dev/null' EXIT
   for i in $(seq 1 180); do curl -sf localhost:$PORT/health >/dev/null && break; kill -0 $SPID 2>/dev/null || die "server died"; sleep 10; done

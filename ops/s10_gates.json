@@ -10,8 +10,12 @@
   "arbitration": {
     "split": "screen",
     "metric": "kl32",
-    "ineligible_criteria": ["random"],
-    "ineligible_drift_verdicts": ["BLOCK"],
+    "ineligible_criteria": [
+      "random"
+    ],
+    "ineligible_drift_verdicts": [
+      "BLOCK"
+    ],
     "tie_rule": "lowest mean kl32 wins; the winner-vs-runner-up paired difference is reported, not required to be significant"
   },
   "heal": {
@@ -22,15 +26,17 @@
     "split": "confirm",
     "pruned_floor": {
       "why": "sanity floors for a 50% prune; GLM REAP50 v2 measured top1 0.842 / kl32 0.650, the GLM ballast failure was bucket top1 0.579, LibertAI's vision cliff was caption ppl +27.4%",
-      "max_kl32": 0.80,
+      "max_kl32": 0.8,
       "min_top1": 0.78,
       "min_bucket_top1": 0.65,
-      "max_caption_ppl_ratio": 1.30,
+      "max_caption_ppl_ratio": 1.3,
       "max_long_bin_top1_drop": 0.05,
       "long_bins_from": "[8k,16k)",
       "ref_bin": "[256,1k)",
       "must_beat_random_kl32": true,
-      "drift_verdict_not": ["BLOCK"]
+      "drift_verdict_not": [
+        "BLOCK"
+      ]
     },
     "nvfp4": {
       "why": "lossless repack of the MXFP4 master plus the folded heal gain: it is the healed MXFP4 arm",
@@ -52,5 +58,75 @@
     "metric": "kl32",
     "rule": "lower mean paired kl32 wins when the paired 95% CI excludes 0; otherwise the arm with more McNemar top-1 agreement (z sign); if z == 0, B (bit-exact, proven hardware FP4 GEMV)",
     "note": "the '14x pruning vs quant' figure is regime-dependent and is NOT used to pre-judge this decision"
+  },
+  "gguf": {
+    "why": "the llama.cpp GGUF ladder (s09) of the published REAP master, scored by v41-teacher-kld against the cached source teacher on the confirm split; a level ships only if it passes",
+    "split": "confirm",
+    "max_kl32": 0.8,
+    "min_top1": 0.78,
+    "max_d_kl32_vs_L0": 0.25,
+    "d_vs_L0_applies_to": [
+      "L1",
+      "L2",
+      "L3"
+    ],
+    "smoke_required": true,
+    "partial_offload_allowed": true,
+    "note": "levels too large for full GPU offload are scored with partial -ngl from NVMe; the card states the offload"
+  },
+  "s11": {
+    "why": "the checkpoint's own speculative head (mtp.0-2, DSpark) refit to the served REAP: always fine-tuned; base, native head and tuned head measured; in-model (pruned+K-quantized experts) preferred, separate (source MXFP4 experts) fallback",
+    "depths": [
+      1,
+      2,
+      3
+    ],
+    "e2e_depths": [
+      1,
+      2,
+      3
+    ],
+    "contexts": [
+      "128",
+      "8k"
+    ],
+    "min_speedup": 1.0,
+    "identity": "greedy ids with speculation == greedy ids without, at every context",
+    "ship_rule": "fits AND identical AND speedup > min_speedup at every context; prefer the passing in-model head, else the passing separate head, by geometric-mean speedup; none passes -> publish nothing, record in the cards",
+    "inmodel_prune": "s04's winning criterion on a drafter saliency bank over train anchors, the backbone's keep ratio, uniform across the 3 blocks",
+    "inmodel_qtypes": [
+      "Q3_K",
+      "Q2_K"
+    ],
+    "fit": {
+      "budget_gib": 117.0,
+      "workspace_gib": 6.0,
+      "main_kv_1m_gib_default": 2.0,
+      "note": "resident = Thor build without mtp files + head + head window KV + main 1M-context state + workspace"
+    },
+    "traces": {
+      "prompt_tokens": [
+        128,
+        1024
+      ],
+      "train_prompts": 240,
+      "eval_prompts": 48,
+      "gen_tokens_train": 384,
+      "gen_tokens_eval": 256,
+      "targets": "the served REAP's greedy continuations of corpus prompts (calib split train, screen split eval); never Claude-written text"
+    },
+    "train": {
+      "batch": 16,
+      "lr": 5e-05,
+      "warmup": 50,
+      "steps": 3000,
+      "val_every": 200,
+      "early_stop_patience": 3,
+      "clip": 1.0,
+      "val_frac": 0.1,
+      "val_anchors": 4096,
+      "seed": 0,
+      "frozen": "routed experts, embed, head, router biases"
+    }
   }
 }

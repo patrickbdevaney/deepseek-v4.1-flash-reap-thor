@@ -78,6 +78,7 @@ static bool hit_stop(const std::string& text, const std::vector<std::string>& st
 struct RunResult {
     std::string raw;                 // the full completion text
     dsv4srv::GenStats stats;
+    std::vector<int> ids;            // the generated token ids (s11 traces: exact self-model greedy tokens)
 };
 
 // One generation, with the token->text->stop-string plumbing shared by both endpoints.
@@ -115,6 +116,7 @@ static RunResult run_generation(const std::vector<int>& ids, const dsv4srv::GenP
       if ((!r.empty() || !c.empty()) && on_delta) on_delta(r, c); }
 
     out.raw = sp.raw;
+    out.ids = gen;
     size_t cut = 0;
     if (!stops.empty() && hit_stop(out.raw, stops, cut)) out.raw = out.raw.substr(0, cut);
     return out;
@@ -495,6 +497,9 @@ int main(int argc, char** argv) {
                               {"tokens_per_second", r.stats.tok_per_s},
                               {"tokens_per_verify", r.stats.tok_per_verify}};
         out["spec_profile"] = spec_profile_json(r.stats.spec);
+        // opt-in: the exact prompt and generated ids (ops/s11_spec.py traces). Text round-trips are
+        // not id-exact, and a draft head is scored on ids.
+        if (body.value("return_ids", false)) { out["prompt_ids"] = ids; out["completion_ids"] = r.ids; }
         res.set_content(dump_lossy(out), "application/json");
         } catch (const std::exception& e) {
             ++m_errors;
