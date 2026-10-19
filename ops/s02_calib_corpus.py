@@ -276,14 +276,18 @@ def build_pool(bucket: str, budget: int, R: Renderer, a, rep: dict) -> list[dict
     deficit = 0
     for si, s in enumerate(srcs):
         name = s["hf_id"] + (f"/{s['config']}" if s["config"] else "") + (f":{s['split']}" if s["split"] else "")
-        quota = int(budget * s["weight"] / wsum) + deficit
+        # a short source's shortfall is spread over the sources after it by weight (2026-10-19: rolling it all
+        # into the next one gave SWE-rebench 524k of the ~600k agentic pool when selfgen was empty)
+        w_left = sum(x["weight"] for x in srcs[si:])
+        quota = int(budget * s["weight"] / wsum + deficit * s["weight"] / w_left)
+        deficit -= deficit * s["weight"] / w_left
         live = live_licence(s)
         rec = rep.setdefault(name, {"bucket": bucket, "licence_declared": s["licence"], "licence_live": live,
                                     "licence_live_ok": spec.licence_ok(live), "generator": s["generator"],
                                     "status": s["status"], "read": 0, "kept": 0, "tokens": 0})
         if spec.licence_ok(live) is False:
             rec["skipped"] = f"live licence {live} is NC/share-alike"
-            deficit = quota
+            deficit += quota
             env.log(f"{bucket}: SKIP {name}: live licence {live}", STAGE, "WARN")
             continue
         flt = url_filter(s)
@@ -314,7 +318,7 @@ def build_pool(bucket: str, budget: int, R: Renderer, a, rep: dict) -> list[dict
                 if long_pool:
                     if len(ids) < spec.LONG_MIN:
                         continue
-                    ids = ids[: spec.LONG_MAX]
+                    ids = ids[: max(spec.LONG_MIN, min(spec.LONG_MAX, quota - got))]   # don't overshoot the quota
                     rows.append({"tokens": ids, "types": [TEXT] * len(ids), "valid": [1] * len(ids),
                                  "docs": [{"source": name, "tokens": len(ids), "doc": row.get("_doc")}], "images": []})
                     got += len(ids)
@@ -331,6 +335,9 @@ def build_pool(bucket: str, budget: int, R: Renderer, a, rep: dict) -> list[dict
                     cur["docs"].append({"source": name, "tokens": len(ids)})
                     got += len(ids)
                 else:
+                    # one document may not dominate a source: cap at two rows and at the quota left
+                    # (2026-10-19: whole SWE-rebench patches took 524k against a 224k quota)
+                    ids = ids[: min(2 * S, quota - got)]
                     pos = 0
                     while pos < len(ids):
                         if cur is None or len(cur["tokens"]) == S:
@@ -345,7 +352,7 @@ def build_pool(bucket: str, budget: int, R: Renderer, a, rep: dict) -> list[dict
         rec["tokens"] += got
         rec["seconds"] = round(time.time() - t0, 1)
         rec["yield"] = rec["kept"] / max(1, rec["read"])
-        deficit = max(0, quota - got)
+        deficit += max(0, quota - got)
         env.log(f"{bucket}: {name} +{got:,} tok (quota {quota:,}), kept {rec['kept']}/{rec['read']}"
                 f"{' ERROR ' + rec['error'] if 'error' in rec else ''}", STAGE)
     if not long_pool:

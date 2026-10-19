@@ -51,7 +51,8 @@ TOKEN_TARGET = {
 }
 assert abs(sum(TOKEN_TARGET.values()) - 1.0) < 1e-9
 assert min(TOKEN_TARGET.values()) >= 0.10, "every pool at least 10%"
-LONG_MIN, LONG_MAX = 32_768, 131_072   # long-context row lengths (tokens)
+LONG_MIN, LONG_MAX = 32_768, 65_536    # long-context row lengths (tokens); 64k cap (was 128k, 2026-10-19): the
+                                        # 10% pool held only 6 docs at 128k, so diversity beats length
 # Frozen order: bucket ids are written into every s02 row and every s03 accumulator.
 BUCKETS = list(TOKEN_TARGET)
 
@@ -199,10 +200,10 @@ SOURCES: dict[str, list[dict]] = {
     "agentic": [
         S("nebius/SWE-rebench", None, "test", 0.30, _qa(["problem_statement"], ["patch"]), licence="cc-by-4.0", generator="human"),
         S("SWE-Gym/SWE-Gym", None, "train", 0.20, _qa(["problem_statement"], ["patch"]), licence="mit", generator="human"),
-        S("SWE-bench/SWE-bench", None, "train", 0.15, _qa(["problem_statement"], ["patch"]), licence="mit", generator="human", status="new"),
+        S("SWE-bench/SWE-bench", None, "dev", 0.15, _qa(["problem_statement"], ["patch"]), licence="mit", generator="human", status="new"),
         S("Salesforce/xlam-function-calling-60k", None, "train", 0.20, _xlam, licence="cc-by-4.0",
           generator="unverified", status="new"),
-        S("nvidia/Nemotron-Post-Training-Dataset-v1", "tool_calling", "train", 0.15, _messages,   # card read 2026-10-19:
+        S("nvidia/Nemotron-Post-Training-Dataset-v1", None, "tool_calling", 0.15, _messages,   # card read 2026-10-19:
           licence="cc-by-4.0", generator="DeepSeek-R1-0528 / Qwen3-235B-A22B", status="new"),  # responses from these two only
     ],
     "code": [
@@ -232,21 +233,20 @@ SOURCES: dict[str, list[dict]] = {
           generator="QwQ-32B", thinking=True),
         S("TIGER-Lab/MMLU-Pro", None, "test", 0.15, _qa(["question"], ["answer"], ["cot_content"]),
           licence="mit", generator="human"),
-        S("jablonkagroup/ChemBench", "organic_chemistry", "train", 0.10, _qa(["question", "input"], ["answer", "target"]),
-          licence="mit", generator="human"),
+        # ChemBench dropped 2026-10-19: rows carry a "never in training corpora" canary
         S("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", 0.30, _text("text"), licence="odc-by", generator="human",
           status="filtered: s02 keeps rows whose url matches SCIENCE_URL"),
     ],
     "finance": [
         S("G4KMU/t2-ragbench", "FinQA", "train", 0.22, _qa(["pre_text", "context", "question"], ["original_answer", "program_answer"]),
           licence="cc-by-4.0", generator="human"),
-        S("G4KMU/t2-ragbench", "ConvFinQA", "train", 0.15, _qa(["pre_text", "context", "question"], ["original_answer", "program_answer"]),
+        S("G4KMU/t2-ragbench", "ConvFinQA", "turn_0", 0.15, _qa(["pre_text", "context", "question"], ["original_answer", "program_answer"]),
           licence="cc-by-4.0", generator="human"),
         S("G4KMU/t2-ragbench", "TAT-DQA", "train", 0.13, _qa(["pre_text", "context", "question"], ["original_answer", "program_answer"]),
           licence="cc-by-4.0", generator="human"),
         S("kensho/bizbench", "default", "train", 0.20, _qa(["question", "context"], ["answer", "program"]),
           licence="cc-by-4.0", generator="human"),
-        S("next-tat/tat-llm-instructions", None, "train", 0.15, _qa(["instruction", "input"], ["output", "response"]),
+        S("next-tat/tat-llm-instructions", None, "train", 0.15, _qa(["user_prompt"], ["resp"]),
           licence="cc-by-4.0", generator="human (TAT-QA derived)"),
         S("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", 0.15, _text("text"), licence="odc-by", generator="human",
           status="filtered: s02 keeps rows whose url matches FINANCE_URL"),
@@ -271,9 +271,11 @@ for _b, _w in (("agentic", 0.25), ("code", 0.15), ("math", 0.15), ("science", 0.
 LONG_SOURCES = [
     S("local:selfgen/longctx.jsonl", None, None, 0.20, _messages, licence="mit (model output)", generator=SELF_GEN,
       status="s02b output: long multi-turn agentic traces; absent until generated", thinking=True),
-    S("emozilla/pg19", None, "train", 0.45, _text("text"), licence="apache-2.0 (public-domain books)", generator="human", status="new"),
+    S("emozilla/pg19", None, "train", 0.40, _text("text"), licence="apache-2.0 (public-domain books)", generator="human", status="new"),
     S("git:~/llama.cpp@origin/master", None, None, 0.20, None, licence="mit", generator="human (upstream ggml-org/llama.cpp)", status="local"),
     S("git:~/cutlass@origin/main", None, None, 0.15, None, licence="bsd-3-clause", generator="human (upstream NVIDIA/cutlass)", status="local"),
+    S("git:~/TensorRT-Edge-LLM@origin/main", None, None, 0.10, None, licence="apache-2.0",
+      generator="human (upstream NVIDIA/TensorRT-Edge-LLM)", status="local"),
 ]
 REPO_EXTS = (".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".py", ".md", ".txt", ".cmake", ".sh", ".metal", ".comp")
 
