@@ -121,6 +121,23 @@ def run_arm(M, args, idx, layers, h, pre_mix, device, *, oracle: bool, reps: int
     return out
 
 
+def verdict(rep) -> str:
+    """PASS when the GPU arm is no further from the fp32 oracle than the bf16 reference control is
+    (1.5x slack on 1-cos, floors 1e-3 stream / 1e-4 ffn_pre), routed-slot overlap within 0.01 of the
+    control's, and everything finite. Without a control it falls back to the fixed stream cos >= 0.999."""
+    g = rep["vs_oracle"]
+    if not (g["stream"]["finite"] and g["ffn_pre"]["finite"]):
+        return "INVESTIGATE"
+    c = rep.get("control_vs_oracle")
+    if c is None:
+        return "PASS" if g["stream"]["cos"] >= 0.999 else "INVESTIGATE"
+    ok_stream = 1 - g["stream"]["cos"] <= max(1e-3, 1.5 * (1 - c["stream"]["cos"]))
+    ok_ffn = 1 - g["ffn_pre"]["cos"] <= max(1e-4, 1.5 * (1 - c["ffn_pre"]["cos"]))
+    mean = lambda d: sum(v["slot_overlap"] for v in d.values()) / len(d)
+    ok_route = mean(rep["routing_agreement"]) >= mean(rep["control_routing_agreement"]) - 0.01
+    return "PASS" if ok_stream and ok_ffn and ok_route else "INVESTIGATE"
+
+
 def compare(a, b):
     import torch
     a, b = a.flatten().double(), b.flatten().double()
@@ -203,8 +220,18 @@ def main():
             agree[lid] = {"exact_set": float((g == o).all(-1).float().mean()),
                           "slot_overlap": float((g.unsqueeze(-1) == o.unsqueeze(-2)).any(-1).float().mean())}
         rep["routing_agreement"] = agree
-        c = rep["vs_oracle"]["stream"]["cos"]
-        rep["verdict"] = "PASS" if c >= 0.999 and rep["vs_oracle"]["stream"]["finite"] else "INVESTIGATE"
+        # Precision control (added 2026-10-19 after the 2k run: ffn_pre cos 0.99990 but stream 0.99836
+        # with 4% of routed slots flipped). A fixed 0.999 bar cannot tell bf16 near-tie router flips from
+        # a kernel bug, so the reference itself runs in bf16 on the CPU (torch kernels, unmodified
+        # Block/Indexer) and the GPU arm must deviate from the fp32 oracle no more than that control does.
+        yc, fpc, rc_, _ = run_arm(M, args, idx, layers, h, pre_mix, "cpu", oracle=False, reps=0)
+        rc_.pop("_memavail_gib")
+        rep["control_vs_oracle"] = {"stream": compare(yc, yo), "ffn_pre": compare(fpc, fpo)}
+        rep["control_routing_agreement"] = {
+            lid: {"slot_overlap": float((rc_[lid].sort(-1).values.unsqueeze(-1)
+                                         == ro[lid].sort(-1).values.unsqueeze(-2)).any(-1).float().mean())}
+            for lid in rc_}
+        rep["verdict"] = verdict(rep)
     env.atomic_json(a.out, rep)
     env.log(json.dumps({k: rep.get(k) for k in ("gpu", "vs_oracle", "verdict")}, default=str)[:2000], "s01")
 

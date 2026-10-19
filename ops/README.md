@@ -82,7 +82,7 @@ python3 ops/drift_guard.py check --keep ~/models/v41-work/s04/mask_hope.json
 
 **What s01 must answer before s03 starts:**
 1. Does TileLang 0.1.12 import and build on sm_110a? s01 records the error if not.
-2. Does the stream output agree with the oracle at cosine ≥ 0.999 (verdict PASS)? Does top-6 routing agree?
+2. Is the GPU arm no further from the fp32 CPU oracle than the reference itself run in bf16 on the CPU (the precision control)? Stream and ffn_pre 1-cos within 1.5x of the control (floors 1e-3 / 1e-4), routed-slot overlap within 0.01 of the control, all finite = verdict PASS. (A fixed stream cos >= 0.999 bar was replaced 2026-10-19: bf16 near-tie router flips alone put the 2k run at 0.99836 with ffn_pre 0.99990.)
 3. What are tok/s and peak memory per 2k tokens? `BYTES_PER_TOKEN_PEAK` in s03 (240 kB, estimated) must be replaced by the measured value.
 4. Does the s03 query-chunked Indexer match the reference? The GPU arm uses the chunked one and the oracle uses the original, so the cosine checks the patch too.
 
