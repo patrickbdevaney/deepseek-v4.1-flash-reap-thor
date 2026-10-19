@@ -318,13 +318,15 @@ def unit_layer(a):
     for f in sorted(jdir.glob("r*.npz")):
         r = int(f.stem[1:])
         if r in covered and not lst.done(f"r{r}"):
-            apply_journal(C, r, f, H, PM, rid, rw, L); lst.finish(f"r{r}"); f.unlink()
+            with np.load(f) as j:
+                apply_payload(C, r, {k: j[k] for k in j.files}, H, PM, rid, rw, L)
+            sync_stream(H, PM, rid, rw); lst.finish(f"r{r}"); f.unlink()
         elif r not in covered:
             f.unlink()
     for f in jdir.glob("*.tmp"):
         f.unlink()
     need = sources_for(L)
-    pending: list[int] = []
+    pending: dict[int, dict] = {}        # row -> payload, applied from RAM at the checkpoint
     taps = L in CFG["dspark_target_layer_ids"] and a.taps != "none"
     t_start, n_done = time.time(), 0
     for r, row in enumerate(C.rows):
@@ -362,18 +364,20 @@ def unit_layer(a):
             np.savez(fh, **payload)
             fh.flush(); os.fsync(fh.fileno())
         os.replace(jf.with_suffix(".tmp"), jf)
-        pending.append(r)
-        del x, y, ffn_pre, payload
+        pending[r] = payload
+        del x, y, ffn_pre
         n_done += n
         if len(pending) >= a.ckpt_rows or r == len(C.rows) - 1:
             covered |= set(pending)
             tmp = ck.with_suffix(".tmp")
             torch.save({"state": {k: v.clone() for k, v in st.state().items()}, "rows": sorted(covered)}, tmp)
             os.replace(tmp, ck)
+            for pr, pl in pending.items():
+                apply_payload(C, pr, pl, H, PM, rid, rw, L)
+            sync_stream(H, PM, rid, rw)              # durable before any row is marked applied
             for pr in pending:
-                f = jdir / f"r{pr:05d}.npz"
-                apply_journal(C, pr, f, H, PM, rid, rw, L); lst.finish(f"r{pr}"); f.unlink()
-            pending = []
+                lst.finish(f"r{pr}"); (jdir / f"r{pr:05d}.npz").unlink()
+            pending = {}
             el = time.time() - t_start
             env.log(f"L{L}: {len(covered)}/{len(C.rows)} rows, {n_done / max(el, 1e-9):.0f} tok/s, "
                     f"cuda peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB", STAGE)
@@ -432,14 +436,40 @@ def install_state(M, kind, src, r):
         sa.candidate_bits = None if a.size == 0 else torch.from_numpy(a).cuda()[None]
 
 
-def apply_journal(C, r, f, H, PM, rid, rw, L):
-    j = np.load(f)
+def _pwrite_rows(mm_arr: np.memmap, s: slice, data: np.ndarray) -> None:
+    """mm_arr[s] = data through pwrite on the backing file. Assigning into the 204 GB memmap
+    page-faulted every target page in from disk before overwriting it (22% of a layer unit,
+    2026-10-19 profile); pwrite shares the page cache with the mapping, so readers stay coherent."""
+    row_bytes = int(np.prod(mm_arr.shape[1:])) * mm_arr.itemsize
+    buf = np.ascontiguousarray(data).view(np.uint8).reshape(-1)
+    assert buf.size == (s.stop - s.start) * row_bytes
+    fd = os.open(mm_arr.filename, os.O_WRONLY)
+    try:
+        off, done = mm_arr.offset + s.start * row_bytes, 0
+        while done < buf.size:
+            done += os.pwrite(fd, buf[done:done + (256 << 20)], off + done)
+    finally:
+        os.close(fd)
+
+
+def sync_stream(H, PM, rid, rw) -> None:
+    fd = os.open(H.filename, os.O_RDONLY)
+    try:
+        os.fdatasync(fd)
+    finally:
+        os.close(fd)
+    PM.flush(); rid.flush(); rw.flush()
+
+
+def apply_payload(C, r, j: dict, H, PM, rid, rw, L):
+    """Write one row's outputs (from RAM, or a journal on resume). The caller syncs once per
+    checkpoint (sync_stream) before marking rows applied."""
     s = C.sl(r)
-    H[s] = j["h"].view(np.uint16)
+    _pwrite_rows(H, s, j["h"].view(np.uint16))
     PM[s] = j["pre_mix"]
     rid[s] = j["ridx"]
     rw[s] = j["rw"]
-    for k in j.files:
+    for k in j:
         if k.startswith("state_"):
             p = state_path(k[6:], L, r)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -448,7 +478,6 @@ def apply_journal(C, r, f, H, PM, rid, rw, L):
             p = D / "taps" / f"L{L}" / f"r{r:05d}.npy"
             p.parent.mkdir(parents=True, exist_ok=True)
             np.save(p, j[k].view(np.uint16))
-    H.flush(); PM.flush(); rid.flush(); rw.flush()
 
 
 def finalize_layer(L, st, C):
