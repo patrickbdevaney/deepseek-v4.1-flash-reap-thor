@@ -3,6 +3,7 @@
 //   build/v41_decode --ckpt DIR [--keepset s04/keepset.json] [--engram DIR] [--prompt TEXT | --chat TEXT [--thinking] | --ids 1,2,3 | --ids-file F]
 //                    [--n 128] [--seqmax 8192] [--chunk 64] [--no-graph] [--sw-mxfp4] [--temp T --seed S]
 //                    [--repeat R] [--json OUT] [--logits OUT]
+//                    [--spec K [--draft HEAD_DIR] [--spec-sweep 1,2,3,4]]
 //
 // --json writes {"prompt_ids", "ids", "prefill_ms", "decode_tok_s", ...}: the chain's greedy gate
 // compares "ids" with the reference model.py run on the same prompt (tests/golden/ref_dump.py).
@@ -13,11 +14,21 @@
 // scratch and require argmax == out[k]. The decode path (M=1, graph, incremental caches) must agree
 // with the prefill path (chunked, decoder-span skipping) -- the free-running half of the golden gate.
 // A mismatch prints both logits' top-2 margin: a near-tie flip is reassociation, a gross one is a bug.
+//
+// --spec K: DSpark speculation with K drafts per verify (the checkpoint's own mtp.* blocks, or the s11
+// head dir --draft; --draft-depth K is the same flag). The reported run is the spec run.
+// --spec-sweep 1,2,3,4 (needs --spec >= the largest): one load, then a no-spec run and one run per K on
+// the same prompt. Each K's greedy ids must equal the no-spec ids ("identity"); the first mismatch is
+// re-prefilled and classified like --consistency (near-tie = reassociation at verify width M=K+1 vs
+// M=1, GROSS = a bug). JSON "spec": {"nospec": {...}, "k": [{k, tok_s, tok_per_verify, accept_hist,
+// identical, first_diff, diff_class, speedup}], "identity_gross"}. Exit 1 on any GROSS mismatch.
 #include "dsv4_engine.h"
 #include "encoding_dsv41.h"
 #include "tokenizer_dsv4.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -41,6 +52,7 @@ int main(int argc, char** argv) {
     std::string prompt, chat, ids_arg, json_out, logits_out;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
+    std::vector<int> sweep;
     dsv4srv::GenParams gp;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -64,6 +76,13 @@ int main(int argc, char** argv) {
         else if (a == "--repeat") repeat = atoi(next().c_str());
         else if (a == "--consistency") consistency = atoi(next().c_str());
         else if (a == "--json") json_out = next();
+        else if (a == "--spec" || a == "--draft-depth") ec.spec_k = std::max(ec.spec_k, atoi(next().c_str()));
+        else if (a == "--draft") ec.draft_dir = next();
+        else if (a == "--spec-sweep") {
+            std::stringstream ss(next()); std::string t;
+            while (std::getline(ss, t, ',')) if (!t.empty()) sweep.push_back(atoi(t.c_str()));
+            for (int k : sweep) ec.spec_k = std::max(ec.spec_k, k);
+        }
         else if (a == "--logits") logits_out = next();
         else { fprintf(stderr, "unknown arg %s (see the header of src/v41_decode.cu)\n", a.c_str()); return 2; }
     }
@@ -142,6 +161,54 @@ int main(int argc, char** argv) {
         printf("[v41] consistency over %d positions: %d gross, %d near-tie mismatches -> %s\n", consistency, incons, near_tie,
                incons ? "FAIL" : "PASS");
     }
+    // speculation sweep: no-spec reference, then each K on the same prompt, same process
+    json spec_j;
+    int spec_gross = 0;
+    if (!sweep.empty()) {
+        auto run = [&](int k, std::vector<int>& out) {
+            eng.set_spec_k(k); eng.reset();
+            out.clear();
+            return eng.generate(ids, gp, [&](int t) { out.push_back(t); return true; });
+        };
+        std::vector<int> ref;
+        const dsv4srv::GenStats g0 = run(0, ref);
+        printf("[v41] spec sweep: no-spec %.2f tok/s (%d tok)\n", g0.tok_per_s, g0.completion_tokens);
+        spec_j["nospec"] = json{{"tok_s", g0.tok_per_s}, {"tokens", g0.completion_tokens}, {"ids", ref}};
+        spec_j["drafter"] = eng.drafter_desc();
+        json ks = json::array();
+        for (int k : sweep) {
+            std::vector<int> out;
+            const dsv4srv::GenStats g = run(k, out);
+            json hist = json::array();
+            for (int a = 0; a <= std::min(k, dsv4srv::SpecProfile::MAXW - 1); ++a) hist.push_back(g.spec.accept_joint[std::min(k, dsv4srv::SpecProfile::MAXW - 1)][a]);
+            int diff = -1;
+            for (size_t i = 0; i < std::max(out.size(), ref.size()); ++i)
+                if (i >= out.size() || i >= ref.size() || out[i] != ref[i]) { diff = (int)i; break; }
+            std::string cls = "identical";
+            if (diff >= 0) {
+                cls = "length";
+                if (diff < (int)out.size() && diff < (int)ref.size()) {
+                    std::vector<int> pre(ids); pre.insert(pre.end(), ref.begin(), ref.begin() + diff);
+                    eng.set_spec_k(0); eng.reset();
+                    const std::vector<float> lg = eng.debug_prefix_logits(pre);
+                    const float gap = std::fabs(lg[ref[diff]] - lg[out[diff]]);
+                    cls = gap < 0.05f ? "near-tie" : "GROSS";
+                    printf("[v41] spec K=%d: first diff at %d: no-spec %d, spec %d (logit gap %.4f) %s\n", k, diff, ref[diff],
+                           out[diff], gap, cls.c_str());
+                }
+                if (cls != "near-tie") ++spec_gross;
+            }
+            printf("[v41] spec K=%d: %.2f tok/s (x%.3f), %.3f tok/verify, %s\n", k, g.tok_per_s,
+                   g0.tok_per_s > 0 ? g.tok_per_s / g0.tok_per_s : 0.0, g.tok_per_verify, cls.c_str());
+            ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tokens", g.completion_tokens}, {"verifies", g.verifies},
+                              {"tok_per_verify", g.tok_per_verify}, {"accept_hist", hist}, {"identical", diff < 0},
+                              {"first_diff", diff}, {"diff_class", cls},
+                              {"speedup", g0.tok_per_s > 0 ? g.tok_per_s / g0.tok_per_s : 0.0}});
+        }
+        spec_j["k"] = ks;
+        spec_j["identity_gross"] = spec_gross;
+        printf("[v41] spec identity: %d GROSS mismatch(es) over %zu K -> %s\n", spec_gross, sweep.size(), spec_gross ? "FAIL" : "PASS");
+    }
     if (!json_out.empty()) {
         json o;
         o["prompt_ids"] = ids; o["ids"] = first; o["text"] = tok.decode(first);
@@ -149,7 +216,10 @@ int main(int argc, char** argv) {
         o["runs"] = repeat; o["deterministic"] = deterministic; o["graph"] = ec.graph; o["mxfp4_hw"] = ec.mxfp4_hw;
         o["ckpt"] = ec.ckpt_dir; o["seqmax"] = ec.seqmax;
         o["consistency_checked"] = consistency; o["consistency_gross"] = incons; o["consistency_near_tie"] = near_tie;
+        o["spec_k"] = ec.spec_k; o["draft"] = ec.draft_dir;
+        o["verifies"] = last.verifies; o["tok_per_verify"] = last.tok_per_verify;
+        if (!sweep.empty()) o["spec"] = spec_j;
         std::ofstream(json_out) << o.dump(1);
     }
-    return deterministic && !incons ? 0 : 1;
+    return deterministic && !incons && !spec_gross ? 0 : 1;
 }

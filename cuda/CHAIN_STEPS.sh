@@ -25,6 +25,17 @@
 #                             prefill consistency, tok/s at 128 and 8k context -> $OUT/decode_<ARM>.json
 #   ctx1m ARM            GPU  state for a 1,048,576-token context: allocation fits, tok/s after a 64k prefill
 #   server ARM           GPU  v41_server smoke: health, chat turn ends on EOS, DSML tool call parsed, SSE
+#   spec_identity ARM [DRAFT TAG]
+#                        GPU  DSpark speculation, one load per context (128-token chat, 8k ids): no-spec, then
+#                             K=1..4 (v41_decode --spec-sweep). Every K's greedy ids must equal the no-spec ids;
+#                             a GROSS first mismatch fails (near-tie flips are reported, not failed: the verify's
+#                             split-K is M-invariant up to M=8, so none are expected). DRAFT = an s11 head dir
+#                             (default: the build's own mtp.* blocks), TAG names it (default native)
+#                             -> $OUT/spec_{128,8k}_<ARM>_<TAG>.json, $OUT/spec_identity_<ARM>_<TAG>.json
+#   spec_bench ARM [DRAFT TAG]
+#                        GPU  tok/s at K=1..4 at 128 and 8k vs no-spec, from the same sweeps (run if missing);
+#                             records identity, never fails on it (s11 decide owns that verdict)
+#                             -> $OUT/spec_bench_<ARM>_<TAG>.json
 set -uo pipefail
 cd ~/deepseek-v4.1-flash-reap-thor
 PY=.venv/bin/python; L=ops/logs; mkdir -p $L; C=$L/chain.log
@@ -37,7 +48,7 @@ die() { log "FAIL: $*"; exit 1; }
 done_() { [ -f $L/done.s08_$1 ]; }; mark() { touch $L/done.s08_$1; log "done $1"; }
 quiet() { docker ps --format '{{.Names}}' 2>/dev/null | grep -q leaf-teacher && die "a leafllm vLLM server is up"
   pgrep -f pipeline/runner.sh >/dev/null && ! [ -f ~/leafllm/run/runner.stop ] && die "leafllm runner active"
-  pgrep -f 'llama-server|v41-teacher-kld|s03_saliency|s01_layer_probe|v41_server|v41_decode|gate_v41|ref_dump' >/dev/null \
+  pgrep -f 'llama-server|v41-teacher-kld|s03_saliency|s01_layer_probe|v41_server|v41_decode|gate_v41|ref_dump|s11_spec.py (bank|accept|refit|traces)' >/dev/null \
     && die "another model-loading process is up"; true; }
 reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
   a=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo); log "reclaim after $1: MemAvailable ${a} GiB"
@@ -48,7 +59,25 @@ keep_of() { [ "$1" = src ] && echo "" || echo "--keepset $(keepf $1)"; }
 gpu() { local name=$1; shift; log "start $name: $*"; setsid "$@" > $L/s08_$name.log 2>&1 < /dev/null & local p=$!
   wait $p; local rc=$?; tail -n 40 $L/s08_$name.log | tee -a $C >/dev/null; return $rc; }
 
-step=${1:?step}; ARM=${2:-}
+step=${1:?step}; ARM=${2:-}; DRAFT=${3:-}; TAG=${4:-native}
+# spec sweep for one context: $1 = 128 | 8k. Skipped when its JSON exists. v41_decode exits 1 on a GROSS
+# identity mismatch but still writes the JSON; the callers judge it.
+spec_sweep() { local c=$1 f=$OUT/spec_${1}_${ARM}_${TAG}.json; [ -f $f ] && return 0
+  local K="--ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS" D=""; [ -n "$DRAFT" ] && D="--draft $DRAFT"
+  [ -f $ROWS/engram_L14.v41rows ] || die "Engram row files missing ($ROWS)"
+  if [ $c = 128 ]; then
+    gpu spec128_${ARM}_$TAG $B/v41_decode $K $D --chat "Write a short paragraph about the history of the printing press." \
+        --n 256 --seqmax 4096 --spec-sweep 1,2,3,4 --json $f.tmp
+  else
+    [ -f $OUT/ids8k.txt ] || die "spec 8k: $OUT/ids8k.txt missing (s08 decode $ARM writes it)"
+    gpu spec8k_${ARM}_$TAG $B/v41_decode $K $D --seqmax 16384 --ids-file $OUT/ids8k.txt --n 128 --spec-sweep 1,2,3,4 \
+        --json $f.tmp
+  fi
+  local rc=$?; reclaim spec${c}_${ARM}_$TAG
+  [ -f $f.tmp ] || die "spec sweep $c $ARM $TAG wrote no JSON (rc=$rc, see $L/s08_spec${c}_${ARM}_$TAG.log)"
+  mv $f.tmp $f; }
+# the CPU compile of the decoder, in case the tree moved on since `build` (incremental, seconds)
+rebuild() { cuda/scripts/build_v41.sh v41_decode >> $C 2>&1 || die "rebuild v41_decode"; }
 case $step in
 build)
   done_ build && exit 0
@@ -57,6 +86,7 @@ build)
 cpu_gates)
   done_ cpu_gates && exit 0
   cd cuda
+  ./build/gate_spec_host || die "speculation bookkeeping (rollback, window reuse)"
   ./build/gate_encoding_v41 $SRC/encoding/tests tests/data/encoding_v41_fuzz.json || die "encoding"
   ./build/gate_api && ./build/gate_stream || die "api/stream"
   ./build/gate_tokenizer $SRC tests/data/tokenizer_vectors.json || die "tokenizer"
@@ -136,5 +166,48 @@ server)
   reclaim server_$ARM
   [ $ok = 1 ] || die "server smoke $ARM (see $L/s08_server_$ARM.log)"
   mark server_$ARM ;;
+spec_identity)
+  : ${ARM:?ARM}; [ "$ARM" = src ] && die "spec needs a thor build"
+  done_ spec_identity_${ARM}_$TAG && exit 0; quiet; rebuild
+  spec_sweep 128; spec_sweep 8k
+  $PY - $OUT/spec_128_${ARM}_$TAG.json $OUT/spec_8k_${ARM}_$TAG.json $OUT/spec_identity_${ARM}_$TAG.json <<'PYEOF' || die "spec identity $ARM $TAG (see $OUT/spec_identity_${ARM}_$TAG.json)"
+import json, sys
+a, b, out = sys.argv[1:4]
+r = {}
+for c, f in (("128", a), ("8k", b)):
+    s = json.load(open(f))["spec"]
+    r[c] = {"drafter": s["drafter"], "identity_gross": s["identity_gross"],
+            "k": {str(k["k"]): {"identical": k["identical"], "first_diff": k["first_diff"], "diff_class": k["diff_class"]}
+                  for k in s["k"]}}
+r["pass"] = all(r[c]["identity_gross"] == 0 for c in ("128", "8k"))
+r["exact"] = all(v["identical"] for c in ("128", "8k") for v in r[c]["k"].values())
+json.dump(r, open(out, "w"), indent=1)
+print(f"spec identity: exact={r['exact']} pass={r['pass']}")
+sys.exit(0 if r["pass"] else 1)
+PYEOF
+  mark spec_identity_${ARM}_$TAG ;;
+spec_bench)
+  : ${ARM:?ARM}; [ "$ARM" = src ] && die "spec needs a thor build"
+  done_ spec_bench_${ARM}_$TAG && exit 0; quiet; rebuild
+  spec_sweep 128; spec_sweep 8k
+  $PY - $OUT/spec_128_${ARM}_$TAG.json $OUT/spec_8k_${ARM}_$TAG.json $OUT/spec_bench_${ARM}_$TAG.json "$DRAFT" <<'PYEOF' || die "spec bench summary"
+import json, sys
+a, b, out, draft = sys.argv[1:5]
+r = {"draft": draft or None, "nospec": {}, "k": {}}
+for c, f in (("128", a), ("8k", b)):
+    s = json.load(open(f))["spec"]
+    r["drafter"] = s["drafter"]
+    r["nospec"][c] = s["nospec"]["tok_s"]
+    for k in s["k"]:
+        e = r["k"].setdefault(str(k["k"]), {})
+        e[c] = {"tok_s": k["tok_s"], "speedup": k["speedup"], "tok_per_verify": k["tok_per_verify"],
+                "accept_hist": k["accept_hist"], "identical": k["identical"], "diff_class": k["diff_class"]}
+best = {c: max(r["k"], key=lambda k: r["k"][k][c]["tok_s"]) for c in ("128", "8k")}
+r["best"] = {c: {"K": int(best[c]), **r["k"][best[c]][c]} for c in ("128", "8k")}
+json.dump(r, open(out, "w"), indent=1)
+print("spec bench: " + ", ".join(f"{c} no-spec {r['nospec'][c]:.2f} tok/s, best K={r['best'][c]['K']} "
+                                 f"{r['best'][c]['tok_s']:.2f} ({r['best'][c]['speedup']:.2f}x)" for c in ("128", "8k")))
+PYEOF
+  mark spec_bench_${ARM}_$TAG ;;
 *) die "unknown step $step" ;;
 esac

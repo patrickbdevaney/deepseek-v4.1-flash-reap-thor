@@ -103,8 +103,9 @@ def accept_stats(acc: np.ndarray, rows: np.ndarray, depths=(1, 2, 3), draws: int
 
 
 def choose(arms: dict, base: dict, g: dict) -> dict:
-    """arms: {"arm/head": {"fits": bool, "e2e": {"tok_s_128", "tok_s_8k", "identical"} | None}}.
-    A candidate passes when it fits, its greedy output is identical to no speculation, and it beats
+    """arms: {"arm/head": {"fits": bool, "e2e": {"tok_s_128", "tok_s_8k", "identical"[, "base_128", "base_8k"]} | None}}.
+    Speedup = tok/s over the arm's own no-speculation run in the same process (base_<c>) when the e2e
+    record carries one, else over `base`. A candidate passes when it fits, its greedy output is identical to no speculation, and it beats
     min_speedup at every context. Ship the passing in-model head if any (preferred: no separate
     model), else the passing separate head; within an arm the higher geometric-mean speedup."""
     rej, ok, spd = {}, [], {}
@@ -118,7 +119,7 @@ def choose(arms: dict, base: dict, g: dict) -> dict:
             why.append("not measured end to end")
         else:
             measured = True
-            s = {c: e[f"tok_s_{c}"] / base[f"tok_s_{c}"] for c in ("128", "8k")}
+            s = {c: e[f"tok_s_{c}"] / (e.get(f"base_{c}") or base[f"tok_s_{c}"]) for c in ("128", "8k")}
             spd[k] = s
             if not e.get("identical"):
                 why.append("greedy output not identical to no speculation")
@@ -636,10 +637,40 @@ def run_decode(srv, extra: list[str], out: Path, ids: Path | None, chat: str | N
 
 
 def spec_capable() -> bool:
-    """The s08 decoder must expose a draft path: `--draft DIR` (an s11 head dir) and `--draft-depth K`.
-    The V4.1 engine was written plain-autoregressive (cuda/src/v41_engine.cu)."""
+    """The s08 decoder must expose the draft path (`--draft DIR`, `--spec-sweep`). An older build of
+    cuda/build/v41_decode (plain autoregressive) lacks it; the spec steps rebuild it first."""
     b = CUDA / "v41_decode"
-    return b.exists() and b"--draft" in b.read_bytes()
+    return b.exists() and b"--spec-sweep" in b.read_bytes()
+
+
+def spec_bench(srv: dict, hd: Path | None, tag: str) -> dict:
+    """cuda/CHAIN_STEPS.sh spec_bench: one v41_decode load per context, no-spec then K=1..4 with the head at
+    `hd` (None = the build's own mtp.* blocks, tag "native"). Idempotent (done.s08_spec_bench_<ARM>_<tag>)."""
+    f = S08 / f"spec_bench_{srv['name']}_{tag}.json"
+    if not f.exists():
+        cmd = ["bash", str(env.REPO / "cuda" / "CHAIN_STEPS.sh"), "spec_bench", srv["name"], str(hd) if hd else "", tag]
+        with open(env.LOGS / f"s11_spec_bench_{tag}.log", "w") as lf:
+            rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True).returncode
+        if rc != 0 or not f.exists():
+            raise SystemExit(f"spec_bench {tag} failed rc={rc} (see {env.LOGS / f's11_spec_bench_{tag}.log'})")
+    return json.load(open(f))
+
+
+def e2e_record(sb: dict, depths: list[int]) -> dict:
+    """An arm's e2e result from its spec_bench: per context the fastest pre-registered depth, its own
+    no-spec tok/s from the same process, and whether that depth's greedy ids were identical."""
+    rec, ident = {}, True
+    for c in ("128", "8k"):
+        ks = [str(k) for k in depths if str(k) in sb["k"]]
+        if not ks:
+            raise SystemExit(f"spec_bench has none of the pre-registered depths {depths}")
+        k = max(ks, key=lambda k: sb["k"][k][c]["tok_s"])
+        rec[f"tok_s_{c}"], rec[f"base_{c}"], rec[f"K_{c}"] = sb["k"][k][c]["tok_s"], sb["nospec"][c], int(k)
+        rec[f"tok_per_verify_{c}"] = sb["k"][k][c]["tok_per_verify"]
+        ident = ident and bool(sb["k"][k][c]["identical"])
+    rec["identical"] = ident
+    rec["drafter"] = sb.get("drafter")
+    return rec
 
 
 def cmd_curve(a):
@@ -666,49 +697,31 @@ def cmd_curve(a):
 
 
 def cmd_e2e(a):
+    """Every head end to end through the s08 decoder (cuda/CHAIN_STEPS.sh spec_bench): tok/s at 128 and 8k
+    context for K in the pre-registered e2e_depths, against no speculation in the same process, and greedy
+    identity. separate/native is the build's own mtp.* blocks (chain2 already ran it as tag "native")."""
     srv = served()
     g = gates()
     d = OUT / "e2e"
     d.mkdir(parents=True, exist_ok=True)
-    chat = "Write a short paragraph about the history of the printing press."
-    ids8k = S08 / "ids8k.txt"
-    if not ids8k.exists():
-        raise SystemExit(f"{ids8k} missing (s08 decode step writes it)")
-    base = {}
-    for c, (ids, ch, n, sm) in {"128": (None, chat, 256, 4096), "8k": (ids8k, None, 128, 16384)}.items():
-        f = d / f"base_{c}.json"
-        base[c] = json.load(open(f)) if f.exists() else run_decode(srv, [], f, ids, ch, n, sm)
-    env.atomic_json(d / "base.json", {"tok_s_128": base["128"]["decode_tok_s"], "tok_s_8k": base["8k"]["decode_tok_s"]})
+    if not (S08 / "ids8k.txt").exists():
+        raise SystemExit(f"{S08 / 'ids8k.txt'} missing (s08 decode step writes it)")
     if not spec_capable():
-        msg = ("BLOCKED: the s08 decoder has no draft path (cuda/build/v41_decode lacks --draft; the V4.1 engine is "
-               "plain autoregressive). Acceptance is measured offline; the end-to-end gate needs the DSpark verify "
-               "path in cuda/ (draft head forward + K-wide verify + rollback).")
+        subprocess.run([str(env.REPO / "cuda" / "scripts" / "build_v41.sh"), "v41_decode"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not spec_capable():
+        msg = ("BLOCKED: cuda/build/v41_decode has no draft path (--spec-sweep) and rebuilding it failed; "
+               "acceptance is measured offline only.")
         env.atomic_json(d / "status.json", {"status": "blocked", "why": msg, "ts": env.now()})
         env.log(msg, STAGE, "WARN")
         return
+    native = spec_bench(srv, None, "native")
+    env.atomic_json(d / "base.json", {"tok_s_128": native["nospec"]["128"], "tok_s_8k": native["nospec"]["8k"],
+                                      "source": f"s08 spec_bench_{srv['name']}_native no-spec runs"})
     for arm in ("inmodel", "separate"):
         for head in ("native", "tuned"):
-            hd = head_dir(arm, head)
-            if arm == "separate" and head == "native":
-                hd = OUT / "heads" / "separate_native"
-                if not hd.exists():
-                    from ops.lib import st_io  # the source head verbatim, so the decoder reads one format
-                    write_head(hd, [[{"name": n, "dtype": dt, "data": arr} for n, (dt, arr) in raw_source(i).items()]
-                                    for i in range(N_STAGES)], {"arm": "separate", "head": "native"})
-            res = {}
-            for c, (ids, ch, n, sm) in {"128": (None, chat, 256, 4096), "8k": (ids8k, None, 128, 16384)}.items():
-                best = None
-                for K in g["e2e_depths"]:
-                    f = d / f"{arm}_{head}_{c}_K{K}.json"
-                    j = json.load(open(f)) if f.exists() else run_decode(
-                        srv, ["--draft", str(hd), "--draft-depth", str(K)], f, ids, ch, n, sm)
-                    j["identical"] = j["ids"] == base[c]["ids"]
-                    if best is None or j["decode_tok_s"] > best["decode_tok_s"]:
-                        best = {**j, "K": K}
-                res[c] = best
-            env.atomic_json(d / f"{arm}_{head}.json", {"tok_s_128": res["128"]["decode_tok_s"], "tok_s_8k": res["8k"]["decode_tok_s"],
-                                                       "K_128": res["128"]["K"], "K_8k": res["8k"]["K"],
-                                                       "identical": bool(res["128"]["identical"] and res["8k"]["identical"])})
+            sb = native if (arm, head) == ("separate", "native") else spec_bench(srv, head_dir(arm, head), f"{arm}_{head}")
+            env.atomic_json(d / f"{arm}_{head}.json", e2e_record(sb, g["e2e_depths"]))
     env.atomic_json(d / "status.json", {"status": "measured", "ts": env.now()})
 
 

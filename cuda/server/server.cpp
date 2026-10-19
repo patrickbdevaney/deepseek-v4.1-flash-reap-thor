@@ -196,10 +196,12 @@ int main(int argc, char** argv) {
         // it sizes hv/hv2/collK/logK/mh_v and the arena, and set_ext_chunk() can only ever clamp
         // DOWN to what those were allocated for.
         else if (a == "--ext-chunk") ec.ext_chunk = atoi(next().c_str());
+        else if (a == "--spec")   ec.spec_k = atoi(next().c_str());       // V4.1 DSpark drafts per verify
+        else if (a == "--draft")  ec.draft_dir = next();                  // an s11 head dir ("" = ckpt mtp.*)
         else if (a == "--model")  g_model_name = next();
         else if (a == "--help") {
             printf("usage: %s [--ckpt DIR] [--host H] [--port P] [--seqmax N] [--blk N] [--adaptk F]"
-                   " [--ext-chunk N] [--engram DIR] [--no-graph]\n", argv[0]);
+                   " [--ext-chunk N] [--engram DIR] [--no-graph] [--spec K [--draft DIR]]\n", argv[0]);
             return 0;
         }
     }
@@ -521,8 +523,9 @@ int main(int argc, char** argv) {
     srv.set_post_routing_handler([](const httplib::Request&, httplib::Response&) { --m_queued; });
 
     printf("\n[server] listening on http://%s:%d   (web UI at /)\n", host.c_str(), port);
-    printf("[server] model %s, context %d, block %d, adaptK %.2f\n",
-           g_model_name.c_str(), ec.seqmax, ec.blk, ec.adaptK);
+    printf("[server] model %s, context %d, block %d, adaptK %.2f, spec K %d%s%s\n",
+           g_model_name.c_str(), ec.seqmax, ec.blk, ec.adaptK, ec.spec_k,
+           ec.draft_dir.empty() ? "" : ", draft ", ec.draft_dir.c_str());
     if (!srv.listen(host.c_str(), port)) {
         fprintf(stderr, "[server] FATAL: cannot bind %s:%d\n", host.c_str(), port);
         return 1;

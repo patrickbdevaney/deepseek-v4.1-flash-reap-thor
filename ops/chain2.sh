@@ -1,6 +1,6 @@
 #!/bin/bash
 # ops/chain2.sh: the post-chain. s07/s10 trellis -> s08 CUDA server gates -> s12 (Thor repo) -> s09 GGUF ladder -> s12 (GGUF repo)
-# -> s11 speculative head -> s12.
+# -> s11 speculative head (s08 spec_identity/spec_bench on the native head, then s11 e2e per head) -> s12.
 # Detached: setsid nohup bash ops/chain2.sh > /dev/null 2>&1 < /dev/null &
 # Waits for ops/chain.sh to log "chain reached the end of implemented stages"; exits if ops/logs/chain.STOP exists.
 # Same conventions as chain.sh: one model-loading process at a time, quiet() before and reclaim() after every
@@ -242,6 +242,11 @@ for A in separate inmodel; do quiet; s11 accept_${A}_native accept --arm $A --he
 for A in separate inmodel; do quiet; s11 refit_$A refit --arm $A; reclaim s11_refit_$A; done
 for A in separate inmodel; do quiet; s11 accept_${A}_tuned accept --arm $A --head tuned --kernels $KERN; reclaim s11_accept_${A}_tuned; done
 quiet; s11 curve curve; reclaim s11_curve
+# s08 speculation on the build's own mtp.* head: greedy ids with --spec K == without (a GROSS mismatch stops here:
+# a verify/rollback bug, not a head problem), then tok/s K=1..4 at 128 and 8k vs no-spec. s11 e2e runs the same
+# spec_bench step per s11 head (cuda/CHAIN_STEPS.sh spec_bench ARM DIR TAG).
+gpu s08 spec_identity $ARM
+gpu s08 spec_bench $ARM
 quiet; s11 e2e e2e; reclaim s11_e2e
 s11 decide decide
 env -u HF_XET_HIGH_PERFORMANCE $PY ops/s11_spec.py publish >> $L/s11_publish.log 2>&1 || stop "s11 publish"

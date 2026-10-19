@@ -92,11 +92,15 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     int mt = (M == 1) ? 1 : (M == 2 ? 2 : 4);
     while (mt > 1 && (size_t)mt * K * sizeof(float) > 160 * 1024) mt >>= 1;   // smem cap
     const int ntile = (N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, mtile = (M + mt - 1) / mt;
+    // Split-K changes the summation order, so it is chosen independently of M for M <= SPEC_M: a
+    // speculative verify (M = K+1) then sums every row exactly as the M = 1 decode step does, and
+    // greedy speculation emits the same ids as plain decode (cuda/CHAIN_STEPS.sh spec_identity).
+    constexpr int SPEC_M = 8;
     int ks = 1;
-    const int ctas = ntile * mtile, want = 2 * nsm();
+    const int ctas = ntile * (M <= SPEC_M ? 1 : mtile), want = 2 * nsm();
     if (ctas < want) {
         ks = std::min((want + ctas - 1) / ctas, std::max(1, nch / 8));
-        if ((size_t)ks * M * N > g_part_cap) ks = 1;
+        if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) ks = 1;
     }
     dim3 grid(ntile, mtile, ks);
     const size_t smem = (size_t)mt * K * sizeof(float);

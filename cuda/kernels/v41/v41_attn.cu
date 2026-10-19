@@ -18,13 +18,14 @@ namespace v41k {
 // --------------------------------------------------------------------------- compressor, ratio 2
 // One CTA (512 threads = head_dim), rows in order: the 2-slot state is carried row to row.
 __global__ void k_pool2(float* latent, int* valid, float* kvs, float* scs, const float* kv, const float* score,
-                        const uint16_t* norm_w, const int* d_pos, int M) {
+                        const uint16_t* norm_w, const int* d_pos, int M, float* hist) {
     const int d = threadIdx.x;                           // 0..511
     __shared__ float red[16];
     for (int m = 0; m < M; ++m) {
         const int pos = d_pos[m], slot = pos & 1;
         kvs[slot * 512 + d] = kv[(size_t)m * 512 + d];
         scs[slot * 512 + d] = score[(size_t)m * 512 + d];
+        if (hist) { hist[(size_t)m * 1024 + d] = kv[(size_t)m * 512 + d]; hist[(size_t)m * 1024 + 512 + d] = score[(size_t)m * 512 + d]; }
         const bool done = ((pos + 1) & 1) == 0;
         if (!done) { if (d == 0) valid[m] = 0; continue; }
         const float s0 = scs[d], s1 = scs[512 + d], mx = fmaxf(s0, s1);
@@ -42,8 +43,18 @@ __global__ void k_pool2(float* latent, int* valid, float* kvs, float* scs, const
     }
 }
 void compressor_pool2(float* latent, int* valid, float* kv_state, float* score_state, const float* kv,
-                      const float* score, const uint16_t* norm_w, const int* d_pos, int M, cudaStream_t st) {
-    k_pool2<<<1, 512, 0, st>>>(latent, valid, kv_state, score_state, kv, score, norm_w, d_pos, M);
+                      const float* score, const uint16_t* norm_w, const int* d_pos, int M, cudaStream_t st, float* hist) {
+    k_pool2<<<1, 512, 0, st>>>(latent, valid, kv_state, score_state, kv, score, norm_w, d_pos, M, hist);
+}
+// Speculative rollback: the 2-slot state as it was right after the row whose (kv, score) `hist_row`
+// holds, at an EVEN position: slot 0 = that row, slot 1 is rewritten by the next (odd) row before use.
+__global__ void k_pool2_restore(float* kvs, float* scs, const float* hist_row) {
+    const int d = threadIdx.x;
+    kvs[d] = hist_row[d];
+    scs[d] = hist_row[512 + d];
+}
+void pool2_restore_even(float* kv_state, float* score_state, const float* hist_row, cudaStream_t st) {
+    k_pool2_restore<<<1, 512, 0, st>>>(kv_state, score_state, hist_row);
 }
 
 // --------------------------------------------------------------------------- packed cache store

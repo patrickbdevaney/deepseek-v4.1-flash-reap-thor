@@ -114,8 +114,14 @@ void moe_shared_add(float* y, const uint8_t* xq, const float* xs,
 // Compressor, ratio 2 (fp32 pooling): kv/score [M, 512] already computed (bf16 weight, fp32 out).
 // Updates the carried 2-slot state; emits latent[M,512] (bf16, pre-RoPE, pre-norm=NO: normalised
 // with `norm_w`) and valid[M] (1 where a group completed at that row).
+// hist (nullable, [M, 1024]): each row's (kv, score) pair as written into the state, for rollback.
 void compressor_pool2(float* latent, int* valid, float* kv_state, float* score_state, const float* kv,
-                      const float* score, const uint16_t* norm_w, const int* d_pos, int M, cudaStream_t st);
+                      const float* score, const uint16_t* norm_w, const int* d_pos, int M, cudaStream_t st,
+                      float* hist = nullptr);
+// Rollback after a speculative verify that committed through an EVEN position whose row is hist_row
+// (from compressor_pool2's hist): slot 0 <- that row. An odd last position needs nothing: the next row
+// (even) rewrites slot 0 and the one after rewrites slot 1 before any pooling reads them.
+void pool2_restore_even(float* kv_state, float* score_state, const float* hist_row, cudaStream_t st);
 // Index keys: k[M,128] (= k_norm(wk(latent)), RoPE'd at group position) -> fp4 pack into the
 // cache at slot pos/ratio for rows with valid=1 (valid==null: all rows). Same for compressed KV.
 void store_packed_rows(uint8_t* cache_codes, uint8_t* cache_scales, const uint8_t* codes, const uint8_t* scales,

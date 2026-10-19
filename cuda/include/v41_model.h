@@ -87,6 +87,11 @@ struct LoadOpts {
 // Throws std::runtime_error with the missing tensor's name on a layout mismatch.
 void load_model(Model& m, const std::string& dir, const LoadOpts& o);
 void bind_layer(Model& m, int L, bool mxfp4_hw);
+// Routed experts under a tensor prefix (decoder layers and the DSpark mtp blocks share it). qtype_of
+// names a stacked tensor's qtype (thor.json / s11 head.json); empty function = per-expert HF layout
+// only. inter = the experts' intermediate size. Returns the expert count; throws on a layout mismatch.
+int bind_experts(const Store& S, const std::string& ep, const std::function<std::string(const std::string&)>& qtype_of,
+                 bool mxfp4_hw, int inter, Experts& ex);
 
 // --------------------------------------------------------------------------- state
 struct State {
@@ -97,7 +102,8 @@ struct State {
     std::vector<float*> ring;            // [N_LAYERS] -> [RING, 512]
     // per kv_source: compressed KV (fp4 codes 256 B + E4M3 scales 32 B) and index keys (64 + 4 B)
     struct Src { uint8_t *ckv = nullptr, *ckv_s = nullptr, *ik = nullptr, *ik_s = nullptr;
-                 float *kv_state = nullptr, *score_state = nullptr; int rows = 0; };
+                 float *kv_state = nullptr, *score_state = nullptr; int rows = 0;
+                 float* pool_hist = nullptr; };    // ratio-2 sources: [max_rows, kv 512 | score 512] (rollback)
     Src src[v41::N_LAYERS];
     // shared-attention slots handed down the stack (the reference's SharedAttentionRuntime)
     int* topk = nullptr;                 // [shared_rows, 512]
@@ -115,7 +121,8 @@ struct State {
     float *score = nullptr; int ld_score = 0, score_rows_ = 0;   // indexer scores [score_rows_, seqmax]
     float *rw = nullptr; int* ridx = nullptr; float* y = nullptr;
     float *eg_e = nullptr, *eg_kv = nullptr;
-    float *logits = nullptr;
+    float *logits = nullptr;                          // [max_rows, VOCAB]: head_row writes row 0, head_rows rows 0..n-1
+    int* d_argmax = nullptr;                          // [max_rows] argmax of each head_rows row
     uint8_t *xq = nullptr; float* xs = nullptr;       // act_quant scratch, largest K x max_rows
     uint8_t *pk = nullptr, *ps = nullptr;             // packed fp4 scratch
     int* valid = nullptr;
@@ -155,5 +162,13 @@ void embed_rows(const Model& m, State& s, int M, cudaStream_t st);
 void head_row(const Model& m, State& s, int r, cudaStream_t st);
 // greedy argmax over s.logits into *d_tok
 void argmax_logits(const State& s, int* d_tok, cudaStream_t st);
+// Speculative verify: final collapse + norm + head for rows [r0, r0+n) -> s.logits rows 0..n-1, and their
+// argmaxes -> s.d_argmax[0..n). One pass over the head weights for all n rows.
+void head_rows(const Model& m, State& s, int r0, int n, cudaStream_t st);
+// After a verify forward whose row `row` (position `pos`) is the last committed one: put back the
+// carried state the rejected rows overwrote (the ratio-2 compressors' 2-slot pooling state). The window
+// ring, the packed caches and the shared slots need nothing: a rejected position is rewritten by the
+// next forward before any query can read it (ring 256 >= window 128 + verify width).
+void rollback_state(State& s, int row, int pos, cudaStream_t st);
 
 } // namespace v41m

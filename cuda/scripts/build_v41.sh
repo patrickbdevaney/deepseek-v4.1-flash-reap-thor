@@ -15,7 +15,7 @@ obj() {  # obj <src> -> build/obj/<name>.o, only when stale
 }
 # kernels + model + engram (in parallel, at most 4)
 SRCS="kernels/v41/v41_dense.cu kernels/v41/v41_moe.cu kernels/v41/v41_attn.cu kernels/v41/v41_engram.cu
-      src/v41_model.cu src/v41_engine.cu src/engram_store.cpp src/engram_hash.cpp"
+      src/v41_model.cu src/v41_draft.cu src/v41_engine.cu src/engram_store.cpp src/engram_hash.cpp"
 export -f obj; export NVCC
 echo $SRCS | tr ' ' '\n' | grep . | xargs -P4 -I{} bash -c 'obj {}'
 for s in $SRCS; do KOBJ="$KOBJ build/obj/$(basename "${s%.*}").o"; done
@@ -37,5 +37,6 @@ if want "$1" cpu_gates; then
       -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -o build/gate_engram_store
   nvcc -O2 -std=c++17 -I include -Xcompiler -ffp-contract=off tests/gate_kq_host.cu -o build/gate_kq_host
   nvcc -O2 -std=c++17 -I include -Xcompiler -ffp-contract=off tests/gate_kt_host.cu -o build/gate_kt_host
+  g++ -O2 -std=c++17 -I include tests/gate_spec_host.cpp -o build/gate_spec_host
   echo "built CPU gates"
 fi

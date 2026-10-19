@@ -80,6 +80,11 @@ struct EngineConfig {
     int   npass   = 1;             // draft refinement passes
     int   ext_chunk = 64;          // positions per batched forward when extending a cached prefix
     bool  quiet   = false;
+    // V4.1: DSpark speculation. spec_k = drafts verified per forward (0 = off, at most blk). The
+    // drafter is the checkpoint's own mtp.* blocks; draft_dir = an s11 head dir that overrides them
+    // ("" = the --ckpt's own, unpruned).
+    int   spec_k  = 0;
+    std::string draft_dir;
 };
 
 class Engine {
@@ -110,6 +115,10 @@ public:
     // Also for gate_engine. Varying the extension batch shape while holding everything else fixed
     // separates "my offset arithmetic is wrong" from "these kernels reassociate at different M".
     void set_ext_chunk(int n);
+    // V4.1 speculation: drafts per verify for the next generate() calls, 0 = plain decode. At most
+    // EngineConfig::spec_k (the drafter is loaded only when that is > 0). Returns the value set.
+    int  set_spec_k(int k);
+    std::string drafter_desc() const;                // "" when no drafter is loaded
 
     // Diagnostic: resolve `ids` exactly as generate() would (prefix cache included), then return
     // the target's logits for the next position, leaving the KV as it was found.

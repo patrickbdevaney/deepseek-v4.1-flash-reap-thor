@@ -1,8 +1,10 @@
 // v41_model.cu — weights, state and the layer forward. The forward follows inference/model.py
 // line by line; each block below names the reference code it reproduces.
 #include "v41_model.h"
+#include "v41_spec.h"
 #include "safetensors.h"
 #include <cuda.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
@@ -10,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <functional>
+#include <memory>
 #include <set>
 #include <unordered_map>
 #include "third_party/json.hpp"
@@ -33,10 +37,20 @@ Store::Store(const std::string& dir, const Filter& want) {
         if (!j.value("complete", false)) throw std::runtime_error(dir + ": thor build is not complete (thor.json complete != true)");
         for (auto it = j["files"].begin(); it != j["files"].end(); ++it) files.push_back(it.key());
     } else {
-        const auto j = nlohmann::json::parse(st::read_file(dir + "/model.safetensors.index.json"));
-        std::set<std::string> u;
-        for (auto it = j["weight_map"].begin(); it != j["weight_map"].end(); ++it) u.insert(it.value().get<std::string>());
-        files.assign(u.begin(), u.end());
+        std::string idx;
+        try { idx = st::read_file(dir + "/model.safetensors.index.json"); } catch (...) {}
+        if (!idx.empty()) {
+            const auto j = nlohmann::json::parse(idx);
+            std::set<std::string> u;
+            for (auto it = j["weight_map"].begin(); it != j["weight_map"].end(); ++it) u.insert(it.value().get<std::string>());
+            files.assign(u.begin(), u.end());
+        } else {                                     // a plain directory of *.safetensors (an s11 head dir)
+            DIR* d = opendir(dir.c_str());
+            if (!d) throw std::runtime_error(dir + ": neither thor.json, model.safetensors.index.json nor a directory");
+            while (dirent* e = readdir(d)) files.push_back(e->d_name);
+            closedir(d);
+            std::sort(files.begin(), files.end());
+        }
     }
     struct Item { std::string name; int fd; size_t off, n; std::string dtype; std::vector<int64_t> shape; };
     std::vector<Item> items; size_t total = 0;
@@ -89,6 +103,97 @@ const DevT& Store::get(const std::string& n) const {
 // =========================================================================== load
 
 
+// Routed experts under prefix `ep` ("layers.L.ffn.experts." or "mtp.i.ffn.experts."). Layouts:
+//   thor-v1 stacked ggml K-quant  wX.qweight  U8 [n, out, row_bytes]  qtype Q2_K..Q4_K
+//   thor-v1 stacked MXFP4_SRC     wX.weight/.scale  [n, out, in/2] / [n, out, in/32]
+//   thor-v1 stacked trellis KT2/3 wX.qweight + .kt_scale F16 [n, out, in/128],
+//                                 {w13,w2}.rht_sign U8 [in/8] (thor_format.md "Trellis experts")
+//   HF checkpoint per expert      E.wX.weight/.scale (MXFP4 I8 + E8M0)
+// qtype_of(name) gives a stacked tensor's qtype (thor.json, or an s11 head.json); empty = none known.
+// Fills ex.tab's formats and device pointer tables; returns the expert count.
+int bind_experts(const Store& S, const std::string& ep, const std::function<std::string(const std::string&)>& qtype_of,
+                 bool hw, int inter, Experts& ex) {
+    int E = 0;
+    std::vector<const void*> tab;
+    auto fmt_of = [&](const std::string& qt, v41k::ExpertFmt& f, int& bits) {
+        if (qt == "MXFP4_SRC") { f = hw ? v41k::ExpertFmt::MXFP4_HW : v41k::ExpertFmt::MXFP4; bits = 4; }
+        else if (qt == "Q2_K") { f = v41k::ExpertFmt::KQ; bits = 2; }
+        else if (qt == "Q3_K") { f = v41k::ExpertFmt::KQ; bits = 3; }
+        else if (qt == "Q4_K") { f = v41k::ExpertFmt::KQ; bits = 4; }
+        else if (qt == "KT2") { f = v41k::ExpertFmt::KT; bits = 2; }
+        else if (qt == "KT3") { f = v41k::ExpertFmt::KT; bits = 3; }
+        else throw std::runtime_error(ep + ": unknown expert qtype '" + qt + "' -- refusing (thor_format.md obligation 1)");
+    };
+    if (S.has(ep + "w1.qweight") || S.has(ep + "w1.weight")) {
+        const bool kq = S.has(ep + "w1.qweight");
+        const char* part = kq ? ".qweight" : ".weight";
+        std::string qt13 = "MXFP4_SRC", qt2 = "MXFP4_SRC";
+        if (qtype_of) {
+            qt13 = qtype_of(ep + "w1" + part);
+            qt2 = qtype_of(ep + "w2" + part);
+            if (qtype_of(ep + "w3" + part) != qt13) throw std::runtime_error(ep + ": w1/w3 qtypes differ");
+        } else if (kq) throw std::runtime_error(ep + ": K-quant experts without a qtype manifest (thor.json / head.json)");
+        fmt_of(qt13, ex.tab.fmt13, ex.tab.bits13);
+        fmt_of(qt2, ex.tab.fmt2, ex.tab.bits2);
+        const DevT& t1 = S.get(ep + "w1" + part);
+        E = (int)t1.shape[0];
+        tab.assign(6 * (size_t)E, nullptr);
+        const char* proj[3] = {"w1", "w3", "w2"};
+        const int slot[3] = {0, 2, 4};
+        for (int j = 0; j < 3; ++j) {
+            const DevT& t = S.get(ep + proj[j] + part);
+            const int out = j < 2 ? inter : DIM, in = j < 2 ? DIM : inter;
+            if ((int)t.shape[0] != E || (int)t.shape[1] != out) throw std::runtime_error(ep + proj[j] + ": bad stacked shape");
+            const size_t stride = t.nbytes / E;
+            const v41k::ExpertFmt f = j < 2 ? ex.tab.fmt13 : ex.tab.fmt2;
+            const int bits = j < 2 ? ex.tab.bits13 : ex.tab.bits2;
+            const DevT* sc = nullptr;
+            if (f == v41k::ExpertFmt::KQ) {
+                const int bb = bits == 2 ? 84 : bits == 3 ? 110 : 144;
+                if (stride != (size_t)out * (in / 256) * bb) throw std::runtime_error(ep + proj[j] + ": row bytes do not match the qtype");
+            } else if (f == v41k::ExpertFmt::KT) {
+                if (stride != (size_t)out * (in / 128) * 16 * bits) throw std::runtime_error(ep + proj[j] + ": KT row bytes do not match the qtype");
+                sc = &S.get(ep + proj[j] + ".kt_scale");
+                if (sc->nbytes != (size_t)E * out * (in / 128) * 2) throw std::runtime_error(ep + proj[j] + ".kt_scale: bad size");
+            } else {
+                if (stride != (size_t)out * in / 2) throw std::runtime_error(ep + proj[j] + ": MXFP4_SRC shape mismatch");
+                sc = &S.get(ep + proj[j] + ".scale");
+            }
+            for (int e = 0; e < E; ++e) {
+                tab[(size_t)slot[j] * E + e] = (const char*)t.p + (size_t)e * stride;
+                tab[(size_t)(slot[j] + 1) * E + e] = sc ? (const char*)sc->p + (size_t)e * (sc->nbytes / E) : nullptr;
+            }
+        }
+        auto sign_of = [&](const char* pass, int in) -> const uint8_t* {
+            const DevT& t = S.get(ep + pass + ".rht_sign");
+            if (t.nbytes != (size_t)in / 8) throw std::runtime_error(ep + pass + ".rht_sign: expected " + std::to_string(in / 8) + " bytes");
+            return (const uint8_t*)t.p;
+        };
+        if (ex.tab.fmt13 == v41k::ExpertFmt::KT) ex.tab.rht13 = sign_of("w13", DIM);
+        if (ex.tab.fmt2 == v41k::ExpertFmt::KT) ex.tab.rht2 = sign_of("w2", inter);
+    } else {
+        while (S.has(ep + std::to_string(E) + ".w1.weight")) ++E;
+        if (!E) throw std::runtime_error("no routed experts under " + ep);
+        fmt_of("MXFP4_SRC", ex.tab.fmt13, ex.tab.bits13);
+        fmt_of("MXFP4_SRC", ex.tab.fmt2, ex.tab.bits2);
+        tab.assign(6 * (size_t)E, nullptr);
+        for (int e = 0; e < E; ++e) {
+            const std::string q = ep + std::to_string(e);
+            tab[0 * E + e] = S.p<void>(q + ".w1.weight"); tab[1 * E + e] = S.p<void>(q + ".w1.scale");
+            tab[2 * E + e] = S.p<void>(q + ".w3.weight"); tab[3 * E + e] = S.p<void>(q + ".w3.scale");
+            tab[4 * E + e] = S.p<void>(q + ".w2.weight"); tab[5 * E + e] = S.p<void>(q + ".w2.scale");
+        }
+    }
+    if (E > 512) throw std::runtime_error(ep + ": > 512 routed experts (k_router's shared arrays)");
+    ex.n_routed = E;
+    CK(cudaMalloc(&ex.dev_tables, tab.size() * sizeof(void*)));
+    CK(cudaMemcpy(ex.dev_tables, tab.data(), tab.size() * sizeof(void*), cudaMemcpyHostToDevice));
+    const uint8_t* const* T = (const uint8_t* const*)ex.dev_tables;
+    ex.tab.w1 = T; ex.tab.w1s = T + E; ex.tab.w3 = T + 2 * E; ex.tab.w3s = T + 3 * E;
+    ex.tab.w2 = T + 4 * E; ex.tab.w2s = T + 5 * E;
+    return E;
+}
+
 void bind_layer(Model& m, int L, bool hw) {
     const Store& S = *m.store;
     LayerW& w = m.layers[L];
@@ -129,96 +234,20 @@ void bind_layer(Model& m, int L, bool hw) {
         w.eg_wkv = u8("engram.wkv.weight"); w.eg_wkv_s = u8("engram.wkv.scale");
         w.eg_q = b16("engram.q_weight"); w.eg_k = b16("engram.k_weight");
     }
-    // routed experts. Three layouts:
-    //   thor-v1 stacked ggml K-quant  ffn.experts.wX.qweight  U8 [n, out, row_bytes]  qtype Q2_K..Q4_K
-    //   thor-v1 stacked MXFP4_SRC     ffn.experts.wX.weight/.scale  [n, out, in/2] / [n, out, in/32]
-    //   thor-v1 stacked trellis KT2/3 ffn.experts.wX.qweight + .kt_scale F16 [n, out, in/128],
-    //                                 ffn.experts.{w13,w2}.rht_sign U8 [in/8] (thor_format.md "Trellis experts")
-    //   HF checkpoint per expert      ffn.experts.E.wX.weight/.scale (MXFP4 I8 + E8M0)
     const std::string ep = p + "ffn.experts.";
-    int E = 0;
-    std::vector<const void*> tab;
-    auto fmt_of = [&](const std::string& qt, v41k::ExpertFmt& f, int& bits) {
-        if (qt == "MXFP4_SRC") { f = hw ? v41k::ExpertFmt::MXFP4_HW : v41k::ExpertFmt::MXFP4; bits = 4; }
-        else if (qt == "Q2_K") { f = v41k::ExpertFmt::KQ; bits = 2; }
-        else if (qt == "Q3_K") { f = v41k::ExpertFmt::KQ; bits = 3; }
-        else if (qt == "Q4_K") { f = v41k::ExpertFmt::KQ; bits = 4; }
-        else if (qt == "KT2") { f = v41k::ExpertFmt::KT; bits = 2; }
-        else if (qt == "KT3") { f = v41k::ExpertFmt::KT; bits = 3; }
-        else throw std::runtime_error(p + ": unknown expert qtype '" + qt + "' -- refusing (thor_format.md obligation 1)");
-    };
-    if (S.has(ep + "w1.qweight") || S.has(ep + "w1.weight")) {
-        const bool kq = S.has(ep + "w1.qweight");
-        const char* part = kq ? ".qweight" : ".weight";
-        std::string qt13 = "MXFP4_SRC", qt2 = "MXFP4_SRC";
-        if (!S.thor_json().empty()) {
-            const auto j = nlohmann::json::parse(S.thor_json());
-            const auto& T = j["tensors"];
-            qt13 = T[ep + "w1" + part].value("qtype", "");
-            qt2 = T[ep + "w2" + part].value("qtype", "");
-            if (T[ep + "w3" + part].value("qtype", "") != qt13) throw std::runtime_error(p + ": w1/w3 qtypes differ");
-        } else if (kq) throw std::runtime_error(p + ": K-quant experts without a thor.json manifest");
-        fmt_of(qt13, w.ex.tab.fmt13, w.ex.tab.bits13);
-        fmt_of(qt2, w.ex.tab.fmt2, w.ex.tab.bits2);
-        const DevT& t1 = S.get(ep + "w1" + part);
-        E = (int)t1.shape[0];
-        tab.assign(6 * (size_t)E, nullptr);
-        const char* proj[3] = {"w1", "w3", "w2"};
-        const int slot[3] = {0, 2, 4};
-        for (int j = 0; j < 3; ++j) {
-            const DevT& t = S.get(ep + proj[j] + part);
-            const int out = j < 2 ? MOE_INTER : DIM, in = j < 2 ? DIM : MOE_INTER;
-            if ((int)t.shape[0] != E || (int)t.shape[1] != out) throw std::runtime_error(ep + proj[j] + ": bad stacked shape");
-            const size_t stride = t.nbytes / E;
-            const v41k::ExpertFmt f = j < 2 ? w.ex.tab.fmt13 : w.ex.tab.fmt2;
-            const int bits = j < 2 ? w.ex.tab.bits13 : w.ex.tab.bits2;
-            const DevT* sc = nullptr;
-            if (f == v41k::ExpertFmt::KQ) {
-                const int bb = bits == 2 ? 84 : bits == 3 ? 110 : 144;
-                if (stride != (size_t)out * (in / 256) * bb) throw std::runtime_error(ep + proj[j] + ": row bytes do not match the qtype");
-            } else if (f == v41k::ExpertFmt::KT) {
-                if (stride != (size_t)out * (in / 128) * 16 * bits) throw std::runtime_error(ep + proj[j] + ": KT row bytes do not match the qtype");
-                sc = &S.get(ep + proj[j] + ".kt_scale");
-                if (sc->nbytes != (size_t)E * out * (in / 128) * 2) throw std::runtime_error(ep + proj[j] + ".kt_scale: bad size");
-            } else {
-                if (stride != (size_t)out * in / 2) throw std::runtime_error(ep + proj[j] + ": MXFP4_SRC shape mismatch");
-                sc = &S.get(ep + proj[j] + ".scale");
-            }
-            for (int e = 0; e < E; ++e) {
-                tab[(size_t)slot[j] * E + e] = (const char*)t.p + (size_t)e * stride;
-                tab[(size_t)(slot[j] + 1) * E + e] = sc ? (const char*)sc->p + (size_t)e * (sc->nbytes / E) : nullptr;
-            }
-        }
-        auto sign_of = [&](const char* pass, int in) -> const uint8_t* {
-            const DevT& t = S.get(ep + pass + ".rht_sign");
-            if (t.nbytes != (size_t)in / 8) throw std::runtime_error(ep + pass + ".rht_sign: expected " + std::to_string(in / 8) + " bytes");
-            return (const uint8_t*)t.p;
+    std::function<std::string(const std::string&)> qtype_of;
+    if (!S.thor_json().empty()) {
+        auto j = std::make_shared<nlohmann::json>(nlohmann::json::parse(S.thor_json()));
+        qtype_of = [j](const std::string& n) {
+            const auto& T = (*j)["tensors"];
+            return T.contains(n) ? T[n].value("qtype", std::string()) : std::string();
         };
-        if (w.ex.tab.fmt13 == v41k::ExpertFmt::KT) w.ex.tab.rht13 = sign_of("w13", DIM);
-        if (w.ex.tab.fmt2 == v41k::ExpertFmt::KT) w.ex.tab.rht2 = sign_of("w2", MOE_INTER);
-    } else {
-        while (S.has(ep + std::to_string(E) + ".w1.weight")) ++E;
-        if (!E) throw std::runtime_error("no routed experts under " + ep);
-        fmt_of("MXFP4_SRC", w.ex.tab.fmt13, w.ex.tab.bits13);
-        fmt_of("MXFP4_SRC", w.ex.tab.fmt2, w.ex.tab.bits2);
-        tab.assign(6 * (size_t)E, nullptr);
-        for (int e = 0; e < E; ++e) {
-            const std::string q = ep + std::to_string(e);
-            tab[0 * E + e] = S.p<void>(q + ".w1.weight"); tab[1 * E + e] = S.p<void>(q + ".w1.scale");
-            tab[2 * E + e] = S.p<void>(q + ".w3.weight"); tab[3 * E + e] = S.p<void>(q + ".w3.scale");
-            tab[4 * E + e] = S.p<void>(q + ".w2.weight"); tab[5 * E + e] = S.p<void>(q + ".w2.scale");
-        }
     }
+    const int E = bind_experts(S, ep, qtype_of, hw, MOE_INTER, w.ex);
     if (S.get(p + "ffn.gate.weight").shape[0] != E)
         throw std::runtime_error(p + "router rows != expert count (REAP surgery must prune the router too)");
-    if (E > 512) throw std::runtime_error(p + ": > 512 routed experts (k_router's shared arrays)");
-    w.ex.n_routed = E; m.n_routed = E;
+    m.n_routed = E;
     w.ex.tab.heal_gain = S.opt<float>(p + "ffn.heal_gain");
-    CK(cudaMalloc(&w.ex.dev_tables, tab.size() * sizeof(void*)));
-    CK(cudaMemcpy(w.ex.dev_tables, tab.data(), tab.size() * sizeof(void*), cudaMemcpyHostToDevice));
-    const uint8_t* const* T = (const uint8_t* const*)w.ex.dev_tables;
-    w.ex.tab.w1 = T; w.ex.tab.w1s = T + E; w.ex.tab.w3 = T + 2 * E; w.ex.tab.w3s = T + 3 * E;
-    w.ex.tab.w2 = T + 4 * E; w.ex.tab.w2s = T + 5 * E;
 }
 
 void load_model(Model& m, const std::string& dir, const LoadOpts& o) {
@@ -275,6 +304,7 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
         c.ckv = dalloc<uint8_t>(s, (size_t)c.rows * 256); c.ckv_s = dalloc<uint8_t>(s, (size_t)c.rows * 32);
         c.ik = dalloc<uint8_t>(s, (size_t)c.rows * 64); c.ik_s = dalloc<uint8_t>(s, (size_t)c.rows * 4);
         c.kv_state = dalloc<float>(s, 2 * 512); c.score_state = dalloc<float>(s, 2 * 512);
+        if (compress_ratio(L) == 2) c.pool_hist = dalloc<float>(s, (size_t)max_rows * 1024);
     }
     const int R = max_rows;
     s.ld_cand = (seqmax + CAND_BLOCK - 1) / CAND_BLOCK;
@@ -294,7 +324,8 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
     s.iq = dalloc<float>(s, (size_t)R * INDEX_N_HEADS * INDEX_HEAD_DIM); s.iw = dalloc<float>(s, (size_t)R * INDEX_N_HEADS);
     s.rw = dalloc<float>(s, (size_t)R * N_ACT); s.ridx = dalloc<int>(s, (size_t)R * N_ACT);
     s.eg_e = dalloc<float>(s, (size_t)R * ENGRAM_KV_IN); s.eg_kv = dalloc<float>(s, (size_t)R * ENGRAM_KV_OUT);
-    s.logits = dalloc<float>(s, VOCAB);
+    s.logits = dalloc<float>(s, (size_t)VOCAB * R);              // row r of a verify at s.logits + r * VOCAB
+    s.d_argmax = dalloc<int>(s, R);
     s.xq = dalloc<uint8_t>(s, (size_t)R * N_HEADS * HEAD_DIM); s.xs = dalloc<float>(s, (size_t)R * N_HEADS * HEAD_DIM / 32);
     s.pk = dalloc<uint8_t>(s, (size_t)R * 256); s.ps = dalloc<uint8_t>(s, (size_t)R * 32);
     s.valid = dalloc<int>(s, R);
@@ -347,7 +378,7 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
             v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, false, st);
             v41k::bf16_linear(s.cs, x, w.cmp_wgate, M, HEAD_DIM, DIM, false, st);
             v41k::compressor_pool2(s.lat, s.valid, s.src[w.L].kv_state, s.src[w.L].score_state, s.ck, s.cs, w.cmp_norm,
-                                   R.pos, M, st);
+                                   R.pos, M, st, s.src[w.L].pool_hist + (size_t)R.r0 * 1024);
             valid = s.valid;
         } else {
             v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, true, st);
@@ -486,5 +517,20 @@ void head_row(const Model& m, State& s, int r, cudaStream_t st) {
     v41k::bf16_linear(s.logits, s.x, m.head, 1, VOCAB, DIM, false, st);
 }
 void argmax_logits(const State& s, int* d_tok, cudaStream_t st) { v41k::argmax(d_tok, s.logits, VOCAB, st); }
+
+void head_rows(const Model& m, State& s, int r0, int n, cudaStream_t st) {
+    v41k::hc_collapse(s.x, s.h + (size_t)r0 * HC_DIM, s.pre + (size_t)r0 * 4, n, st);
+    v41k::rmsnorm(s.x, s.x, m.norm, n, DIM, NORM_EPS, st);
+    v41k::bf16_linear(s.logits, s.x, m.head, n, VOCAB, DIM, false, st);
+    for (int r = 0; r < n; ++r) v41k::argmax(s.d_argmax + r, s.logits + (size_t)r * VOCAB, VOCAB, st);
+}
+
+void rollback_state(State& s, int row, int pos, cudaStream_t st) {
+    if (!v41spec::pool2_needs_restore(pos)) return;  // odd: nothing a later row reads before rewriting it
+    for (int L : KV_SOURCES) {
+        State::Src& c = s.src[L];
+        if (c.pool_hist) v41k::pool2_restore_even(c.kv_state, c.score_state, c.pool_hist + (size_t)row * 1024, st);
+    }
+}
 
 } // namespace v41m

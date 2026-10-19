@@ -320,6 +320,24 @@ def decision_rules():
 
 
 @test
+def e2e_record_from_spec_bench():
+    """s11 e2e reads cuda/CHAIN_STEPS.sh spec_bench: best PRE-REGISTERED depth per context, speedup over the
+    same process's no-spec run, identity of that depth only."""
+    from ops import s11_spec as S
+    k = lambda t128, t8k, i128=True, i8k=True: {"128": {"tok_s": t128, "tok_per_verify": 2.0, "identical": i128},
+                                                 "8k": {"tok_s": t8k, "tok_per_verify": 1.8, "identical": i8k}}
+    sb = {"nospec": {"128": 10.0, "8k": 5.0}, "drafter": "x",
+          "k": {"1": k(12.0, 6.0), "2": k(13.0, 6.5, i8k=False), "3": k(12.5, 7.0), "4": k(20.0, 9.0)}}
+    r = S.e2e_record(sb, [1, 2, 3])
+    assert r["K_128"] == 2 and r["K_8k"] == 3, r                   # K=4 is faster but not pre-registered
+    assert r["base_128"] == 10.0 and r["base_8k"] == 5.0 and r["identical"] is True   # K=2's 8k flip is not the 8k pick
+    dec = S.choose({"separate/native": {"fits": True, "e2e": r}}, {"tok_s_128": 1.0, "tok_s_8k": 1.0}, S.gates())
+    assert abs(dec["speedups"]["separate/native"]["128"] - 1.3) < 1e-9 and abs(dec["speedups"]["separate/native"]["8k"] - 1.4) < 1e-9
+    sb["k"]["3"]["8k"]["identical"] = False
+    assert S.e2e_record(sb, [1, 2, 3])["identical"] is False
+
+
+@test
 def gguf_gate_and_card():
     from ops import s09_gate, s12_publish as P
     from ops.lib import cards
