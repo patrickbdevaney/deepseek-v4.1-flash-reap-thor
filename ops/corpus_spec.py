@@ -213,8 +213,8 @@ SOURCES: dict[str, list[dict]] = {
         S("nvidia/OpenCodeInstruct", None, "train", 0.25, _qa(["input", "instruction"], ["output"]),
           licence="cc-by-4.0", generator="Llama-3.3-70B-Instruct"),
         S("GPUMODE/KernelBook", None, "train", 0.20, _text("python_code", "triton_code"), licence="apache-2.0", generator="human + torch inductor"),
-        # SakanaAI/AI-CUDA-Engineer-Archive dropped 2026-10-19: kernels written by Sakana's agent, whose LLM ensemble is
-        # not disclosed on the card (possible Claude involvement) -> fails the no-claude rule.
+        S("SakanaAI/AI-CUDA-Engineer-Archive", None, "level_1", 0.10, _text("CUDA_Code"), licence="cc-by-4.0",
+          generator="Sakana AI CUDA Engineer (agent; LLMs not named on the card)"),   # user 2026-10-19: keep
     ],
     "math": [
         S("nvidia/OpenMathReasoning", "default", "cot", 0.35, _qa(["problem"], ["generated_solution"]),
