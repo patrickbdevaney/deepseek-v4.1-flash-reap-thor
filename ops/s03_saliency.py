@@ -268,7 +268,9 @@ def merge_images(M, vis, row, h, types_np):
         span[t == IMAGE_START] = vis["image_start"].to(h.dtype)
         span[t == IMAGE_END] = vis["image_end"].to(h.dtype)
         span[t == IMAGE_NEW_LINE] = vis["image_newline"].to(h.dtype)
-        with torch.inference_mode():
+        # vision.py builds its rotary cos/sin (lru-cached) on the default device; generate.py runs with
+        # cuda as the default, so do the same here (2026-10-19: cpu cos/sin vs cuda q in the s03 embed)
+        with torch.inference_mode(), torch.device("cuda"):
             emb = vis["aligner"](vis["vit"](patches.cuda(), n_vit_h, n_vit_w), n_vit_h, n_vit_w)
         span[t == IMAGE] = emb.to(h.dtype)
         h[sl] = span
