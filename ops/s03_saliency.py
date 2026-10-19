@@ -307,6 +307,7 @@ def unit_layer(a):
     rid = mm(D / "routing" / f"L{L}_idx.npy", np.uint16, (C.T, K))
     rw = mm(D / "routing" / f"L{L}_w.npy", np.float16, (C.T, K))
     jdir = D / "journal" / f"L{L}"; jdir.mkdir(parents=True, exist_ok=True)
+    (D / "bank").mkdir(parents=True, exist_ok=True)
     ck = D / "bank" / f"L{L}.ckpt.pt"
     lst = env.Ledger(D / "bank" / f"L{L}.rows.json")       # per-layer applied-row ledger
     covered: set[int] = set()
