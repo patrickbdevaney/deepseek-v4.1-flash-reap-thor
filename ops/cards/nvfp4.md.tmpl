@@ -1,0 +1,38 @@
+---
+license: mit
+base_model: {{ base.repo }}
+tags: [deepseek, moe, reap, expert-pruning, nvfp4]
+---
+
+# {{ artifact.name }}
+
+This is the pruned model of `{{ master.repo }}` ({{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts, keep-set `{{ keepset.A.sha256 | short }}`) with its routed experts in NVFP4.
+
+**The repack is lossless.**
+- Every expert keeps its packed E2M1 bytes.
+- Each MXFP4 power-of-two block scale becomes two exact float8_e4m3 block scales.
+- A per-tensor FP32 global scale carries the remaining exponent.
+
+Every tensor was checked: there are no underflowing blocks, and the dequantized values match the source exactly.
+
+**Healing.** The global scales of `w2` also carry the per-layer heal gain, which is exact because every block scale stays a power of two. The gain was measured by router replay on the final keep-set. It is {{ heal.status }}; the per-layer gains are in `reap_keepset.json`.
+
+**Input scales.** These are per expert: activation amax divided by six times four hundred forty-eight. The amax was measured on the pruned model's own activations, and for `w2` it is the un-gated input.
+
+The dense path stays in the base FP8 block format.
+
+**Loader compatibility** with vLLM's mixed FP8 + NVFP4 MoE path has **not** been verified by us. This checkpoint does not fit our target device; see `hf_quant_config.json`.
+
+{{ include:_common_eval }}
+
+The NVFP4 build computes the same function as the `{{ s10.gates.nvfp4.arm }}` arm:
+
+{{ table_buckets:@s10.gates.nvfp4.arm }}
+
+**Release gate:** {{ gates.nvfp4 }}.
+
+## Engram tables (required, not included)
+
+{{ engram.list }}
+
+**License:** MIT. For provenance, see the master repository's card.

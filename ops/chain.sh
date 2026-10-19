@@ -1,5 +1,6 @@
 #!/bin/bash
-# Autonomous chain s00 -> s00b -> s01 (gates) -> s02 -> s03 (user grant 2026-10-19). Detached: setsid nohup bash ops/chain.sh
+# Autonomous chain s00 -> s00b -> s01 (gates) -> s02 -> s03 -> s04 -> s05 -> s06 -> s10heal -> s07 -> s10final -> s12
+# (user grant 2026-10-19). Detached: setsid nohup bash ops/chain.sh
 # Each step is idempotent/resumable; a failed gate writes ops/logs/chain.STOP with the reason and exits (the 30-min
 # check-in fixes it, removes the STOP file and relaunches the chain). One GPU/model-loading process at a time; reclaim
 # (drop_caches + baseline check) between model-loading units. Never runs while leafllm's runner or a vLLM server is up.
@@ -71,4 +72,71 @@ if ! step_done s03; then
   mark s03; reclaim s03
   $PY ops/drift_guard.py protect > $L/drift_protect.log 2>&1 || stop "drift_guard protect failed"
 fi
-log "chain reached the end of implemented stages (s04+ next)"
+
+# ---------------------------------------------------------------------------------------------- s04 -> s12
+# Same pattern: one model-loading process at a time, quiet() before every GPU stage, reclaim after every
+# model-loading stage, a failed stage writes chain.STOP. Every stage resumes from its own ledger.
+KERN=$(cat $L/kernels 2>/dev/null || echo tilelang)
+
+# s04: candidate masks (CPU) + arbitration by held-out KL with re-routing (GPU replay) -> keepset.json / keepset_128.json
+if ! step_done s04; then
+  quiet; setsid $PY ops/s04_select_arbitrate.py run --kernels $KERN --drop-s03-stream > $L/s04.log 2>&1 \
+    || stop "s04 failed (resumable; see $L/s04.log)"
+  mark s04; reclaim s04
+fi
+
+# s05: bit-exact MXFP4 master, streamed shard -> verify -> PRIVATE HF upload -> delete (CPU + network)
+if ! step_done s05; then
+  $PY ops/s05_surgery.py run > $L/s05.log 2>&1 || stop "s05 surgery/upload failed (resumable)"
+  mark s05; reclaim s05
+fi
+
+# s06: measured per-layer heal gain by router replay on the final keep-set + post-prune activation bank (GPU)
+if ! step_done s06; then
+  quiet; setsid $PY ops/s06_heal.py run --kernels $KERN > $L/s06.log 2>&1 || stop "s06 heal failed (resumable)"
+  mark s06; reclaim s06
+fi
+
+# s10 heal panel: paired healed vs unhealed on the SCREEN split -> s10/heal/decision.json (GPU)
+if ! step_done s10heal; then
+  quiet; setsid $PY ops/s10_eval.py heal --kernels $KERN > $L/s10_heal.log 2>&1 || stop "s10 heal panel failed"
+  mark s10heal; reclaim s10heal
+fi
+
+# s07a: lossless NVFP4 repack with folded gains, streamed to a PRIVATE repo (CPU + network)
+if ! step_done s07nvfp4; then
+  $PY ops/s07_quant.py nvfp4 > $L/s07_nvfp4.log 2>&1 || stop "s07 nvfp4 failed (resumable)"
+  mark s07nvfp4; reclaim s07nvfp4
+fi
+
+# s07b: bit allocation (CPU), then the sequential GPTQ Thor build (GPU), then the optional dense overlay (CPU)
+if ! step_done s07thor; then
+  $PY ops/s07_quant.py plan > $L/s07_plan.log 2>&1 || stop "s07 plan failed"
+  reclaim s07plan
+  quiet; setsid $PY ops/s07_quant.py thor --kernels $KERN > $L/s07_thor.log 2>&1 || stop "s07 thor build failed (resumable)"
+  mark s07thor; reclaim s07thor
+fi
+if ! step_done s07overlay; then
+  $PY ops/s07_quant.py overlay > $L/s07_overlay.log 2>&1 || stop "s07 overlay failed"
+  mark s07overlay; reclaim s07overlay
+fi
+
+# s10 final panel: CONFIRM split, every release gate, the pre-registered A/B arm decision (GPU)
+if ! step_done s10final; then
+  quiet; setsid $PY ops/s10_eval.py final --kernels $KERN > $L/s10_final.log 2>&1 || stop "s10 final panel failed"
+  mark s10final; reclaim s10final
+fi
+
+# arm B won the matched-bytes decision: its Thor build is a bit-exact copy (CPU)
+if ! step_done s07thorb && [ "$($PY -c "import sys,json;sys.path.insert(0,'.');from ops.lib import env;print(json.load(open(env.WORK/'s10'/'gates.json'))['thor_arm'])")" = B ]; then
+  $PY ops/s07_quant.py thor-b > $L/s07_thorb.log 2>&1 || stop "s07 thor-b failed"
+  mark s07thorb; reclaim s07thorb
+fi
+
+# s12: cards from s10 artifacts; a repo goes public only if its pre-registered gate passed (network).
+# The GGUF repo is published by re-running s12 once s09 has written $V41_WORK/s09/manifest.json.
+if ! step_done s12; then
+  $PY ops/s12_publish.py > $L/s12.log 2>&1 || stop "s12 publish failed"
+  mark s12
+fi
+log "chain reached the end of implemented stages (s08 CUDA server / s09 GGUF are owned elsewhere; re-run s12 after s09)"

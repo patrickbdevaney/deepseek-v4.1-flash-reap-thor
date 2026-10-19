@@ -1,0 +1,13 @@
+## How it was evaluated
+
+Every number below comes from `s10/final/results.json` of the build pipeline. It is a paired, teacher-forced comparison against the unpruned {{ base.repo }} at revision `{{ base.revision }}`, run in its own MXFP4/FP8 numerics. The comparison uses {{ s10.tokens | int }} scored tokens from {{ s10.rows | int }} held-out documents in the confirmation split. That split was never used to choose the model. The intervals are ninety-five percent document-cluster bootstrap intervals.
+
+- **kl32** is the mean over tokens of the KL divergence on the teacher's top-32 support.
+- **top-1 agreement** is the share of tokens where this model's argmax equals the teacher's.
+- **dNLL** is this model's next-token NLL minus the teacher's.
+
+The pass/fail thresholds were pre-registered before any result existed (`ops/s10_gates.json`, sha256 `{{ s10.gates_sha256 | short }}`).
+
+{{ table_arms:control,mxfp4_A,thorA,b128 }}
+
+`control` keeps all experts and is re-run through the same evaluation machinery as the others. It measures that machinery, not the model.

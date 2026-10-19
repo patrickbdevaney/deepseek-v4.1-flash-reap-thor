@@ -1,0 +1,37 @@
+---
+license: mit
+base_model: {{ base.repo }}
+tags: [deepseek, moe, reap, expert-pruning, gguf]
+---
+
+# {{ artifact.name }}
+
+This is a GGUF build for single-box inference. It contains {{ thor.n_routed | int }} routed experts per layer (arm {{ gates.thor_arm }} of the pre-registered A/B).
+
+**Expert precision:** {{ thor.expert_bpw | f3 }} bits per weight on average ({{ thor.expert_bytes | gib }} GiB).
+
+{{ thor.description }}
+
+**The dense path is not requantized by us.** Attention, compressor, indexer, the shared expert, the router, the hyper-connections and the norms keep their source precision in the Thor build. The GGUF writer's own dense precision choices are listed in `{{ gguf.manifest_name }}`.
+
+**Arm decision at matched resident expert bytes.** This compares the requantized larger keep-set against the bit-exact smaller one:
+- winner: {{ s10.gates.arm_decision.winner }}
+- reason: {{ s10.gates.arm_decision.why }}
+
+{{ include:_common_eval }}
+
+{{ table_buckets:@thor.arm_name }}
+
+{{ table_bins:@thor.arm_name }}
+
+**Release gate:** {{ gates.thor }}.
+
+## Engram (required, not included)
+
+The Engram tables are read from NVMe at decode time. They are built locally from the base repository's two Engram files:
+
+{{ engram.list }}
+
+The row-store build script and its format are documented in the runtime repository.
+
+**License:** MIT. Keep-set `{{ thor.keepset_sha256 }}`; teacher `{{ base.repo }}` at `{{ base.revision }}`.

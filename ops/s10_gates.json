@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "registered": "2026-10-19",
+  "note": "PRE-REGISTERED before any s04-s10 run. s10 locks the sha256 of this file at its first result ($V41_WORK/s10/prereg_lock.json) and refuses to run if it changes afterwards. Editing it is allowed only while no result exists. Metrics: kl32 = mean over scored tokens of sum over the teacher's top-32 of p_t (log p_t - log p_s) (GLM topk_KL); top1 = student argmax == teacher argmax; dnll = student NLL - teacher NLL; all against the cached s03 teacher, intervals = 95% row-cluster bootstrap, top-1 pairs = McNemar.",
+  "control": {
+    "why": "the all-384-experts replay must reproduce the cached teacher, else the replay machinery (not the masks) is being measured",
+    "max_kl32": 0.002,
+    "min_top1": 0.995
+  },
+  "arbitration": {
+    "split": "screen",
+    "metric": "kl32",
+    "ineligible_criteria": ["random"],
+    "ineligible_drift_verdicts": ["BLOCK"],
+    "tie_rule": "lowest mean kl32 wins; the winner-vs-runner-up paired difference is reported, not required to be significant"
+  },
+  "heal": {
+    "split": "screen",
+    "adopt_if": "healed - unhealed paired d_kl32 upper CI < 0 AND McNemar top-1 z > -1.96; otherwise every gain is 1.0 (unhealed)"
+  },
+  "release": {
+    "split": "confirm",
+    "pruned_floor": {
+      "why": "sanity floors for a 50% prune; GLM REAP50 v2 measured top1 0.842 / kl32 0.650, the GLM ballast failure was bucket top1 0.579, LibertAI's vision cliff was caption ppl +27.4%",
+      "max_kl32": 0.80,
+      "min_top1": 0.78,
+      "min_bucket_top1": 0.65,
+      "max_caption_ppl_ratio": 1.30,
+      "max_long_bin_top1_drop": 0.05,
+      "long_bins_from": "[8k,16k)",
+      "ref_bin": "[256,1k)",
+      "must_beat_random_kl32": true,
+      "drift_verdict_not": ["BLOCK"]
+    },
+    "nvfp4": {
+      "why": "lossless repack of the MXFP4 master plus the folded heal gain: it is the healed MXFP4 arm",
+      "same_as": "healed_or_unhealed_mxfp4_arm_per_heal_decision"
+    },
+    "thor_quant": {
+      "why": "the incremental cost of the one requantization over the same keep-set in MXFP4",
+      "max_d_kl32_vs_mxfp4": 0.25,
+      "apply_pruned_floor": true
+    },
+    "overlay": {
+      "why": "NVFP4 dense overlay is a speed lever; GLM accepted +1.56% ppl / 0.138% confident flips",
+      "max_d_kl32_upper": 0.03,
+      "max_confident_flip_increase": 0.005
+    }
+  },
+  "arm_decision": {
+    "why": "pre-registered A/B at matched resident expert bytes: A = 192 experts requantized (Thor build), B = 128 experts bit-exact MXFP4",
+    "metric": "kl32",
+    "rule": "lower mean paired kl32 wins when the paired 95% CI excludes 0; otherwise the arm with more McNemar top-1 agreement (z sign); if z == 0, B (bit-exact, proven hardware FP4 GEMV)",
+    "note": "the '14x pruning vs quant' figure is regime-dependent and is NOT used to pre-judge this decision"
+  }
+}

@@ -1,0 +1,57 @@
+---
+license: mit
+base_model: {{ base.repo }}
+tags: [deepseek, moe, reap, expert-pruning, mxfp4]
+---
+
+# {{ artifact.name }}
+
+This is {{ base.repo }} with {{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer. The kept experts are **bit-exact**: their packed E2M1 weights and E8M0 scales are copied byte for byte from the base checkpoint at revision `{{ base.revision }}`.
+
+The following parts are unchanged:
+- the dense path (FP8 attention, compressor and indexer);
+- the shared expert, the hyper-connections, the vision tower and aligner;
+- the three DSpark/MTP layers.
+
+The router's `gate.weight`, `gate.bias` and `gate.bias_vl` are sliced to the kept experts. Routing therefore re-normalises over the survivors exactly as the base model's router does.
+
+This repository is the master for every derived build (NVFP4, GGUF / Thor).
+
+## How the experts were chosen
+
+- **Calibration corpus.** {{ corpus.tokens_total | int }} tokens in 8k sequences, plus a long-context pool of 32k-128k rows, token-balanced across general, multilingual, agentic, code, vision, math, science, finance and long-context text (corpus spec `{{ corpus.spec_hash | short }}`). It was run through the teacher layer by layer with Engram switched on. Only human-written or open-model text was used; no Claude-written text.
+- **Ranking.** Candidate keep-sets were ranked by HOPE (pairwise co-activation with the REAP-sum diagonal), REAP-sum, routing mass, frequency and random anchors.
+  - Each pool, and image tokens ranked separately on their own routing (`bias_vl`), protected its top experts at the measured protect-fraction knee ({{ arb.knee_A }}).
+  - Super-Experts and position-sensitive / attention-sink experts were never pruned (long-context drift guard).
+- **Arbitration.** The candidates were arbitrated by held-out top-32 KL against the teacher. The router re-selected over the survivors, evaluated in memory, on a screening split.
+  - Winner: `{{ keepset.A.winner }}`.
+  - Keep-set fingerprint: `{{ keepset.A.sha256 }}` (also in `reap_keepset.json`).
+
+**Not healed.** Pruning inflates the routed sum, because weights re-normalise over fewer experts. A measured per-layer gain was {{ heal.status }}. An E8M0 scale can only move by powers of two, so this master ships **without** that gain. The NVFP4 and GGUF builds carry it.
+
+{{ include:_common_eval }}
+
+Here is this model's own breakdown (`mxfp4_A`):
+
+{{ table_buckets:mxfp4_A }}
+
+{{ table_bins:mxfp4_A }}
+
+- **Vision caption perplexity:** {{ s10.summaries.mxfp4_A.caption.student_ppl | f3 }}, against {{ s10.summaries.mxfp4_A.caption.teacher_ppl | f3 }} for the teacher, a ratio of {{ s10.summaries.mxfp4_A.caption.ppl_ratio | f3 }} over {{ s10.summaries.mxfp4_A.caption.tokens | int }} caption tokens.
+- **Release gate:** {{ gates.mxfp4_master }}.
+
+## Engram tables (required, not included)
+
+The two Engram tables and their small projection tensors are unchanged by pruning. They are not re-hosted here. Download these two files from the base repository at the pinned revision into this model's directory:
+
+{{ engram.list }}
+
+`model.safetensors.index.json` already maps their tensors to these file names. The same information is in `engram_pointer.json`.
+
+## License and provenance
+
+- **License:** MIT, the same as the base model (`LICENSE` is copied verbatim).
+- **Teacher:** {{ base.repo }} at `{{ base.revision }}`.
+- **Corpus spec:** `{{ corpus.spec_hash }}`.
+- **Keep-set:** `{{ keepset.A.sha256 }}`.
+- **Pre-registered gates:** `{{ s10.gates_sha256 }}`.
