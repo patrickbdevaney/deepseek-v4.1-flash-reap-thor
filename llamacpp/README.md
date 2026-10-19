@@ -1,0 +1,131 @@
+# llamacpp/: the community GGUF path for the V4.1-1017 REAP (s09)
+
+This is a lean llama.cpp fork that serves two purposes:
+
+- **Independent reference** for the CUDA server (`cuda/`).
+- **Consumer of the GGUF ladder** that the community uses.
+
+The fork is upstream llama.cpp at the **head of PR #28696** (DeepSeek-V4.1), which is still open and unmerged, plus three patches. `PINNED` records the shas.
+
+```
+setup.sh      clone upstream, fetch pull/28696/head, check out 2076412598e9…, git am patches/  (branch v41-thor)
+build.sh      CUDA build for Thor (sm_110), -j4 by default; compile only
+patches/      0001 HC tensors F32 · 0002 reader layers reuse the index source's top-k · 0003 Engram O_DIRECT row store
+convert_v41_reap.py    REAP-aware converter (wraps the fork's convert_hf_to_gguf.py, no edits to it)
+ENGRAM_ROWFILE.md      the packed row-file format, shared with the CUDA server
+tools/v41-teacher-kld.cpp   paired top-32 KL / top-1 / NLL against the cached teacher
+CHAIN_STEPS.sh         every s09 step the chain runs (build, rowfile, backend_ops, convert, imatrix, quant, kld, smoke, manifest)
+MODEL_CARD_TEMPLATE.md rendered by ops/s09_card.py from artifacts only
+tests/test_s09.py      CPU tests: keep-set, converter checks, row file, planner, card
+```
+
+The stage code lives in `ops/`:
+
+- `s09_keyset.py`: master keep-set checks on top of `ops/lib/keepset.py`, the pipeline's single fingerprint scheme.
+- `s09_engram_rowfile.py`: builds and verifies the row files.
+- `s09_gguf_ladder.py`: plan, imatrix, quant, split and verify.
+- `s09_ef.py`: optional GPTQ-style error feedback.
+- `s09_teacher_eval.py`: KL prep and summary.
+- `s09_card.py`: renders a per-level detail card into `$V41_WORK/s09/<level>/README.md`. The published HF card is s12's `ops/cards/gguf.md.tmpl`.
+
+## Patches on top of PR #28696
+
+1. **HC tensors stay F32** (`src/llama-quant.cpp`). The hyper-connection mixers feed a Sinkhorn normalisation that runs 80 times per token, and the reference keeps them in fp32. `llama-quantize` now forces `*.hc_*` and `output_hc_*` to F32, whatever the source type or any `--tensor-type` rule.
+
+2. **Reader layers reuse their index source's top-k** (`src/models/deepseek41.cpp`). The reference has 8 index sources (2, 8, 14, 20, 24, 28, 32, 36). The layers in between read the top-k their source published, through `shared_attn.topk_idxs`. The PR built no top-k on those layers, so 30 of the 38 compressed layers attended to *every* compressed row. In this config, layers 2-19 compress at ratio 2 and layers 20-39 at ratio 1, so every reader shares its source's ratio. That is wrong numerics, and it is also why their cost grew with context.
+   - The fix publishes each source's top-k on the graph object and reuses it when the ratios match. A ratio mismatch can't happen, because load already rejects any reader whose ratio differs from its KV source.
+   - The fix also makes `n_kv_max` sparse on those layers.
+
+3. **Engram O_DIRECT row store** (`src/models/deepseek41-engram-rowstore.h`). Set `LLAMA_ENGRAM_ROWFILE_DIR=<dir>` and the model opens `engram_L1.v41rows` and `engram_L14.v41rows`. It checks their headers, row width and bucket coverage, then replaces the `get_rows` on the 100 GB table with an F32 graph input.
+   - `set_input` fills that input with 16-thread aligned `pread`s (`O_DIRECT`).
+   - Values are decoded as FP8 × E8M0 and rounded to bf16, exactly as `ParallelEngramEmbedding` does.
+   - The GGUF then needs no `engram_embd` tensors; if they are present they are skipped.
+   - Without the variable, the PR's lazy mmap path is unchanged.
+
+The REAP-aware converter is `convert_v41_reap.py`. It refuses to convert unless:
+
+- `<master>/reap_keepset.json` exists (s05 writes it with `keepset.save`);
+- its keep-set hashes to its own stored `sha256` and to `--expect-keep-sha` (default in CHAIN_STEPS: the sha of `$V41_WORK/s04/keepset.json`);
+- every layer keeps exactly `n_routed_experts` (192) of 384;
+- the index holds experts 0..191 for w1, w2 and w3 and nothing above;
+- every `gate.weight`, `gate.bias` and `bias_vl` has 192 rows.
+
+All of these checks are fatal; none is a warning. `KeepsetMismatch` subclasses `SystemExit`, so no `except Exception` can swallow it. The output is a *lossless* source GGUF:
+
+- experts are bit-exact MXFP4;
+- FP8 dense weights are exact BF16 (the PR writes Q8_0 here, which would make every Q6_K level a double quantization);
+- Engram is dropped.
+
+The fingerprint, source expert count, kept ids and teacher revision go into `deepseek41.reap.*`.
+
+### Contracts with the other stages
+
+- **Keep-set:** the fingerprint is `ops/lib/keepset.fingerprint`, the same one every stage uses. Kept experts are renumbered `0..n-1` in ascending source-id order (`keepset.remap`). The imatrix remap relies on that.
+- **s12:** `manifest` writes `$V41_WORK/s09/manifest.json` = `{"files": [{"path", "sha256", "bytes", "level"}], "dense_precision", "keepset_sha256", "n_routed_experts", "levels", "llama_cpp", ...}`, plus `"repo"` if `S09_REPO` is set.
+  - Only levels whose splits re-verify are listed, and all of them must carry the same keep-set.
+  - s12 uploads the files flat by name; the split names carry the level, so the names are unique.
+- **Arm:** `V41_NKEEP` (default 192) names the files and the source GGUF, so arm B (128) gets its own paths.
+
+## The ladder (`ops/s09_gguf_ladder.py`)
+
+Each level is one `llama-quantize` run from the same lossless source. No level is ever made from another level.
+
+| level | routed experts | protected layers | est. size* |
+|---|---|---|---|
+| L0 | MXFP4, copied bit-exact | MXFP4 | ~145 GiB |
+| L1 | IQ3_XXS / IQ3_S mix, 3.40 bpw | MXFP4 | ~118 GiB |
+| L2 (flagship, 128 GB devices) | IQ2_S / IQ3_XXS mix, 2.85 bpw | IQ3_S | ~101 GiB |
+| L3 (fallback) | IQ2_XXS / IQ2_XS / IQ2_S, 2.46 bpw | IQ3_XXS | ~88 GiB |
+
+\* The expert part comes from config geometry: 40 × 192 × 3 × 5120 × 2304 = 271.8 B params. About 10 GiB of dense weights is added on top. `plan` prints the exact size from the source GGUF before anything is written.
+
+Fixed types for the rest of the file:
+
+- attention, compressor, indexer and `engram_wkv`: Q8_0;
+- shared experts, `token_embd` and `output`: Q6_K;
+- router: BF16 (as stored);
+- HC: F32 (patch 1);
+- norms, sinks and biases: F32;
+- any unnamed 2-D weight: Q8_0, never an expert type.
+
+The protected layers come from config: 0-1, Engram 1/14, KV sources 2/8/14/20, and DSpark taps 37-39. They get the level's top type. The other layers are promoted one type step at a time, most sensitive first, until the expert-average target is reached. The ranking uses `--layer-scores` if s04 provides one, and uniform scores otherwise. Within a layer, `down_proj` ranks above `gate`/`up`.
+
+Never Q4_K, Q5_K or IQ4 for experts. The source is FP4. A 4-bit non-FP4 grid spends bytes and still loses information. At 4.25 bpw the only right answer is MXFP4 copied as-is.
+
+Other details:
+
+- **imatrix:** our own, built from the s03 streamed per-expert x² bank and remapped through the manifest's keep order. It is written in the legacy `.dat` format and checked by `imatrix_verify.py` before use, which guards against the save-frequency truncation trap.
+- **Error feedback (optional, `--ef-hessians D`):** `s09_ef.py` quantizes each expert superblock by superblock. It pushes each block's rounding error onto the columns not yet quantized (block-OBS / GPTQ), using ggml's own codec through ctypes. That way the patched bytes have the identical type and size. It needs full input second moments per layer, and s03 banks only their diagonal, so it stays off until a pass produces `L<L>.npz`. Its `selftest` is CPU-only.
+- **Splits:** below 50 GB each (`--split-max-size 45G`).
+- **EOS:** `eos = eot = 1` (`<｜end▁of▁sentence｜>`), written by `--override-kv` and verified on split 1. This guards against the multi-EOS trap.
+- **Checks:** every level is verified from the written file for:
+  - its tensor types;
+  - the keep-set fingerprint against the source;
+  - eos and eot;
+  - the absence of Engram tensors.
+
+## Engram row files
+
+`python ops/s09_engram_rowfile.py build && … verify --full` reads base shards 47/48 sequentially, using `posix_fadvise(DONTNEED)` on both sides. It writes two files of about 101 GB each to `$V41_WORK/engram_rows` on NVMe. It refuses `/media` paths, because a USB drive is never served from. The header carries the source shard sha256, the teacher revision and the data sha256. See `ENGRAM_ROWFILE.md`.
+
+## GPU test plan (`CHAIN_STEPS.sh`, not yet run)
+
+1. **`backend_ops`:** `test-backend-ops test -b CUDA0`, every op, then `MUL_MAT`, `MUL_MAT_ID` and `GET_ROWS` for each weight type the levels use: mxfp4, q8_0, q6_k, iq3_s, iq3_xxs, iq2_s, iq2_xs, iq2_xxs, bf16 and f32. Any FAIL stops the chain.
+2. **`kld LEVEL`:**
+   - Input: held-out, text-only s03 rows, each decoded as a fresh sequence at `-c 8192` with the row store.
+   - Measures: paired top-32 KL with a tail bucket, top-1 and ΔNLL against the cached teacher, with row-bootstrap CIs.
+   - Output: the served identity (path, size, keep-set) is written into `teacher_kld.json`.
+   - Levels that cannot fit with a 12 GiB reserve are skipped and logged (L0, and probably L1).
+3. **`smoke LEVEL`:**
+   - Start `llama-server --jinja`, and assert that `/props` `model_path` is the expected file.
+   - Run one greedy chat turn. It must end with `finish_reason=stop`, must not contain `<｜User｜>`/`<｜Assistant｜>`, and must answer correctly.
+   - The pid comes from an `exec`, so the server cannot be orphaned.
+
+GPU steps run only under `quiet` (no leafllm vLLM, no runner, no other model loader). `reclaim` (`drop_caches`, then a ≥100 GiB baseline check) runs after each one.
+
+## Known limits
+
+- **Context:** practical context is about 16K. The PR has no two-level (2048×8) candidate pass. Patch 2 makes reader layers sparse, but the index sources still score every compressed row.
+- **Unported:** MTP/DSpark drafting and vision (mmproj, `bias_vl`) are not ported. The GGUFs are text-only.
+- **CUDA MMQ:** the PR's notes mention an out-of-bounds read in CUDA MMQ. That bug is upstream, and `backend_ops` and `kld` are where it would show.
+- **ik_llama.cpp:** it has merged `deepseek41` and the IQ*_KT trellis types. They are not used here: they have an open NaN bug (#2519) and are unverified on sm_110.

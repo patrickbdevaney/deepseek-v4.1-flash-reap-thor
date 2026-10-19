@@ -1,0 +1,57 @@
+From e1fff968c3bbfbf084490a550a67d0117f328e83 Mon Sep 17 00:00:00 2001
+From: Patrick Devaney <patrickbdevaney@gmail.com>
+Date: Mon, 19 Oct 2026 05:38:24 -0400
+Subject: [PATCH 2/3] deepseek41 : reader layers reuse their index source's
+ top-k
+
+The reference publishes topk_idxs from each index source (2,8,14,20,24,28,32,36) and the
+layers in between read shared_attn.topk_idxs. Here those layers built no top-k and attended
+to every compressed row. Reuse the source's selection when it compresses at the same ratio.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/models/deepseek41.cpp | 9 ++++++++-
+ src/models/models.h       | 4 ++++
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/models/deepseek41.cpp b/src/models/deepseek41.cpp
+index d0521ce98..37c2f9138 100644
+--- a/src/models/deepseek41.cpp
++++ b/src/models/deepseek41.cpp
+@@ -745,10 +745,17 @@ ggml_tensor * llama_model_deepseek41::graph::build_attention_v41(
+                     ctx0, persist_score, inp_comp.state_persist_dst_idxs, il));
+     }
+ 
+-    // an index source picks the positions; the layers in between reuse what it picked
++    // an index source picks the positions; the layers in between reuse what it picked. The
++    // picks index the compressed rows of the shared stream, so they only carry over between
++    // layers at the same ratio, where the row count is the same.
+     ggml_tensor * top_k = nullptr;
+     if (hparams.dsv41_is_index_source(il)) {
+         top_k = build_indexer_top_k(model, inp_dsv4, inp_comp, qr, cur, inp_pos, il);
++        published_top_k[il] = top_k;
++    } else if (const int32_t src = hparams.dsv41_topk_source[il];
++               src >= 0 && hparams.dsv4_compress_ratios[src] == (uint32_t) ratio && published_top_k[src]) {
++        top_k = published_top_k[src];
++        cb(top_k, "idx_top_k_reused", il);
+     }
+ 
+     ggml_tensor * k_rot = inp_attn->self_k_rot;
+diff --git a/src/models/models.h b/src/models/models.h
+index 7a88b992a..d464aefa2 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -1433,6 +1433,10 @@ struct llama_model_deepseek41 : public llama_model_deepseek4 {
+                 ggml_tensor * cur,
+                 ggml_tensor * inp_pos,
+                 int il) const;
++
++        // the top-k each index source published, read by the layers after it (as
++        // shared_attn.topk_idxs in the reference); without it a reader attends to every row
++        mutable std::array<ggml_tensor *, LLAMA_MAX_LAYERS> published_top_k{};
+     };
+ 
+     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+-- 
+2.43.0
+
