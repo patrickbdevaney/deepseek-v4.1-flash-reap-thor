@@ -395,7 +395,10 @@ The source backbone, shards 1-46, is 286.1, of which shards 44-46 are 7.4. The S
 |---|---|---|---|
 | chain2 start, arm A won (est.) | ~751 | ~185 | other 318 + source 303 + thor/A192 ~100 + s03/s04 caches ~30 |
 | chain2 start, arm B won (est.) | ~851 | ~85 | plus thor/B128 ~100 |
-| after phase 0 | ~734 | ~202 | -17 dead partials, -100 losing build (arm B case) |
+| after phase 0 | ~734 / ~834 | ~202 / ~102 | -17 dead partials (A won / B won) |
+| s07 thor-trellis guard | | needs KQ build + 60 | if short (B won), thor/B<n> is parked on the Seagate first (verified; the panel does not read it) |
+| s07 thor-trellis peak | ~894 | ~42 | +~100 thor/A<n>kt, + replay streams (dropped at the end) |
+| after s10 trellis + losers parked | ~734 | ~202 | every non-served build (up to two) parked, verified; a parked winner is copied back first |
 | after phase A | ~744 | ~192 | golden dumps ~10 |
 | after the backbone move | ~465 | ~471 | -279 (shards 1-43) |
 | phase B: Engram rows | ~654 | ~282 | +189 (guard: 200 free) |
@@ -408,13 +411,15 @@ Seagate use:
 | item | GiB | notes |
 |---|---|---|
 | Engram shards (s00b, already there) | 189 | |
-| losing Thor build | ~100 | if any |
+| losing Thor builds | ~100-200 | up to two of A<n>, A<n>kt, B<n> |
 | backbone | 279 | |
 | master | ~152 | guard: 170 free |
 | GGUF levels | ~451 | L0 145, L1 118, L2 100, L3 88 |
 | transient unsplit level | up to 145 | guard: 320 free per level |
 
-That totals about 1.17 TiB, leaving about 0.9 TiB.
+That totals about 1.17-1.27 TiB, leaving about 0.8 TiB.
+
+The trellis sub-arm's lowest NVMe point is ~42 GiB free (s07 thor-trellis, both arm-A builds plus replay streams); its guard is the K-quant build's size + 60 GiB, and s04 has already dropped s03's paging by then.
 
 s03's NVMe paging (~82 GB for a 2M-token corpus) belongs to chain 1, and s04 drops it (`--drop-s03-stream`) before chain2 starts.
 

@@ -74,12 +74,13 @@ def served() -> dict:
         kp = env.WORK / "s04" / "keepset_128.json"
     keep, fp = keepset.load(kp)
     n = len(keep["0"])
-    d = env.WORK / "thor" / f"{g['thor_arm']}{n}"
+    # s10 trellis writes the adopted build dir (A<n>kt when the KT sub-arm won); before it, the arm names the dir
+    d = Path(g["thor_build_dir"]) if g.get("thor_build_dir") else env.WORK / "thor" / f"{g['thor_arm']}{n}"
     tj = json.load(open(d / "thor.json"))
     keepset.require(tj["keepset_sha256"], fp, where=str(d))
     if not tj.get("complete"):
         raise SystemExit(f"{d} is not a complete Thor build")
-    return {"arm": g["thor_arm"], "name": f"{g['thor_arm']}{n}", "dir": d, "keep": keep, "keep_path": kp, "fp": fp,
+    return {"arm": g["thor_arm"], "name": d.name, "dir": d, "keep": keep, "keep_path": kp, "fp": fp,
             "n": n, "thor": tj}
 
 

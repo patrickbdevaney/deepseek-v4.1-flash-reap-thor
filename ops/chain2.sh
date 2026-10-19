@@ -49,32 +49,37 @@ mountpoint -q "$SEAROOT" || stop "the Seagate is not mounted at $SEAROOT"
 [ -f $L/done.s10final ] && [ -f $WORK/s10/final/results.json ] || stop "s10final has not passed; chain2 needs it"
 NKEEP=$($PY -c "import sys;sys.path.insert(0,'.');from ops.lib import keepset;print(len(keepset.load('$WORK/s04/keepset.json')[0]['0']))") \
   || stop "no s04 keep-set"
-ARM=$($PY -c "import sys;sys.path.insert(0,'.');from ops.s11_spec import served;print(served()['name'])") \
-  || stop "the served Thor arm (s10/gates.json thor_arm + a complete thor build) is not readable"
 KERN=$(cat $L/kernels 2>/dev/null || echo tilelang)
 export V41_NKEEP=$NKEEP                                         # the GGUF ladder is always the published REAP<n> master
-log "served arm $ARM, GGUF master REAP$NKEEP, kernels $KERN"
+log "GGUF master REAP$NKEEP, kernels $KERN (the served arm is resolved after the s10 trellis panel)"
 mkdir -p "$SEAW"
 
 # ------------------------------------------------------------------------------------------------ phase 0: space
 if ! step_done stale_cache; then           # s00's killed first attempt; s00 verified every shard, these are dead partials
   find "$SRC/.cache/huggingface/download" -name '*.incomplete' -delete 2>/dev/null; mark stale_cache
 fi
-LOSER=""; for d in $WORK/thor/*/; do b=$(basename $d); [ "$b" != "$ARM" ] && [ -f $d/thor.json ] && LOSER=$b; done
-if [ -n "$LOSER" ] && ! step_done move_thor_$LOSER; then     # the losing arm's build: kept (it is hours of GPU), off NVMe
-  need "$SEAROOT" $(( $(du -s -B1 $WORK/thor/$LOSER | cut -f1) / GIB + 20 )) "move thor/$LOSER"
-  mkdir -p "$SEAW/thor"; rsync -a --partial $WORK/thor/$LOSER/ "$SEAW/thor/$LOSER/" || stop "copy thor/$LOSER"
-  $PY - "$SEAW/thor/$LOSER" <<'E' || stop "thor/$LOSER copy does not verify"
-import json, sys
+# A Thor build parked on the Seagate is staging only: it is copied back to NVMe before any GPU step loads it.
+verify_build() { $PY - "$1" <<'E2'
+import sys
 sys.path.insert(0, ".")
 from pathlib import Path
 from ops.lib import thor_format as TF
-b = TF.Build(Path(sys.argv[1]))
-bad = b.verify()
+bad = TF.Build(Path(sys.argv[1])).verify()
 sys.exit(f"bad files: {bad}" if bad else 0)
-E
-  rm -rf $WORK/thor/$LOSER && ln -s "$SEAW/thor/$LOSER" $WORK/thor/$LOSER; mark move_thor_$LOSER
-fi
+E2
+}
+park_build() {   # park_build NAME: thor/NAME -> Seagate (verified copy), NVMe dir replaced by a symlink
+  local b=$1; [ -L $WORK/thor/$b ] && return 0
+  need "$SEAROOT" $(( $(du -s -B1 $WORK/thor/$b | cut -f1) / GIB + 20 )) "park thor/$b"
+  mkdir -p "$SEAW/thor"; rsync -a --partial $WORK/thor/$b/ "$SEAW/thor/$b/" || stop "copy thor/$b"
+  verify_build "$SEAW/thor/$b" || stop "thor/$b Seagate copy does not verify"
+  rm -rf $WORK/thor/$b && ln -s "$SEAW/thor/$b" $WORK/thor/$b; log "thor/$b parked on the Seagate (verified)"; }
+unpark_build() {  # unpark_build NAME: a parked build back on NVMe (verified) before it is served
+  local b=$1; [ -L $WORK/thor/$b ] || return 0
+  need / $(( $(du -s -B1 -L $WORK/thor/$b | cut -f1) / GIB + 25 )) "unpark thor/$b"
+  rsync -a --partial "$SEAW/thor/$b/" $WORK/thor/.$b.unpark/ || stop "copy back thor/$b"
+  verify_build $WORK/thor/.$b.unpark || stop "thor/$b NVMe copy does not verify"
+  rm -f $WORK/thor/$b && mv $WORK/thor/.$b.unpark $WORK/thor/$b; log "thor/$b back on NVMe (verified)"; }
 
 # ------------------------------------------------------------------------------------------------ phase A: source on NVMe
 step_done s09_build_ || { cpu s09 build; mark s09_build_; }
@@ -82,6 +87,41 @@ step_done s08_build_ || { cpu s08 build; mark s08_build_; }
 step_done s08_cpu_gates_ || { cpu s08 cpu_gates; mark s08_cpu_gates_; }
 gpu s08 units
 gpu s08 gemv_bench
+
+# ------------------------------------------------------------------------------------------------ s07/s10 trellis sub-arm
+# Pre-registered (s10_gates.json "trellis"): the KT2/KT3 build of arm A at <= the K-quant build's expert bytes. Both
+# read the source and replay it, so they run here, before the backbone move; the s10 panel needs gemv_bench.json.
+NA=$NKEEP; KQ=$WORK/thor/A$NA
+[ -f $KQ/thor.json ] || stop "no K-quant arm-A build at $KQ (chain 1 s07thor)"
+if ! step_done s07trellis; then
+  ktneed=$(( $(du -s -B1 -L $KQ | cut -f1) / GIB + 60 ))           # a second ~100 GiB build + its replay streams
+  if [ "$(free_gib /)" -lt $ktneed ]; then                         # arm B won s10final: its build is not read by the panel
+    for d in $WORK/thor/B*/; do [ -f $d/thor.json ] && park_build $(basename $d); done
+  fi
+  need / $ktneed "s07 thor-trellis (second Thor build)"
+  quiet; setsid $PY ops/s07_quant.py thor-trellis --kernels $KERN > $L/s07_trellis.log 2>&1 < /dev/null \
+    || stop "s07 thor-trellis failed (resumable; see $L/s07_trellis.log)"
+  reclaim s07trellis; mark s07trellis
+fi
+if ! step_done s10trellis; then
+  [ -f $WORK/s08/gemv_bench.json ] || stop "s10 trellis needs $WORK/s08/gemv_bench.json (a missing bench means not adopted)"
+  quiet; setsid $PY ops/s10_eval.py trellis --kernels $KERN > $L/s10_trellis.log 2>&1 < /dev/null \
+    || stop "s10 trellis panel failed (see $L/s10_trellis.log)"
+  reclaim s10trellis; mark s10trellis
+fi
+
+# ------------------------------------------------------------------------------------------------ the served arm
+# s10/gates.json thor_build_dir (written by the trellis panel: A<n>, A<n>kt or B<n>), else thor_arm (ops/s11_spec.served)
+ARM=$($PY -c "import sys;sys.path.insert(0,'.');from ops.s11_spec import served;print(served()['name'])") \
+  || stop "the served Thor arm (s10/gates.json thor_build_dir/thor_arm + a complete thor build) is not readable"
+unpark_build $ARM
+log "served arm $ARM ($(readlink -f $WORK/thor/$ARM))"
+for d in $WORK/thor/*/; do        # EVERY losing build (up to two of A<n>, A<n>kt, B<n>): kept, off NVMe
+  b=$(basename $d); [ "$b" = "$ARM" ] && continue; [ -f $d/thor.json ] || continue
+  step_done move_thor_$b && continue
+  park_build $b; mark move_thor_$b
+done
+
 gpu s09 backend_ops
 gpu s08 golden_ref src
 gpu s08 golden src
