@@ -327,6 +327,7 @@ def unit_layer(a):
         f.unlink()
     need = sources_for(L)
     pending: dict[int, dict] = {}        # row -> payload, applied from RAM at the checkpoint
+    jw = JournalWriter()                  # journals are written + fsynced off the GPU's critical path
     taps = L in CFG["dspark_target_layer_ids"] and a.taps != "none"
     t_start, n_done = time.time(), 0
     for r, row in enumerate(C.rows):
@@ -359,15 +360,12 @@ def unit_layer(a):
             payload["state_" + kind] = grab_state(M, blk, kind, n)
         if tap is not None:
             payload["tap"] = tap.contiguous().view(torch.int16).cpu().numpy()
-        jf = jdir / f"r{r:05d}.npz"
-        with open(jf.with_suffix(".tmp"), "wb") as fh:
-            np.savez(fh, **payload)
-            fh.flush(); os.fsync(fh.fileno())
-        os.replace(jf.with_suffix(".tmp"), jf)
+        jw.put(jdir / f"r{r:05d}.npz", payload)
         pending[r] = payload
         del x, y, ffn_pre
         n_done += n
         if len(pending) >= a.ckpt_rows or r == len(C.rows) - 1:
+            jw.drain()                               # every pending row's journal durable first
             covered |= set(pending)
             tmp = ck.with_suffix(".tmp")
             torch.save({"state": {k: v.clone() for k, v in st.state().items()}, "rows": sorted(covered)}, tmp)
@@ -375,13 +373,62 @@ def unit_layer(a):
             for pr, pl in pending.items():
                 apply_payload(C, pr, pl, H, PM, rid, rw, L)
             sync_stream(H, PM, rid, rw)              # durable before any row is marked applied
+            lst.finish_many([f"r{pr}" for pr in pending])
             for pr in pending:
-                lst.finish(f"r{pr}"); (jdir / f"r{pr:05d}.npz").unlink()
+                (jdir / f"r{pr:05d}.npz").unlink()
             pending = {}
             el = time.time() - t_start
             env.log(f"L{L}: {len(covered)}/{len(C.rows)} rows, {n_done / max(el, 1e-9):.0f} tok/s, "
                     f"cuda peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB", STAGE)
+    jw.close()
     finalize_layer(L, st, C)
+
+
+class JournalWriter:
+    """One background thread that writes row journals (savez to .tmp, fsync, rename) in order while
+    the GPU computes the next rows. drain() blocks until every queued journal is durable and re-raises
+    a writer error, so the crash-safety order is unchanged: journal durable -> accumulator checkpoint
+    -> apply to the stream -> mark applied. The payload arrays are the ones held for the RAM apply,
+    so the queue costs no extra memory."""
+
+    def __init__(self):
+        import queue
+        import threading
+        self.q, self.err = queue.Queue(), None
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def _run(self):
+        while True:
+            item = self.q.get()
+            try:
+                if item is None:
+                    return
+                if self.err is None:
+                    jf, payload = item
+                    with open(jf.with_suffix(".tmp"), "wb") as fh:
+                        np.savez(fh, **payload)
+                        fh.flush(); os.fsync(fh.fileno())
+                    os.replace(jf.with_suffix(".tmp"), jf)
+            except BaseException as e:      # surfaced by drain(); later items are skipped
+                self.err = e
+            finally:
+                self.q.task_done()
+
+    def put(self, jf, payload):
+        if self.err is not None:
+            raise RuntimeError("journal writer failed") from self.err
+        self.q.put((jf, payload))
+
+    def drain(self):
+        self.q.join()
+        if self.err is not None:
+            raise RuntimeError("journal writer failed") from self.err
+
+    def close(self):
+        self.drain()
+        self.q.put(None)
+        self.t.join()
 
 
 def run_engram(blk, x, L, s, image_mask, chunk):

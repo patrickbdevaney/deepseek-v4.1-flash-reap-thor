@@ -77,6 +77,14 @@ class Ledger:
     def finish(self, unit: str, **rec) -> None:
         self.mark(unit, done=True, **rec)
 
+    def finish_many(self, units, **rec) -> None:
+        """finish() for several units with ONE write (s03 marked 8 rows per checkpoint, one
+        atomic_json each, ~10% of a layer unit, 2026-10-19)."""
+        ts = now()
+        for u in units:
+            self.data[u] = {**self.data.get(u, {}), **rec, "done": True, "ts": ts}
+        atomic_json(self.path, self.data)
+
 
 def mem_available_gib() -> float:
     with open("/proc/meminfo") as fh:

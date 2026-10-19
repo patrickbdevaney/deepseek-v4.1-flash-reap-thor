@@ -87,9 +87,20 @@ def _expert_parts(expert, x, w, act_dtype):
     return mid, expert.w2(mid)
 
 
-def instrument_moe(M, stats_of: dict) -> None:
+def instrument_moe(M, stats_of: dict, group_rows: int = 4096) -> None:
     """Replace M.MoE.forward. `stats_of[id(moe)]` -> FFNStats for MoEs being measured; others
-    run the plain reference arithmetic (same code path, no statistics)."""
+    run the plain reference arithmetic (same code path, no statistics).
+
+    The expert loop is the reference's, call for call (same _expert_parts, same `y[idx] += out`
+    order), so the forward output is bit-identical with or without statistics. The statistics are
+    NOT taken per expert: the per-expert version issued ~25 small kernels and a host sync
+    (`keep.any()`) for each of 384 experts and held a layer unit to ~1.6k tok/s against ~7.6k
+    uninstrumented (2026-10-19). Instead each expert's (tokens, slots, gates, w2 input, output)
+    is queued and the queue is reduced in batches of ~`group_rows` assignments with a few
+    index_add_ / scatter_reduce_ ops. Held-out and pad tokens enter with weight 0 instead of being
+    filtered out, so there is no host sync; every value added is the one the per-expert version
+    added (x * 1.0 and x + 0.0 are exact), sums accumulate in float64.
+    """
 
     def forward(self, x, image_mask=None):
         shape = x.size()
@@ -106,7 +117,7 @@ def instrument_moe(M, stats_of: dict) -> None:
             st.cursor += n
             assert valid.numel() == n, "token count out of step with the row's valid mask"
             S_buf = torch.zeros_like(weights, dtype=torch.float32)
-            T = st.t
+            queue, queued = [], 0
         for i in range(self.experts_start_idx, self.experts_end_idx):
             if counts[i] == 0:
                 continue
@@ -117,36 +128,21 @@ def instrument_moe(M, stats_of: dict) -> None:
             y[idx] += out
             if st is None:
                 continue
-            with torch.no_grad():
-                keep = valid[idx]
-                if not bool(keep.any()):
-                    continue
-                o, g, b = out[keep].float(), gi[keep, 0].float(), bucket[idx[keep]]
-                xk, mk = xi[keep].float(), mid[keep].float()
-                gn = o.norm(dim=-1)                       # g * ||f||
-                n = gn / g.clamp_min(1e-20)               # ||f||
-                S_buf[idx[keep], top[keep]] = gn
-                for name, v in (("sum", gn), ("sq", gn * gn), ("nrm", n), ("nsq", n * n), ("gat", g), ("gsq", g * g),
-                                ("cnt", torch.ones_like(gn))):
-                    T[name][:, i].index_add_(0, b, v.double())
-                lg = torch.log10(gn.clamp_min(1e-12))
-                bins = ((lg - HIST_LO) / (HIST_HI - HIST_LO) * HIST_BINS).clamp_(0, HIST_BINS - 1).long()
-                T["hist"][i].scatter_add_(0, bins, torch.ones_like(bins))
-                T["osum"][i] += o.sum(0).double()
-                T["gfmax"][i] = torch.maximum(T["gfmax"][i], _amax(o))
-                T["fmax"][i] = torch.maximum(T["fmax"][i], (o.abs().amax(-1) / g.clamp_min(1e-20)).max().double())
-                T["amax_in"][i] = torch.maximum(T["amax_in"][i], _amax(xk))
-                T["amax_mid"][i] = torch.maximum(T["amax_mid"][i], _amax(mk))
-                T["x2_in"][i] += (xk * xk).sum(0).double()
-                T["x2_mid"][i] += (mk * mk).sum(0).double()
-                T["n_tok"][i] += xk.size(0)
+            queue.append((i, idx, top, gi, mid, out))
+            queued += counts[i]
+            if queued >= group_rows:
+                _reduce_stats(st, x, valid, bucket, S_buf, queue)
+                queue, queued = [], 0
         if st is not None:
+            if queue:
+                _reduce_stats(st, x, valid, bucket, S_buf, queue)
             with torch.no_grad():
                 st.F.update(0, indices[valid], S_buf[valid])
         sh = self.shared_experts
         mid, out = _expert_parts(sh, x, None, x.dtype)
         y += out
         if st is not None:
+            T = st.t
             with torch.no_grad():
                 xs, ms = x[valid].float(), mid[valid].float()
                 T["amax_in_sh"][0] = torch.maximum(T["amax_in_sh"][0], _amax(xs))
@@ -157,6 +153,43 @@ def instrument_moe(M, stats_of: dict) -> None:
         return y.type_as(x).view(shape)
 
     M.MoE.forward = forward
+
+
+@torch.no_grad()
+def _reduce_stats(st, x, valid, bucket, S_buf, queue) -> None:
+    """Batched form of the per-expert statistics for the queued experts (see instrument_moe)."""
+    T = st.t
+    E = T["cnt"].size(1)
+    dev = x.device
+    e = torch.cat([torch.full((q[1].numel(),), q[0], dtype=torch.long, device=dev) for q in queue])
+    t = torch.cat([q[1] for q in queue])
+    top = torch.cat([q[2] for q in queue])
+    g = torch.cat([q[3][:, 0] for q in queue]).float()
+    o = torch.cat([q[5] for q in queue]).float()
+    mk = torch.cat([q[4] for q in queue]).float()
+    vf = valid[t].float()
+    b = bucket[t]
+    gn = o.norm(dim=-1)                                   # g * ||f||
+    nrm = gn / g.clamp_min(1e-20)                         # ||f||
+    S_buf[t, top] = gn * vf
+    lin = b * E + e
+    for name, v in (("sum", gn), ("sq", gn * gn), ("nrm", nrm), ("nsq", nrm * nrm), ("gat", g), ("gsq", g * g),
+                    ("cnt", torch.ones_like(gn))):
+        T[name].view(-1).index_add_(0, lin, (v * vf).double())
+    lg = torch.log10(gn.clamp_min(1e-12))
+    bins = ((lg - HIST_LO) / (HIST_HI - HIST_LO) * HIST_BINS).clamp_(0, HIST_BINS - 1).long()
+    T["hist"].view(-1).index_add_(0, e * HIST_BINS + bins, vf.long())
+    T["osum"].index_add_(0, e, (o * vf[:, None]).double())
+    oam = o.abs().amax(-1)
+    T["gfmax"].scatter_reduce_(0, e, (oam * vf).double(), "amax", include_self=True)
+    T["fmax"].scatter_reduce_(0, e, (oam / g.clamp_min(1e-20) * vf).double(), "amax", include_self=True)
+    del o
+    xk = x[t].float()
+    T["amax_in"].scatter_reduce_(0, e, (xk.abs().amax(-1) * vf).double(), "amax", include_self=True)
+    T["amax_mid"].scatter_reduce_(0, e, (mk.abs().amax(-1) * vf).double(), "amax", include_self=True)
+    T["x2_in"].index_add_(0, e, (xk * xk * vf[:, None]).double())
+    T["x2_mid"].index_add_(0, e, (mk * mk * vf[:, None]).double())
+    T["n_tok"].index_add_(0, e, vf.double())
 
 
 def pack_bits(m: torch.Tensor) -> torch.Tensor:
