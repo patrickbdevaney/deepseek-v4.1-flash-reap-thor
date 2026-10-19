@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+ops/logs/*
+!ops/logs/.gitkeep
