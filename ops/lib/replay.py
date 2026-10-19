@@ -262,17 +262,26 @@ def thor_experts(M, args, build_dir: Path, L: int, keep_ids: list[int], expect_s
     W = {}
     for p in TF.PROJ:
         qt = b.m["tensors"].get(TF.expert_name(L, p, "qweight"))
-        if qt is not None:
+        if qt is not None and qt["qtype"] in ("KT2", "KT3"):
+            from . import kt
+            sg = rd.get(TF.expert_name(L, "w2" if p == "w2" else "w13", "rht_sign"))
+            W[p] = (qt["qtype"], rd.get(TF.expert_name(L, p, "qweight")), rd.get(TF.expert_name(L, p, "kt_scale")),
+                    kt.unpack_signs(sg, dims[p][1]))
+        elif qt is not None:
             arr = rd.get(TF.expert_name(L, p, "qweight"))
-            W[p] = (qt["qtype"], arr, None)
+            W[p] = (qt["qtype"], arr, None, None)
         else:
-            W[p] = ("MXFP4_SRC", rd.get(TF.expert_name(L, p, "weight")), rd.get(TF.expert_name(L, p, "scale")))
+            W[p] = ("MXFP4_SRC", rd.get(TF.expert_name(L, p, "weight")), rd.get(TF.expert_name(L, p, "scale")), None)
     out = {}
     for j, orig in enumerate(sorted(keep_ids)):
         ws = []
         for p in TF.PROJ:
-            qt, arr, sc = W[p]
+            qt, arr, sc, sg = W[p]
             o, i = dims[p]
+            if sg is not None:                       # trellis: GPU decode + un-rotation, bit-exact with numpy
+                from . import kt
+                ws.append(kt.dequant_t(qt, arr[j], sc[j], i, sg).to(torch.bfloat16))
+                continue
             ws.append(torch.from_numpy(TF.dequant_stack(qt, arr, o, i, sc, idx=j)).to("cuda", torch.bfloat16))
         out[orig] = FQExpert(ws[0], ws[1], ws[2], args.swiglu_limit)
     return out

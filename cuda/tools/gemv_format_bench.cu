@@ -142,8 +142,8 @@ int main(int argc, char** argv) {
         run("Q2_K", 84.0 / 256, [](uint8_t* p, int N, int K) { DecKQ<2> d; d.W0 = d.W1 = p; d.K = K; d.split = 1 << 30; return d; }, M);
         run("LUT-3 (prop.)", 3.0 / 8 + 1.0 / 32, [](uint8_t* p, int N, int K) { DecLUT<3> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 3 / 8; d.K = K; d.split = 1 << 30; d.lut0 = d.lut1 = 0.01f; return d; }, M);
         run("LUT-2 (prop.)", 2.0 / 8 + 1.0 / 32, [](uint8_t* p, int N, int K) { DecLUT<2> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 2 / 8; d.K = K; d.split = 1 << 30; d.lut0 = d.lut1 = 0.01f; return d; }, M);
-        run("KT-3 (prop.)", 3.0 / 8 + 2.0 / 128, [](uint8_t* p, int N, int K) { DecKT<3> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 3 / 8; d.K = K; d.split = 1 << 30; return d; }, M);
-        run("KT-2 (prop.)", 2.0 / 8 + 2.0 / 128, [](uint8_t* p, int N, int K) { DecKT<2> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 2 / 8; d.K = K; d.split = 1 << 30; return d; }, M);
+        run("KT3", 3.0 / 8 + 2.0 / 128, [](uint8_t* p, int N, int K) { DecKT<3> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 3 / 8; d.K = K; d.split = 1 << 30; return d; }, M);
+        run("KT2", 2.0 / 8 + 2.0 / 128, [](uint8_t* p, int N, int K) { DecKT<2> d; d.W0 = d.W1 = p; d.S0 = d.S1 = p + (size_t)N * K * 2 / 8; d.K = K; d.split = 1 << 30; return d; }, M);
         printf("\n");
     }
     if (jf) { fprintf(jf, "\n]}\n"); fclose(jf); }

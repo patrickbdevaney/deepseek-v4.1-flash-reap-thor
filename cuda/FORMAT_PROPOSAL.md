@@ -53,7 +53,15 @@ The record is followed by one E4M3 scale per chunk (`[out, in/32]`), and one fp1
 
 **Fit for the 192-expert arm.** LUT3 on gate/up plus LUT4 on down is about 3.4 bpw, with a learned codebook instead of a uniform grid. The 4-bit codebook replaces Q4_K's 0.5 bpw of sub-block metadata.
 
-## 3. Proposed qtype `KT2` / `KT3`: QTIP-style trellis ("3INST")
+## 3. `KT2` / `KT3`: QTIP-style trellis ("3INST"), now thor-v1 qtypes
+
+**Status (2026-10-19).** KT2 and KT3 are defined in `ops/lib/thor_format.md` → "Trellis experts". They differ from this proposal in three ways:
+
+- **Window.** The window is **12 bits**, not 16. That gives the same decode cost, and the encoder's 4096 states fit in shared memory. On unit Gaussians the measured MSE is 0.069 / 0.0186 against about 0.063 / 0.016 at L=16.
+- **Rotation.** A blockwise RHT is added on the input dimension. The server applies it to the activations (`k_rht_rows`).
+- **Encoder.** The encoder exists: `ops/lib/kt.py` is the numpy oracle and LDLQ driver, and `kernels/v41/kt_viterbi.cu` is the GPU Viterbi.
+
+The loader accepts KT2/KT3. `s07 thor-trellis` builds the pre-registered sub-arm; the s10 `trellis` panel decides whether it ships, on paired KL and top-1 against the K-quant build at matched bytes plus a decode-time bound from `gemv_format_bench`. The text below is the original proposal.
 
 **Layout.**
 

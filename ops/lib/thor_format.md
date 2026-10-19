@@ -74,7 +74,7 @@ Each layer and projection is **stacked** into one tensor.
 
 The layouts are verified against llama.cpp's `gguf-py` `dequantize_blocks` in `ops/tests/test_post.py`. The CUDA server can port llama.cpp's MIT `dequantize_q*_K` / `vec_dot_q*_K` for exactly these bytes. **The s09 GGUF writer copies them verbatim:** a GGUF `ffn_{gate,up,down}_exps` tensor with ne = `[in, out, n]` has the same byte order as `[n, out, row_bytes]`.
 
-Q5_K, Q6_K and the IQ / trellis types are reserved. s07 v1 does not produce them, and a reader must refuse an unknown qtype.
+Q5_K, Q6_K and the IQ types are reserved. s07 v1 does not produce them, and a reader must refuse an unknown qtype. The trellis types KT2 / KT3 are defined below; only the `thor-trellis` sub-arm produces them.
 
 **Bit-exact MXFP4 (arm B):** `qtype = "MXFP4_SRC"`.
 
@@ -84,6 +84,27 @@ Q5_K, Q6_K and the IQ / trellis types are reserved. s07 v1 does not produce them
 | `layers.L.ffn.experts.wX.scale` | F8_E8M0 | `[n, out, in/32]`, value 2^(e−127) |
 
 This is the source checkpoint's own layout, so the CUDA server's existing hardware FP4 GEMV consumes it unchanged. ggml's `block_mxfp4` stores the same codes and exponent byte in a different nibble order: element i is the low nibble and element i+16 the high nibble of byte i, within each 32-block, with the `e` byte first. The s09 writer reorders losslessly with `ggml_quants.src_to_ggml_mxfp4`. The low-nibble-first assumption about the source is checked by s01 against the TileLang kernel.
+
+### Trellis experts (KT2 / KT3, arm A sub-arm `A<n>kt`)
+
+Written by `s07_quant.py thor-trellis` into `$V41_WORK/thor/A<n>kt`. It is adopted for release only through the s10 `trellis` panel (`s10_gates.json` → `trellis`). **No ggml type carries these bytes.** A KT build is CUDA-server-only, and the GGUF ladder is unaffected because s09 quantizes from the MXFP4 master.
+
+| tensor | dtype | stored shape |
+|---|---|---|
+| `layers.L.ffn.experts.wX.qweight` | U8 | `[n, out, in/128 × 16·b]` |
+| `layers.L.ffn.experts.wX.kt_scale` | F16 | `[n, out, in/128]` |
+| `layers.L.ffn.experts.w13.rht_sign` | U8 | `[DIM/8]`, shared by w1 and w3 |
+| `layers.L.ffn.experts.w2.rht_sign` | U8 | `[INTER/8]` |
+
+`b` is 2 for KT2 (2.125 bpw with scales) and 3 for KT3 (3.125 bpw). `w1`/`w3` share a qtype, and `w2` may differ, as for the K-quants.
+
+**Rotation.** Logical weight rows are rotated along the input dimension: `w' = R w`, with `R = blockdiag(H₂₅₆ · diag(sign)) / 16`, where `H₂₅₆` is the Sylvester Hadamard matrix. Bit k of byte j of `rht_sign` is 1 iff element 8j+k is negative. Consumers either rotate the activations once per pass (`x' = R x`, so `W' x' = W x`; the CUDA server's `k_rht_rows`) or un-rotate the decoded weights (`w = Rᵀ w'`; `kt.dequant`). The reference butterfly order is `ops/lib/kt.py::rht_rows`: stages h = 1, 2, …, 128, with pair (j, j+h) → (a+b, a−b), then ×1/16.
+
+**Blocks.** A rotated row is cut into 128-weight blocks. Each block is a circular stream of 128·b bits stored as 4·b little-endian u32 words, in which stream bit k is bit k%32 of word k/32. Weight i's code is the **12-bit window** starting at stream bit i·b (mod 128·b).
+
+**Value.** For window `s`, compute `x = s·89226354 + 64248484 (mod 2³²)` and `m = (x & 0x8fff8fff) ^ 0x3b603b60`. The value is `fp32(fp16(m & 0xffff)) + fp32(fp16(m >> 16))` (QTIP's 3INST codebook) times `fp32(kt_scale)`, with separate roundings. The decoders `DecKT<2|3>` in `cuda/kernels/v41/v41_gemv.cuh` are held bit-exact to `kt.dequant` on the host (`gate_kt_host`) and on the device (`gate_v41_units`).
+
+**Encoder.** Block LDLQ over 128-column groups of the rotated weights, with the rotated Hessian `R H Rᵀ` from the same calibration tokens GPTQ uses. Each block is encoded by a tail-biting Viterbi over the 4096 window states (`cuda/kernels/v41/kt_viterbi.cu`, states identical to `kt.viterbi`), then the per-block scale is refit by weighted least squares and stored as fp16. `thor.json["kt"]` records the parameters.
 
 ### Routing semantics consumers must reproduce
 

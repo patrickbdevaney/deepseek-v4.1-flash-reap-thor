@@ -115,3 +115,35 @@ def arm_decision(cmp_A_vs_B: dict, g: dict) -> dict:
     else:
         win, why = "B", "exact tie: B (bit-exact, proven hardware FP4 GEMV)"
     return {"winner": win, "why": why, "d_kl32": d, "top1": t}
+
+
+def gemv_time(alloc: dict, bench: dict, M: int = 1) -> float:
+    """Modelled routed-expert GEMV time per token (us, relative): for every layer, the gate|up pass
+    in its w13 format plus the down pass in its w2 format, from s08 gemv_bench rows at M. Both builds
+    run the same experts per token, so the ratio of two builds is the ratio of their expert decode time."""
+    us = {(r["format"], r["shape"]): r["us"] for r in bench["rows"] if r["M"] == M}
+    t = 0.0
+    for L, a in alloc.items():
+        t += us[(a["w13"], "gate|up")] + us[(a["w2"], "down")]
+    return t
+
+
+def trellis(cmp_kt_vs_kq: dict, g: dict, *, kt_bytes: int, kq_bytes: int, t_kt: float | None, t_kq: float | None) -> dict:
+    t = g["trellis"]
+    d, tp = cmp_kt_vs_kq["d_kl32"], cmp_kt_vs_kq["top1"]
+    why = []
+    if not d["hi"] < t["max_d_kl32_hi"]:
+        why.append(f"d_kl32 CI hi {d['hi']:+.5f} (must be < {t['max_d_kl32_hi']})")
+    if not tp["z"] > t["min_top1_z"]:
+        why.append(f"top-1 McNemar z {tp['z']:+.2f} (must be > {t['min_top1_z']})")
+    if kt_bytes > kq_bytes:
+        why.append(f"KT expert bytes {kt_bytes} > K-quant {kq_bytes}: not a matched-bytes comparison")
+    ratio = None
+    if t_kt is None or t_kq is None:
+        why.append("no s08 gemv_bench result: decode speed unproven")
+    else:
+        ratio = t_kt / t_kq
+        if ratio > t["max_gemv_time_ratio"]:
+            why.append(f"modelled expert GEMV time {ratio:.3f}x the K-quant build's (max {t['max_gemv_time_ratio']})")
+    return {"adopt": not why, "why": why, "d_kl32": d, "top1": tp, "gemv_time_ratio": ratio,
+            "kt_expert_bytes": kt_bytes, "kq_expert_bytes": kq_bytes}

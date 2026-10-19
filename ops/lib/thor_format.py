@@ -85,9 +85,16 @@ class Build:
 
 
 def dequant_stack(qtype: str, arr: np.ndarray, out_f: int, in_f: int, scale: np.ndarray | None = None,
-                  idx: int | None = None) -> np.ndarray:
-    """One expert (idx) or all of a stacked tensor -> float32 [.., out, in]."""
+                  idx: int | None = None, sign: np.ndarray | None = None) -> np.ndarray:
+    """One expert (idx) or all of a stacked tensor -> float32 [.., out, in]. KT2/KT3 take the
+    `kt_scale` tensor as `scale` and the pass's packed `rht_sign` as `sign` (un-rotated output)."""
     a = arr if idx is None else arr[idx]
+    if qtype in ("KT2", "KT3"):
+        from . import kt
+        if scale is None or sign is None:
+            raise ValueError(f"{qtype} needs its kt_scale and rht_sign tensors")
+        s = scale if idx is None else scale[idx]
+        return kt.dequant(qtype, np.asarray(a), np.asarray(s), in_f, kt.unpack_signs(sign, in_f)).reshape(*a.shape[:-1], in_f)
     if qtype == "MXFP4_SRC":
         s = scale if idx is None else scale[idx]
         lead = a.shape[:-2]

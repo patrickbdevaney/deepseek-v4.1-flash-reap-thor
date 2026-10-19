@@ -19,6 +19,12 @@ low-bit intermediate nearly doubled KL).
            advances. Dense tensors pass through bit-exact. Output: the Thor build directory
            (ops/lib/thor_format.md), consumed by the s08 CUDA server and the s09 GGUF writer.
   thor-b   CPU. Arm B's Thor build: 128 kept experts copied bit-exact as MXFP4_SRC, dense the same.
+  thor-trellis  (b') pre-registered sub-arm of A (s10 `trellis` panel decides): the same keep-set,
+           heal and two-phase GPU units as `thor`, but experts in the KT2/KT3 bitshift-trellis format
+           (ops/lib/kt.py: RHT + block LDLQ + tail-biting Viterbi on the GPU, cuda/build/libkt_viterbi.so)
+           under a byte budget equal to the finished K-quant build's expert bytes. Allocation first
+           (CPU, sampled rows, alloc_kt.json), then the build in $V41_WORK/thor/A<n>kt. CUDA-server
+           only: no ggml type carries it (s09 quantizes from the master, so the GGUF ladder is unaffected).
   overlay  (c) CPU. NVFP4 dense overlay (FP8 Linear weights -> NVFP4 RTN) in its own directory,
            adopted only through the s10 overlay gate.
 
@@ -40,7 +46,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ops import corpus_spec as spec  # noqa: E402
 from ops.lib import env, ggml_quants as G, keepset, orchestrate, rowsets, st_io  # noqa: E402
-from ops.lib import thor_format as TF  # noqa: E402
+from ops.lib import kt as KT, thor_format as TF  # noqa: E402
 
 STAGE = "s07"
 OUT = env.WORK / "s07"
@@ -50,6 +56,7 @@ CFG = json.load(open(env.INFERENCE / "config.json"))
 N_LAYERS, E, DIM, INTER = CFG["n_layers"], CFG["n_routed_experts"], CFG["dim"], CFG["moe_inter_dim"]
 PROTECTED = sorted({0, 1, *CFG["engram_layer_ids"], *CFG["kv_source_layers"], *CFG["dspark_target_layer_ids"]})
 LADDER = ["Q2_K", "Q3_K", "Q4_K"]
+KT_LADDER = ["KT2", "KT3"]
 EXPERT = re.compile(r"^layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.(weight|scale)$")
 
 
@@ -241,16 +248,26 @@ def layer_errors(L: int, keep: list[int], n_sample: int, seed: int) -> dict:
         {"mass": float(b3["sum"].sum(0)[keep].sum()), "sampled": [int(keep[j]) for j in pick]}
 
 
+def row_bytes(t: str, n_cols: int) -> int:
+    """stored bytes of one expert row, codes plus any per-block scale tensor."""
+    if t in KT.QTYPES:
+        return KT.row_bytes(t, n_cols) + KT.scale_bytes(n_cols)
+    return G.row_bytes(t, n_cols)
+
+
 def expert_bytes(t: str, part: str, n_keep: int) -> int:
     if part == "w13":
-        return 2 * n_keep * INTER * G.row_bytes(t, DIM)
-    return n_keep * DIM * G.row_bytes(t, INTER)
+        return 2 * n_keep * INTER * row_bytes(t, DIM) + (DIM // 8 if t in KT.QTYPES else 0)
+    return n_keep * DIM * row_bytes(t, INTER) + (INTER // 8 if t in KT.QTYPES else 0)
 
 
-def allocate(errs: dict, n_keep: int, budget: int, protected: list[int]) -> dict:
-    """Greedy: start at the ladder bottom (protected layers at Q3_K), then repeatedly take the upgrade
-    with the largest drop in mass-weighted error per extra byte that still fits the budget."""
-    alloc = {L: {"w13": "Q3_K" if L in protected else "Q2_K", "w2": "Q3_K" if L in protected else "Q2_K"} for L in errs}
+def allocate(errs: dict, n_keep: int, budget: int, protected: list[int], ladder: list[str] = LADDER) -> dict:
+    """Greedy: start at the ladder bottom (protected layers one rung up: Q3_K, or KT3 on the trellis
+    ladder), then repeatedly take the upgrade with the largest drop in mass-weighted error per extra
+    byte that still fits the budget."""
+    LADDER = ladder
+    lo, pr = LADDER[0], LADDER[1]
+    alloc = {L: {"w13": pr if L in protected else lo, "w2": pr if L in protected else lo} for L in errs}
     cost = lambda L, part, t: errs[L]["mass"] * errs[L][part][t]
     used = sum(expert_bytes(alloc[L][p], p, n_keep) for L in alloc for p in ("w13", "w2"))
     if used > budget:
@@ -275,7 +292,7 @@ def allocate(errs: dict, n_keep: int, budget: int, protected: list[int]) -> dict
         alloc[L][part] = t
         used += db
     return {"alloc": {str(L): v for L, v in alloc.items()}, "bytes": used, "budget": budget,
-            "avg_bpw": used * 8 / (n_keep * 3 * DIM * INTER * len(alloc))}
+            "avg_bpw": used * 8 / (n_keep * 3 * DIM * INTER * len(alloc)), "ladder": list(LADDER)}
 
 
 def cmd_plan(a):
@@ -298,6 +315,73 @@ def cmd_plan(a):
                 "budget_rule": f"arm B experts: {nb} x MXFP4 (4.25 bpw) = matched resident expert bytes"})
     env.atomic_json(OUT / "alloc.json", res)
     env.log(f"alloc: {res['avg_bpw']:.3f} bpw, {res['bytes'] / 2**30:.2f} / {budget / 2**30:.2f} GiB", STAGE)
+
+
+# ----------------------------------------------------------------------------- plan (trellis ladder)
+def kt_signs(L: int) -> dict[str, np.ndarray]:
+    """The layer's two RHT sign vectors: w13 (input DIM, shared by w1 and w3) and w2 (input INTER)."""
+    return {"w13": KT.signs(f"L{L}.w13", DIM), "w2": KT.signs(f"L{L}.w2", INTER)}
+
+
+def layer_errors_kt(L: int, keep: list[int], n_sample: int, seed: int, rows: int) -> dict:
+    """imatrix-weighted relative error of KT2/KT3 (no-feedback encode, numpy Viterbi) on `rows`
+    sampled rows of the same sampled experts `layer_errors` uses. The rotated-domain column weight is
+    the 256-block mean of the imatrix: the diagonal of R diag(A) R^T for a blockwise Hadamard."""
+    rd = src_reader(L)
+    b3 = np.load(env.WORK / "s03" / "bank" / f"L{L}.npz")
+    sal = b3["sum"].sum(0)[keep]
+    order = np.argsort(-sal)
+    rng = np.random.default_rng(seed + L)
+    pick = sorted(set(order[: n_sample // 2].tolist()) | set(rng.choice(len(keep), n_sample - n_sample // 2, replace=False).tolist()))
+    a_in, a_mid = _importance(L, keep)
+    sg = kt_signs(L)
+    err = {"w13": {t: [] for t in KT_LADDER}, "w2": {t: [] for t in KT_LADDER}}
+    for j in pick:
+        e = keep[j]
+        for part, projs, A in (("w13", ("w1", "w3"), a_in[j]), ("w2", ("w2",), a_mid[j])):
+            wt = np.repeat(A.reshape(-1, KT.RHT).mean(1), KT.RHT).astype(np.float32)
+            for p in projs:
+                W = G.src_dequant(*expert_src(rd, L, e, p))
+                W = W[np.sort(rng.choice(W.shape[0], min(rows, W.shape[0]), replace=False))]
+                den = float((W * W * A).sum())
+                for t in KT_LADDER:
+                    Wq = KT.dequant(t, *KT.quantize_rows(W, t, sg[part], wt), W.shape[1], sg[part])
+                    err[part][t].append(float(((W - Wq) ** 2 * A).sum()) / max(den, 1e-30))
+    return {part: {t: float(np.mean(v)) for t, v in d.items()} for part, d in err.items()} | \
+        {"mass": float(b3["sum"].sum(0)[keep].sum()), "sampled": [int(keep[j]) for j in pick], "rows": rows}
+
+
+def plan_kt(a, keep: dict, fp: str, n_keep: int) -> dict:
+    """alloc_kt.json: KT2/KT3 per (layer, pass) under a budget equal to the K-quant build's expert bytes."""
+    p = OUT / "alloc_kt.json"
+    if p.exists():
+        r = json.load(open(p))
+        keepset.require(r["keepset_sha256"], fp, where=str(p))
+        return r
+    if a.budget_bytes:
+        budget, rule = a.budget_bytes, "--budget-bytes"
+    else:
+        tj = json.load(open(build_dir(n_keep, "A") / "thor.json"))
+        if not tj.get("complete"):
+            raise SystemExit("thor-trellis matches the K-quant build's bytes: run `s07 thor` first")
+        keepset.require(tj["keepset_sha256"], fp, where="thor/A thor.json")
+        budget, rule = int(tj["expert_bytes"]), f"<= the K-quant Thor build's expert bytes ({tj['expert_bpw']:.4f} bpw)"
+    led = env.Ledger(env.LOGS / "s07_plan_kt_ledger.json")
+    errs = {}
+    for L in range(N_LAYERS):
+        u = f"L{L}"
+        if not led.done(u):
+            led.finish(u, keepset=fp, **layer_errors_kt(L, keep[str(L)], a.sample, 0, a.kt_rows))
+        r = led.get(u)
+        keepset.require(r["keepset"], fp, where="s07 plan-kt ledger")
+        errs[L] = r
+        env.log(f"L{L}: KT2 w13 {r['w13']['KT2']:.4f} w2 {r['w2']['KT2']:.4f}", STAGE)
+    res = allocate(errs, n_keep, budget, PROTECTED, ladder=KT_LADDER)
+    res.update({"keepset_sha256": fp, "protected": PROTECTED, "errors": {str(k): v for k, v in errs.items()},
+                "budget_rule": rule})
+    env.atomic_json(p, res)
+    env.log(f"alloc_kt: {res['avg_bpw']:.3f} bpw, {res['bytes'] / 2**30:.2f} / {budget / 2**30:.2f} GiB", STAGE)
+    return res
 
 
 # ----------------------------------------------------------------------------- shared Thor pieces
@@ -362,11 +446,29 @@ def build_dir(n_keep: int, arm: str) -> Path:
     return THOR / f"{arm}{n_keep}"
 
 
+def _quantize(W, H, t: str, a, sgn):
+    """-> (stored bytes uint8 [B, R, row_bytes], fp16 kt_scale [B, R, in/128] or None)."""
+    from ops.lib import gptq
+    if t in KT.QTYPES:
+        return KT.quantize_ldlq(W, H, t, sgn, damp=a.damp)
+    codes, params = gptq.quantize(W, H, t, damp=a.damp)
+    return gptq.pack(codes, params), None
+
+
+def _dequant_bf16(t: str, q, sc, in_f: int, sgn):
+    """the logical (un-rotated) weights the next phase runs with, bf16 on the GPU."""
+    import torch
+    if t in KT.QTYPES:
+        return KT.dequant_t(t, q, sc, in_f, sgn).to(torch.bfloat16)
+    return torch.from_numpy(G.dequant(t, q)).to("cuda", torch.bfloat16)
+
+
 def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Build):
     """decide() of the two-phase unit: Hessians from the cached FFN inputs, GPTQ w1|w3, then w2 on
-    the quantized w1|w3 activations; write the layer file; return the quantized arm layer."""
+    the quantized w1|w3 activations; write the layer file; return the quantized arm layer. The same
+    unit builds the trellis arm when the allocation names KT qtypes (block LDLQ instead of GPTQ)."""
     import torch
-    from ops.lib import gptq, replay
+    from ops.lib import replay
     fname = TF.layer_file(L)
     if b.has(fname):
         return replay.ArmLayer(E, keep, 1.0, replay.thor_experts(M, args, b.root, L, keep, fp))
@@ -375,6 +477,7 @@ def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Buil
     keep_t = sorted(keep)
     n = len(keep_t)
     t13, t2 = alloc["w13"], alloc["w2"]
+    sg = kt_signs(L)
     b3 = np.load(env.WORK / "s03" / "bank" / f"L{L}.npz")
     g = blk.ffn.gate
 
@@ -385,8 +488,11 @@ def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Buil
         w, i = g(h, None if im is None else im.flatten())
         return h, w, i
 
-    q13 = np.empty((n, 2 * INTER, G.row_bytes(t13, DIM)), np.uint8)
-    q2 = np.empty((n, DIM, G.row_bytes(t2, INTER)), np.uint8)
+    rb = lambda t, c: KT.row_bytes(t, c) if t in KT.QTYPES else G.row_bytes(t, c)
+    q13 = np.empty((n, 2 * INTER, rb(t13, DIM)), np.uint8)
+    q2 = np.empty((n, DIM, rb(t2, INTER)), np.uint8)
+    s13 = np.empty((n, 2 * INTER, DIM // KT.T), np.float16) if t13 in KT.QTYPES else None
+    s2 = np.empty((n, DIM, INTER // KT.T), np.float16) if t2 in KT.QTYPES else None
     ntok = np.zeros(n, np.int64)
     for g0 in range(0, n, a.gptq_batch):
         grp = keep_t[g0:g0 + a.gptq_batch]
@@ -406,10 +512,11 @@ def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Buil
         W13 = torch.stack([torch.from_numpy(np.concatenate([G.src_dequant(*expert_src(rd, L, e, "w1")),
                                                             G.src_dequant(*expert_src(rd, L, e, "w3"))])) for e in grp]).cuda()
         Hin = _fallback_hessian(Hin, ntok[g0:g0 + B], b3["x2_in"][grp], b3["n_tok"][grp], a.min_tokens)
-        codes, params = gptq.quantize(W13, Hin, t13, damp=a.damp)
-        q13[g0:g0 + B] = gptq.pack(codes, params)
+        q13[g0:g0 + B], sc = _quantize(W13, Hin, t13, a, sg["w13"])
+        if s13 is not None:
+            s13[g0:g0 + B] = sc
         del Hin, W13
-        deq = torch.from_numpy(G.dequant(t13, q13[g0:g0 + B])).to("cuda", torch.bfloat16)      # [B, 2*INTER, DIM]
+        deq = _dequant_bf16(t13, q13[g0:g0 + B], None if s13 is None else s13[g0:g0 + B], DIM, sg["w13"])   # [B, 2*INTER, DIM]
         fq = {e: replay.FQExpert(deq[k, :INTER], None, deq[k, INTER:], args.swiglu_limit) for e, k in pos.items()}
         Hmid = torch.zeros(B, INTER, INTER, dtype=torch.float32, device="cuda")
         with torch.inference_mode():
@@ -423,8 +530,9 @@ def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Buil
                         Hmid[pos[e]] += mq.T @ mq
         W2 = torch.stack([torch.from_numpy(G.src_dequant(*expert_src(rd, L, e, "w2"))) for e in grp]).cuda() * float(gain)
         Hmid = _fallback_hessian(Hmid, ntok[g0:g0 + B], b3["x2_mid"][grp], b3["n_tok"][grp], a.min_tokens)
-        codes, params = gptq.quantize(W2, Hmid, t2, damp=a.damp)
-        q2[g0:g0 + B] = gptq.pack(codes, params)
+        q2[g0:g0 + B], sc = _quantize(W2, Hmid, t2, a, sg["w2"])
+        if s2 is not None:
+            s2[g0:g0 + B] = sc
         del Hmid, W2, deq, fq
         torch.cuda.empty_cache()
         env.log(f"L{L}: GPTQ experts {g0}..{g0 + B - 1} ({t13}/{t2})", STAGE)
@@ -432,6 +540,13 @@ def gptq_layer(M, blk, args, run, cache, L, keep, fp, alloc, gain, a, b: TF.Buil
     items += [{"name": TF.expert_name(L, "w1"), "dtype": "U8", "data": np.ascontiguousarray(q13[:, :INTER]), "qtype": t13, "shape": [n, INTER, DIM]},
               {"name": TF.expert_name(L, "w3"), "dtype": "U8", "data": np.ascontiguousarray(q13[:, INTER:]), "qtype": t13, "shape": [n, INTER, DIM]},
               {"name": TF.expert_name(L, "w2"), "dtype": "U8", "data": q2, "qtype": t2, "shape": [n, DIM, INTER]}]
+    if s13 is not None:
+        items += [{"name": TF.expert_name(L, "w1", "kt_scale"), "dtype": "F16", "data": np.ascontiguousarray(s13[:, :INTER]), "qtype": t13},
+                  {"name": TF.expert_name(L, "w3", "kt_scale"), "dtype": "F16", "data": np.ascontiguousarray(s13[:, INTER:]), "qtype": t13},
+                  {"name": TF.expert_name(L, "w13", "rht_sign"), "dtype": "U8", "data": KT.pack_signs(sg["w13"]), "qtype": t13}]
+    if s2 is not None:
+        items += [{"name": TF.expert_name(L, "w2", "kt_scale"), "dtype": "F16", "data": s2, "qtype": t2},
+                  {"name": TF.expert_name(L, "w2", "rht_sign"), "dtype": "U8", "data": KT.pack_signs(sg["w2"]), "qtype": t2}]
     b.write_file(fname, items, meta={"layer": str(L), "keepset_sha256": fp, "heal_gain_folded": str(gain),
                                      "calib_tokens_per_expert": json.dumps(ntok.tolist())})
     return replay.ArmLayer(E, keep, 1.0, replay.thor_experts(M, args, b.root, L, keep, fp))
@@ -465,53 +580,74 @@ def _fallback_hessian(H, ntok, x2_teacher, n_teacher, min_tokens):
     return H
 
 
-def cmd_thor(a):
+def _variant(trellis: bool) -> dict:
+    """the K-quant Thor A build and its pre-registered trellis sub-arm share every step but these."""
+    if trellis:
+        return {"suffix": "kt", "alloc": OUT / "alloc_kt.json", "replay": OUT / "thor_kt_replay", "stream": "thorAkt",
+                "folded": "w2 before LDLQ"}
+    return {"suffix": "", "alloc": OUT / "alloc.json", "replay": OUT / "thor_replay", "stream": "thorA",
+            "folded": "w2 before GPTQ"}
+
+
+def cmd_thor(a, trellis: bool = False):
     from ops.lib import replay
+    V = _variant(trellis)
     keep, fp = keepset.load(Path(a.keepset))
     n_keep = len(keep["0"])
-    alloc = json.load(open(OUT / "alloc.json"))
-    keepset.require(alloc["keepset_sha256"], fp, where="s07/alloc.json")
+    if trellis:
+        if not KT._LIB_PATH.exists():
+            raise SystemExit(f"{KT._LIB_PATH} missing: cuda/scripts/build_v41.sh libkt_viterbi")
+        plan_kt(a, keep, fp, n_keep)
+    alloc = json.load(open(V["alloc"]))
+    keepset.require(alloc["keepset_sha256"], fp, where=str(V["alloc"]))
     gains = heal_decision(fp)
-    b = TF.Build(build_dir(n_keep, "A"), create=True, keepset_sha256=fp, n_routed_experts=n_keep, arm="A",
-                 source_revision=env.REVISION, heal={"gains": gains, "folded_into": "w2 before GPTQ"},
-                 alloc=alloc["alloc"], protected=PROTECTED)
+    extra = {"kt": {"window_bits": KT.L, "block": KT.T, "rht_block": KT.RHT, "codebook": "3INST (QTIP)",
+                    "sign_rule": "sha256('v41-kt-rht/L<L>.<w13|w2>') seeds numpy default_rng; stored as rht_sign",
+                    "encoder": "block LDLQ + tail-biting Viterbi (ops/lib/kt.py)"}} if trellis else {}
+    b = TF.Build(build_dir(n_keep, "A" + V["suffix"]), create=True, keepset_sha256=fp, n_routed_experts=n_keep, arm="A",
+                 source_revision=env.REVISION, heal={"gains": gains, "folded_into": V["folded"]},
+                 alloc=alloc["alloc"], protected=PROTECTED, **extra)
     rows, man = rowsets.load_rows(CORPUS)
     ids = rowsets.subset(rowsets.split_rows(rows, man["spec_hash"], "calib"), a.tokens, spec.TOKEN_TARGET)
-    run = replay.prepare(OUT / "thor_replay", ids, [{"name": "thorA", "keep": keep}], man["spec_hash"])
+    run = replay.prepare(V["replay"], ids, [{"name": V["stream"], "keep": keep}], man["spec_hash"])
     me = Path(__file__)
     common = ["--keepset", a.keepset, "--kernels", a.kernels, "--token-chunk", str(a.token_chunk),
               "--gptq-batch", str(a.gptq_batch), "--damp", str(a.damp), "--min-tokens", str(a.min_tokens)]
+    if trellis:
+        common.append("--trellis")
     if not run.led.done("_embed"):
         orchestrate.run_unit(me, ["unit", "embed", *common], stage=STAGE, gpu=True, min_avail_gib=a.min_avail_gib)
     for L in range(N_LAYERS):
-        if not replay.Run(OUT / "thor_replay").led.done(f"thorA/L{L}"):
+        if not replay.Run(V["replay"]).led.done(f"{V['stream']}/L{L}"):
             orchestrate.run_unit(me, ["unit", "layer", "--layer", str(L), *common], stage=STAGE, gpu=True,
                                  min_avail_gib=a.min_avail_gib)
     write_globals(b)
     finish_build(b, n_keep)
-    run = replay.Run(OUT / "thor_replay")
-    replay.drop_streams(run, "thorA")
+    run = replay.Run(V["replay"])
+    replay.drop_streams(run, V["stream"])
     for p in ("h.npy", "pre_mix.npy"):
         (run.root / "_embed" / p).unlink(missing_ok=True)
-    env.log(f"Thor A{n_keep} complete: {b.m['expert_bpw']:.3f} expert bpw, {b.m['expert_bytes'] / 2**30:.2f} GiB experts", STAGE)
+    env.log(f"Thor A{n_keep}{V['suffix']} complete: {b.m['expert_bpw']:.3f} expert bpw, "
+            f"{b.m['expert_bytes'] / 2**30:.2f} GiB experts", STAGE)
 
 
 def unit(a):
     from ops.lib import replay
-    run = replay.Run(OUT / "thor_replay")
+    V = _variant(a.trellis)
+    run = replay.Run(V["replay"])
     if a.unit == "embed":
         return replay.unit_embed(run, a.kernels)
     keep, fp = keepset.load(Path(a.keepset))
     n_keep = len(keep["0"])
-    alloc = json.load(open(OUT / "alloc.json"))["alloc"][str(a.layer)]
+    alloc = json.load(open(V["alloc"]))["alloc"][str(a.layer)]
     gain = heal_decision(fp)[str(a.layer)]
-    b = TF.Build(build_dir(n_keep, "A"), keepset_sha256=fp, n_routed_experts=n_keep)
+    b = TF.Build(build_dir(n_keep, "A" + V["suffix"]), keepset_sha256=fp, n_routed_experts=n_keep)
     L = a.layer
 
     def decide(M, blk, args, run_, cache):
         return gptq_layer(M, blk, args, run_, cache, L, keep[str(L)], fp, alloc, gain, a, b)
 
-    replay.unit_layer_two_phase(run, L, a.kernels, a.token_chunk, "thorA", measure=lambda *x: None, decide=decide,
+    replay.unit_layer_two_phase(run, L, a.kernels, a.token_chunk, V["stream"], measure=lambda *x: None, decide=decide,
                                 cache_ffn_in=True)
 
 
@@ -570,7 +706,7 @@ def cmd_overlay(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["nvfp4", "plan", "thor", "thor-b", "overlay", "unit"])
+    ap.add_argument("cmd", choices=["nvfp4", "plan", "thor", "thor-b", "thor-trellis", "overlay", "unit"])
     ap.add_argument("unit", nargs="?", choices=["embed", "layer"])
     ap.add_argument("--layer", type=int)
     ap.add_argument("--keepset", default=str(env.WORK / "s04" / "keepset.json"))
@@ -583,6 +719,8 @@ def main():
     ap.add_argument("--damp", type=float, default=0.01)
     ap.add_argument("--min-tokens", type=int, default=256, help="fewer routed calibration tokens -> diagonal (imatrix) Hessian")
     ap.add_argument("--sample", type=int, default=4, help="experts per layer sampled by `plan`")
+    ap.add_argument("--kt-rows", type=int, default=16, help="rows per sampled projection in the trellis plan (numpy Viterbi)")
+    ap.add_argument("--trellis", action="store_true", help="(unit) build the KT trellis sub-arm")
     ap.add_argument("--budget-bytes", type=int)
     ap.add_argument("--min-avail-gib", type=float, default=100.0)
     a = ap.parse_args()
@@ -590,7 +728,7 @@ def main():
     if a.cmd == "thor-b" and a.keepset == str(env.WORK / "s04" / "keepset.json"):
         a.keepset = str(env.WORK / "s04" / "keepset_128.json")
     {"nvfp4": cmd_nvfp4, "plan": cmd_plan, "thor": cmd_thor, "thor-b": cmd_thor_b, "overlay": cmd_overlay,
-     "unit": unit}[a.cmd](a)
+     "thor-trellis": lambda x: cmd_thor(x, trellis=True), "unit": unit}[a.cmd](a)
 
 
 if __name__ == "__main__":

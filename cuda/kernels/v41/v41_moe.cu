@@ -188,6 +188,32 @@ template <int B> struct KTDec : DecKT<B> {
     }
 };
 
+// KT passes read rotated activations: out[r] = FWHT_256(deq(x[r]) * sign) / 16 in fp32, with the
+// butterfly order of ops/lib/kt.py::rht_rows (h = 1, 2, .., 128; pair (j, j+h) -> (a+b, a-b)), so
+// tests/gate_v41_units.cu can hold it bit-exact. One CTA per (256-block, row).
+__global__ void __launch_bounds__(256) k_rht_rows(float* __restrict__ out, XSrc X, const uint8_t* __restrict__ sign, int K) {
+    __shared__ float v[256];
+    const int r = blockIdx.y, t = threadIdx.x, k = blockIdx.x * 256 + t;
+    float x;
+    if (X.xf) x = X.xf[(size_t)r * X.ldx + k];
+    else x = __fmul_rn(e4m3f(X.xq[(size_t)r * X.ldx + k]), X.xs[(size_t)r * (X.ldx / 32) + k / 32]);
+    if ((sign[k >> 3] >> (k & 7)) & 1u) x = -x;
+    v[t] = x;
+    __syncthreads();
+    #pragma unroll
+    for (int h = 1; h < 256; h <<= 1) {
+        const float nv = (t & h) ? __fsub_rn(v[t - h], v[t]) : __fadd_rn(v[t], v[t + h]);
+        __syncthreads();
+        v[t] = nv;
+        __syncthreads();
+    }
+    out[(size_t)r * K + k] = __fmul_rn(v[t], 0.0625f);
+}
+void rht_rows(float* out, const float* x, const uint8_t* sign, int M, int K, cudaStream_t st) {
+    XSrc X; X.xf = x; X.ldx = K;
+    k_rht_rows<<<dim3(K / 256, M), 256, 0, st>>>(out, X, sign, K);
+}
+
 // combine: y[m] += sum over this token's slots in ascending expert order of down[pair]
 __global__ void k_combine(float* y, const float* down, const int* idx, const int* inv, int M, int topk, const float* gain) {
     size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; if (i >= (size_t)M * v41::DIM) return;
@@ -209,7 +235,8 @@ static size_t al(size_t b) { return (b + 255) & ~(size_t)255; }
 size_t moe_scratch_bytes(int M, int topk) {
     const size_t P = (size_t)M * topk;
     return al(P * sizeof(Unit)) + al(16) + 3 * al(P * 4) + al(P * 2 * v41::MOE_INTER * 4) + al(P * v41::MOE_INTER * 4)
-         + al(P * v41::MOE_INTER) + al(P * (v41::MOE_INTER / 32) * 4) + al(P * v41::DIM * 4) + al(P * 4);
+         + al(P * v41::MOE_INTER) + al(P * (v41::MOE_INTER / 32) * 4) + al(P * v41::DIM * 4) + al(P * 4)
+         + al((size_t)M * v41::DIM * 4) + al(P * v41::MOE_INTER * 4);          // KT rotated x (pass 0) / act (pass 1)
 }
 __global__ void k_pair_w(float* wp, const float* w, const int* pair_tok, const int* pair_slot, int P, int topk) {
     int p = blockIdx.x * blockDim.x + threadIdx.x; if (p < P) wp[p] = w[pair_tok[p] * topk + pair_slot[p]];
@@ -268,14 +295,24 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     uint8_t* aq = (uint8_t*)b; b += al((size_t)P * v41::MOE_INTER);
     float* as = (float*)b; b += al((size_t)P * (v41::MOE_INTER / 32) * 4);
     float* down = (float*)b; b += al((size_t)P * v41::DIM * 4);
-    float* wp = (float*)b;
+    float* wp = (float*)b; b += al((size_t)P * 4);
+    float* xr13 = (float*)b; b += al((size_t)M * v41::DIM * 4);
+    float* xr2 = (float*)b;
     k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
     k_pair_w<<<(P + 127) / 128, 128, 0, st>>>(wp, w, ptok, pslot, P, topk);
     XSrc X; X.xq = xq; X.xs = xs; X.ldx = v41::DIM;
+    if (T.fmt13 == ExpertFmt::KT) {               // rotate the token rows once; every unit stages them
+        k_rht_rows<<<dim3(v41::DIM / 256, M), 256, 0, st>>>(xr13, X, T.rht13, v41::DIM);
+        X = XSrc(); X.xf = xr13; X.ldx = v41::DIM;
+    }
     dispatch_pass(0, T, gu, 2 * v41::MOE_INTER, X, false, units, nu, ptok, 2 * v41::MOE_INTER, v41::DIM, P, mt, st);
     swiglu(act, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
     act_quant_fp8(aq, as, act, P, v41::MOE_INTER, st);
     XSrc A; A.xq = aq; A.xs = as; A.ldx = v41::MOE_INTER;
+    if (T.fmt2 == ExpertFmt::KT) {
+        k_rht_rows<<<dim3(v41::MOE_INTER / 256, P), 256, 0, st>>>(xr2, A, T.rht2, v41::MOE_INTER);
+        A = XSrc(); A.xf = xr2; A.ldx = v41::MOE_INTER;
+    }
     dispatch_pass(1, T, down, v41::DIM, A, true, units, nu, ptok, v41::DIM, v41::MOE_INTER, P, mt, st);
     size_t n = (size_t)M * v41::DIM;
     k_combine<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, down, idx, inv, M, topk, T.heal_gain);

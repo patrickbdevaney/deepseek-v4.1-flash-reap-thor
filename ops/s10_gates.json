@@ -53,6 +53,15 @@
       "max_confident_flip_increase": 0.005
     }
   },
+  "trellis": {
+    "why": "pre-registered sub-arm of A (added 2026-10-19, before any s10 result): the same keep-set and heal with experts in KT2/KT3 bitshift-trellis blocks (ops/lib/kt.py) instead of ggml K-quants, at expert bytes <= the K-quant build's. Synthetic rows predict ~0.5x the K-quant mix's relative MSE at 2.833 bpw (ops/tests/test_kt.py); this panel is the only evidence that counts. The trellis decode costs more ALU per weight, so speed is part of the rule.",
+    "split": "confirm",
+    "adopt_if": "KT - KQ paired d_kl32 95% CI upper < max_d_kl32_hi AND McNemar top-1 z > min_top1_z AND KT expert bytes <= KQ expert bytes AND the KT build's modelled routed-expert GEMV time per token (s08 gemv_bench, M=1, summed over every layer's two passes with its allocated formats) <= max_gemv_time_ratio x the KQ build's; a missing bench means not adopted",
+    "max_d_kl32_hi": 0.0,
+    "min_top1_z": 0.0,
+    "max_gemv_time_ratio": 1.10,
+    "then": "if adopted, the KT build replaces thorA: the thor_quant gate (vs the shipped MXFP4/NVFP4 arm) and the A/B arm decision are re-run on this panel with thorA_kt as arm A; otherwise the K-quant build ships unchanged"
+  },
   "arm_decision": {
     "why": "pre-registered A/B at matched resident expert bytes: A = 192 experts requantized (Thor build), B = 128 experts bit-exact MXFP4",
     "metric": "kl32",

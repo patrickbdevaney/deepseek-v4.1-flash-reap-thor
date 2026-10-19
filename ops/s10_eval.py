@@ -15,6 +15,11 @@ ops/s10_gates.json (sha256-locked at the first result).
          Gates: control, pruned floors, Thor quantization cost, the pre-registered A/B arm decision
          at matched expert bytes, the overlay gate, and a 90% Model Confidence Set over the Thor
          candidates. -> s10/final/results.json and s10/gates.json (what s12 may publish).
+  trellis  CONFIRM split, pre-registered sub-arm (s10_gates.json "trellis"), after s07 thor-trellis and
+         s08 gemv_bench. Arms: the shipped MXFP4/NVFP4 arm, thorA (K-quant), thorA_kt (KT2/KT3 at <= the
+         same expert bytes), b128. KT is adopted only if it beats KQ on paired kl32 AND top-1 and its
+         modelled expert decode time is within the bound; then thor_quant and the A/B decision are re-run
+         with it as arm A and s10/gates.json gains thor_a_build / thor_build_dir. -> s10/trellis/results.json
 
 Per arm and gate: overall / per-bucket / per-log-position-bin kl32, top-1, dNLL with row-cluster
 bootstrap CIs, p99 kl32, confident-flip rate, vision caption perplexity. These files are the only
@@ -45,6 +50,15 @@ def keep_A():
     return keepset.load(S04 / "keepset.json")
 
 
+def thor_build(n: int, suffix: str, fp: str) -> Path:
+    thor = env.WORK / "thor" / f"A{n}{suffix}"
+    tj = json.load(open(thor / "thor.json"))
+    if not tj.get("complete"):
+        raise SystemExit(f"{thor} is not a complete Thor build")
+    keepset.require(tj["keepset_sha256"], fp, where=str(thor))
+    return thor
+
+
 def arms_for(panel: str) -> list[dict]:
     kA, fA = keep_A()
     if panel == "heal":
@@ -55,11 +69,11 @@ def arms_for(panel: str) -> list[dict]:
     keepset.require(dec["keepset_sha256"], fA, where="s10/heal/decision.json")
     kB, fB = keepset.load(S04 / "keepset_128.json")
     n = len(kA["0"])
-    thor = env.WORK / "thor" / f"A{n}"
-    tj = json.load(open(thor / "thor.json"))
-    if not tj.get("complete"):
-        raise SystemExit(f"{thor} is not a complete Thor build")
-    keepset.require(tj["keepset_sha256"], fA, where=str(thor))
+    thor = thor_build(n, "", fA)
+    if panel == "trellis":
+        base = {"name": "healed_A", "keep": kA, "gain": dec["gains"]} if dec["adopt"] else {"name": "mxfp4_A", "keep": kA}
+        return [base, {"name": "thorA", "keep": kA, "thor": str(thor)},
+                {"name": "thorA_kt", "keep": kA, "thor": str(thor_build(n, "kt", fA))}, {"name": "b128", "keep": kB}]
     arms = [{"name": "control", "keep": None}, {"name": "mxfp4_A", "keep": kA}]
     if dec["adopt"]:
         arms.append({"name": "healed_A", "keep": kA, "gain": dec["gains"]})
@@ -176,6 +190,52 @@ def final_panel(a):
     env.log(f"final: {publish}", STAGE)
 
 
+def trellis_panel(a):
+    root, ids = run_panel(a, "trellis")
+    g = gates.lock(OUT)
+    data, summ = analyse(root, ids, a.draws)
+    kA, fA = keep_A()
+    n = len(kA["0"])
+    kq = json.load(open(thor_build(n, "", fA) / "thor.json"))
+    kt = json.load(open(thor_build(n, "kt", fA) / "thor.json"))
+    bp = env.WORK / "s08" / "gemv_bench.json"
+    t_kq = t_kt = None
+    if bp.exists():
+        bench = json.load(open(bp))
+        t_kq, t_kt = gates.gemv_time(kq["alloc"], bench), gates.gemv_time(kt["alloc"], bench)
+    cmpd = lambda x, y: metrics.compare(data[x], data[y], n_draws=a.draws)
+    res = {"split": "confirm", "rows": len(ids), "tokens": int(data["thorA"]["kl32"].size), "gates_sha256": gates.load()[1],
+           "summaries": summ, "comparisons": {"thorA_kt_vs_thorA": cmpd("thorA_kt", "thorA")}, "gates": {},
+           "gemv_time_us": {"kq": t_kq, "kt": t_kt, "bench": str(bp) if bp.exists() else None}}
+    dec = gates.trellis(res["comparisons"]["thorA_kt_vs_thorA"], g, kt_bytes=int(kt["expert_bytes"]),
+                        kq_bytes=int(kq["expert_bytes"]), t_kt=t_kt, t_kq=t_kq)
+    res["gates"]["trellis"] = dec
+    gp = OUT / "gates.json"
+    gj = json.load(open(gp))
+    if gj.get("keepset_A_sha256") != fA:
+        raise keepset.KeepsetMismatch("s10/gates.json was written for a different keep-set A")
+    upd = {"trellis_adopted": dec["adopt"], "thor_a_build": "kt" if dec["adopt"] else "kq"}
+    if dec["adopt"]:
+        base = "healed_A" if "healed_A" in data else "mxfp4_A"
+        arb = json.load(open(S04 / "arbitration.json"))
+        dv = arb["candidates"][arb["winners"]["A"]["name"]].get("drift_verdict")
+        res["comparisons"]["thorA_kt_vs_" + base] = cmpd("thorA_kt", base)
+        res["gates"]["thorA_kt"] = gates.thor_quant(summ["thorA_kt"], res["comparisons"]["thorA_kt_vs_" + base], g,
+                                                    drift_verdict=dv)
+        res["comparisons"]["thorA_kt_vs_b128"] = cmpd("thorA_kt", "b128")
+        ad = gates.arm_decision(res["comparisons"]["thorA_kt_vs_b128"], g)
+        res["gates"]["arm_decision"] = ad
+        b_pass = json.load(open(OUT / "final" / "results.json"))["gates"]["b128"]["pass"]
+        upd.update({"thor_arm": ad["winner"], "thor": res["gates"]["thorA_kt"]["pass"] if ad["winner"] == "A" else b_pass})
+    arm = upd.get("thor_arm", gj["thor_arm"])
+    nB = len(keepset.load(S04 / "keepset_128.json")[0]["0"])
+    upd["thor_build_dir"] = str(env.WORK / "thor" / (f"A{n}{'kt' if upd['thor_a_build'] == 'kt' else ''}" if arm == "A" else f"B{nB}"))
+    res["publish_update"] = upd
+    env.atomic_json(OUT / "trellis" / "results.json", res)
+    env.atomic_json(gp, {**gj, **upd, "ts_trellis": env.now()})
+    env.log(f"trellis: adopt={dec['adopt']} {dec['why']} -> {upd}", STAGE)
+
+
 def unit(a):
     from ops.lib import replay
     run = replay.Run(OUT / a.panel / "replay")
@@ -190,9 +250,9 @@ def unit(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["heal", "final", "unit"])
+    ap.add_argument("cmd", choices=["heal", "final", "trellis", "unit"])
     ap.add_argument("unit", nargs="?", choices=["embed", "layer", "head"])
-    ap.add_argument("--panel", choices=["heal", "final"])
+    ap.add_argument("--panel", choices=["heal", "final", "trellis"])
     ap.add_argument("--layer", type=int)
     ap.add_argument("--arms")
     ap.add_argument("--kernels", choices=["tilelang", "torch"], default="tilelang")
@@ -203,10 +263,11 @@ def main():
     a = ap.parse_args()
     (OUT / "heal").mkdir(parents=True, exist_ok=True)
     (OUT / "final").mkdir(parents=True, exist_ok=True)
+    (OUT / "trellis").mkdir(parents=True, exist_ok=True)
     if a.cmd == "unit":
         return unit(a)
     env.assert_no_gpu_server(STAGE)
-    {"heal": heal_panel, "final": final_panel}[a.cmd](a)
+    {"heal": heal_panel, "final": final_panel, "trellis": trellis_panel}[a.cmd](a)
 
 
 if __name__ == "__main__":

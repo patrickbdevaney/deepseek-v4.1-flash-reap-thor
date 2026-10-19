@@ -132,6 +132,8 @@ void bind_layer(Model& m, int L, bool hw) {
     // routed experts. Three layouts:
     //   thor-v1 stacked ggml K-quant  ffn.experts.wX.qweight  U8 [n, out, row_bytes]  qtype Q2_K..Q4_K
     //   thor-v1 stacked MXFP4_SRC     ffn.experts.wX.weight/.scale  [n, out, in/2] / [n, out, in/32]
+    //   thor-v1 stacked trellis KT2/3 ffn.experts.wX.qweight + .kt_scale F16 [n, out, in/128],
+    //                                 ffn.experts.{w13,w2}.rht_sign U8 [in/8] (thor_format.md "Trellis experts")
     //   HF checkpoint per expert      ffn.experts.E.wX.weight/.scale (MXFP4 I8 + E8M0)
     const std::string ep = p + "ffn.experts.";
     int E = 0;
@@ -141,6 +143,8 @@ void bind_layer(Model& m, int L, bool hw) {
         else if (qt == "Q2_K") { f = v41k::ExpertFmt::KQ; bits = 2; }
         else if (qt == "Q3_K") { f = v41k::ExpertFmt::KQ; bits = 3; }
         else if (qt == "Q4_K") { f = v41k::ExpertFmt::KQ; bits = 4; }
+        else if (qt == "KT2") { f = v41k::ExpertFmt::KT; bits = 2; }
+        else if (qt == "KT3") { f = v41k::ExpertFmt::KT; bits = 3; }
         else throw std::runtime_error(p + ": unknown expert qtype '" + qt + "' -- refusing (thor_format.md obligation 1)");
     };
     if (S.has(ep + "w1.qweight") || S.has(ep + "w1.weight")) {
@@ -168,16 +172,30 @@ void bind_layer(Model& m, int L, bool hw) {
             const size_t stride = t.nbytes / E;
             const v41k::ExpertFmt f = j < 2 ? w.ex.tab.fmt13 : w.ex.tab.fmt2;
             const int bits = j < 2 ? w.ex.tab.bits13 : w.ex.tab.bits2;
+            const DevT* sc = nullptr;
             if (f == v41k::ExpertFmt::KQ) {
                 const int bb = bits == 2 ? 84 : bits == 3 ? 110 : 144;
                 if (stride != (size_t)out * (in / 256) * bb) throw std::runtime_error(ep + proj[j] + ": row bytes do not match the qtype");
-            } else if (stride != (size_t)out * in / 2) throw std::runtime_error(ep + proj[j] + ": MXFP4_SRC shape mismatch");
-            const DevT* sc = kq ? nullptr : &S.get(ep + proj[j] + ".scale");
+            } else if (f == v41k::ExpertFmt::KT) {
+                if (stride != (size_t)out * (in / 128) * 16 * bits) throw std::runtime_error(ep + proj[j] + ": KT row bytes do not match the qtype");
+                sc = &S.get(ep + proj[j] + ".kt_scale");
+                if (sc->nbytes != (size_t)E * out * (in / 128) * 2) throw std::runtime_error(ep + proj[j] + ".kt_scale: bad size");
+            } else {
+                if (stride != (size_t)out * in / 2) throw std::runtime_error(ep + proj[j] + ": MXFP4_SRC shape mismatch");
+                sc = &S.get(ep + proj[j] + ".scale");
+            }
             for (int e = 0; e < E; ++e) {
                 tab[(size_t)slot[j] * E + e] = (const char*)t.p + (size_t)e * stride;
                 tab[(size_t)(slot[j] + 1) * E + e] = sc ? (const char*)sc->p + (size_t)e * (sc->nbytes / E) : nullptr;
             }
         }
+        auto sign_of = [&](const char* pass, int in) -> const uint8_t* {
+            const DevT& t = S.get(ep + pass + ".rht_sign");
+            if (t.nbytes != (size_t)in / 8) throw std::runtime_error(ep + pass + ".rht_sign: expected " + std::to_string(in / 8) + " bytes");
+            return (const uint8_t*)t.p;
+        };
+        if (w.ex.tab.fmt13 == v41k::ExpertFmt::KT) w.ex.tab.rht13 = sign_of("w13", DIM);
+        if (w.ex.tab.fmt2 == v41k::ExpertFmt::KT) w.ex.tab.rht2 = sign_of("w2", MOE_INTER);
     } else {
         while (S.has(ep + std::to_string(E) + ".w1.weight")) ++E;
         if (!E) throw std::runtime_error("no routed experts under " + ep);

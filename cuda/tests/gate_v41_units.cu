@@ -4,7 +4,8 @@
 //   scripts/build_v41.sh gate_v41_units && build/gate_v41_units build/units
 //
 // Exactness classes (what each check may and may not tolerate):
-//   EXACT   decoders (K-quants, MXFP4 hw + sw), act_quant bytes and scales, router expert ids
+//   EXACT   decoders (K-quants, MXFP4 hw + sw, KT2/KT3 trellis), act_quant bytes and scales, router
+//           expert ids, the KT activation rotation, the KT Viterbi encoder's states
 //   ULP     fp8/bf16 linears: fp32 summation order differs from torch's, so a bf16 output may sit
 //           one ulp away; >1 ulp anywhere, or >1% of outputs off by one, is a failure
 //   COS     moe_routed vs FQExpert-style math (bf16 roundings at the reference's points): cos >= 0.99999
@@ -15,6 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+
+extern "C" int kt_viterbi(const float* X, const float* W, int32_t* out, int n, int b, void* stream);   // kt_viterbi.cu
 
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { fprintf(stderr, "%s: %s\n", #x, cudaGetErrorString(e_)); exit(2); } } while (0)
 
@@ -76,6 +79,48 @@ int main(int argc, char** argv) {
         const int K = (int)ref.shape[1];
         { v41g::DecMXFP4<true> d; d.W0 = d.W1 = dw; d.S0 = d.S1 = ds; d.K = K; d.split = 1 << 30; dec_case("decode MXFP4 (hw cvt e2m1x2)", d, ref); }
         { v41g::DecMXFP4<false> d; d.W0 = d.W1 = dw; d.S0 = d.S1 = ds; d.K = K; d.split = 1 << 30; dec_case("decode MXFP4 (bit construct)", d, ref); }
+        for (int b = 2; b <= 3; ++b) {
+            const std::string q = b == 2 ? "KT2" : "KT3";
+            const Npy kw = L(("dec_" + q + "_w").c_str()), ks = L(("dec_" + q + "_s").c_str()), kr = L(("dec_" + q + "_ref").c_str());
+            const uint8_t *dkw = up<uint8_t>(kw), *dks = up<uint8_t>(ks);
+            const int KK = (int)kr.shape[1];
+            const std::string nm = "decode " + q + " (trellis, L=12)";
+            if (b == 2) { v41g::DecKT<2> d; d.W0 = d.W1 = dkw; d.S0 = d.S1 = dks; d.K = KK; d.split = 1 << 30; dec_case(nm.c_str(), d, kr); }
+            else { v41g::DecKT<3> d; d.W0 = d.W1 = dkw; d.S0 = d.S1 = dks; d.K = KK; d.split = 1 << 30; dec_case(nm.c_str(), d, kr); }
+        }
+    }
+
+    // ---- KT activation rotation (exact butterfly) and the KT Viterbi encoder (exact states)
+    for (int K : {5120, 2304}) {
+        const std::string t = "rht" + std::to_string(K);
+        const Npy x = L((t + "_x").c_str()), sg = L((t + "_sign").c_str()), ref = L((t + "_ref").c_str());
+        const int M = (int)x.shape[0];
+        float* o = dzero<float>((size_t)M * K);
+        v41k::rht_rows(o, up<float>(x), up<uint8_t>(sg), M, K, st);
+        auto h = down(o, (size_t)M * K);
+        long bad = 0;
+        for (size_t i = 0; i < h.size(); ++i) bad += h[i] != ref.as<float>()[i];
+        char b[96]; snprintf(b, sizeof b, "%ld / %zu values differ", bad, h.size());
+        verdict(bad == 0, (std::string("KT rotation K=") + std::to_string(K)).c_str(), b);
+    }
+    {
+        const Npy vx = L("vit_x"), vw = L("vit_w");
+        const int N = (int)vx.shape[0];
+        float *dx = up<float>(vx), *dw = up<float>(vw);
+        for (int b = 2; b <= 3; ++b) {
+            const Npy ref = L(("vit_b" + std::to_string(b) + "_states").c_str());
+            int32_t* o = dzero<int32_t>((size_t)N * 128);
+            const int rc = kt_viterbi(dx, dw, o, N, b, nullptr);
+            auto h = down(o, (size_t)N * 128);
+            long bad = 0, badseq = 0;
+            for (int n = 0; n < N; ++n) {
+                long d = 0;
+                for (int i = 0; i < 128; ++i) d += h[(size_t)n * 128 + i] != ref.as<int32_t>()[(size_t)n * 128 + i];
+                bad += d; badseq += d > 0;
+            }
+            char bb[96]; snprintf(bb, sizeof bb, "rc %d, %ld windows in %ld / %d sequences differ", rc, bad, badseq, N);
+            verdict(rc == 0 && bad == 0, (std::string("KT Viterbi encoder b=") + std::to_string(b)).c_str(), bb);
+        }
     }
 
     // ---- act_quant
@@ -170,6 +215,44 @@ int main(int argc, char** argv) {
         const double cs = dot / std::sqrt(n1 * n2);
         char bb[96]; snprintf(bb, sizeof bb, "cos %.8f, max |d| %.3g", cs, maxd);
         verdict(cs >= 0.99999, "moe_routed Q3_K/Q4_K, 8 experts", bb);
+    }
+
+    // ---- moe_routed, KT3 gate/up + KT2 down: rotated passes through the real dispatch
+    {
+        const Npy x = L("moekt_x"), idx = L("moekt_idx"), wts = L("moekt_wts"), ref = L("moekt_ref");
+        const Npy w1 = L("moekt_w1"), w2 = L("moekt_w2"), w3 = L("moekt_w3");
+        const Npy s1 = L("moekt_w1_s"), s2 = L("moekt_w2_s"), s3 = L("moekt_w3_s");
+        const Npy g13 = L("moekt_s13"), g2 = L("moekt_s2");
+        const int M = (int)x.shape[0], TK = (int)idx.shape[1], E = (int)w1.shape[0];
+        uint8_t *d1 = up<uint8_t>(w1), *d2 = up<uint8_t>(w2), *d3 = up<uint8_t>(w3);
+        uint8_t *e1 = up<uint8_t>(s1), *e2 = up<uint8_t>(s2), *e3 = up<uint8_t>(s3);
+        std::vector<const uint8_t*> tab(6 * E, nullptr);
+        for (int e = 0; e < E; ++e) {
+            tab[0 * E + e] = d1 + (size_t)e * (w1.data.size() / E); tab[1 * E + e] = e1 + (size_t)e * (s1.data.size() / E);
+            tab[2 * E + e] = d3 + (size_t)e * (w3.data.size() / E); tab[3 * E + e] = e3 + (size_t)e * (s3.data.size() / E);
+            tab[4 * E + e] = d2 + (size_t)e * (w2.data.size() / E); tab[5 * E + e] = e2 + (size_t)e * (s2.data.size() / E);
+        }
+        const uint8_t** dt; CK(cudaMalloc(&dt, tab.size() * sizeof(void*)));
+        CK(cudaMemcpy(dt, tab.data(), tab.size() * sizeof(void*), cudaMemcpyHostToDevice));
+        v41k::ExpertTab T;
+        T.fmt13 = v41k::ExpertFmt::KT; T.bits13 = 3; T.fmt2 = v41k::ExpertFmt::KT; T.bits2 = 2;
+        T.w1 = dt; T.w1s = dt + E; T.w3 = dt + 2 * E; T.w3s = dt + 3 * E; T.w2 = dt + 4 * E; T.w2s = dt + 5 * E;
+        T.rht13 = up<uint8_t>(g13); T.rht2 = up<uint8_t>(g2);
+        float* dx = up<float>(x);
+        uint8_t* xq = dzero<uint8_t>((size_t)M * v41::DIM); float* xs = dzero<float>((size_t)M * v41::DIM / 32);
+        float* y = dzero<float>((size_t)M * v41::DIM);
+        void* scr; CK(cudaMalloc(&scr, v41k::moe_scratch_bytes(M, TK)));
+        v41k::act_quant_fp8(xq, xs, dx, M, v41::DIM, st);
+        v41k::moe_routed(y, xq, xs, up<float>(wts), up<int>(idx), T, M, TK, scr, st);
+        auto h = down(y, (size_t)M * v41::DIM);
+        double dot = 0, n1 = 0, n2 = 0, maxd = 0;
+        for (size_t i = 0; i < h.size(); ++i) {
+            const double a = h[i], b = ref.as<float>()[i];
+            dot += a * b; n1 += a * a; n2 += b * b; maxd = std::max(maxd, std::fabs(a - b));
+        }
+        const double cs = dot / std::sqrt(n1 * n2);
+        char bb[96]; snprintf(bb, sizeof bb, "cos %.8f, max |d| %.3g", cs, maxd);
+        verdict(cs >= 0.99999, "moe_routed KT3/KT2 (rotated), 6 experts", bb);
     }
 
     CK(cudaDeviceSynchronize());

@@ -88,6 +88,10 @@ struct ExpertTab {
     const uint8_t* const* w2 = nullptr;
     const uint8_t* const* w2s = nullptr;
     const float* const* lut = nullptr;              // LUT fmt: [E] -> 16 floats (w13 then w2: 2x16)
+    // KT fmt (thor-v1 KT2/KT3): the pass's packed RHT signs [in/8] (bit k of byte j: element 8j+k
+    // negative), one per layer and pass, shared by every expert; activations are rotated with them
+    const uint8_t* rht13 = nullptr;
+    const uint8_t* rht2 = nullptr;
     // MXFP4 split tables (checkpoint layout: w1, w3 separate)
     const uint8_t* const* w1 = nullptr; const uint8_t* const* w1s = nullptr;
     const uint8_t* const* w3 = nullptr; const uint8_t* const* w3s = nullptr;
@@ -96,6 +100,9 @@ struct ExpertTab {
 // receives sum over slots IN ASCENDING EXPERT ORDER of bf16(expert(x) * w) — the reference loop.
 // xq/xs: act_quant_fp8 of x. scratch >= moe_scratch_bytes(M, topk).
 size_t moe_scratch_bytes(int M, int topk);
+// KT activation rotation (exposed for tests/gate_v41_units.cu): out[r] = FWHT_256(x[r] * sign) / 16,
+// the butterfly order of ops/lib/kt.py::rht_rows, bit-exact. K a multiple of 256.
+void rht_rows(float* out, const float* x, const uint8_t* sign, int M, int K, cudaStream_t st);
 void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, const int* idx,
                 const ExpertTab& T, int M, int topk, void* scratch, cudaStream_t st);
 // Shared expert (fp8) added on top: y = bf16(y + bf16(shared(x))). Uses the fp8 linears.

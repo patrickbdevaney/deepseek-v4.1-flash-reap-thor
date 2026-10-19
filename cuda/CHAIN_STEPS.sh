@@ -11,9 +11,12 @@
 #   build                CPU  compile everything (scripts/build_v41.sh, -j4) + the CPU gates' binaries
 #   cpu_gates            CPU  encoding (5 goldens + 400 reference-fuzz cases + strict parse), API, SSE stream,
 #                             tokenizer (2116 cases / 168k tokens vs HF), Engram hash (18k ids vs engram.py),
-#                             Engram store (sparse full-size .v41rows through io_uring O_DIRECT), K-quant decode
-#   units                GPU  kernels vs the ops oracles (decoders bit-exact, act_quant exact, linears <= 1 ulp,
-#                             router ids exact, moe_routed Q3_K/Q4_K cos >= 0.99999). Small: < 1 GiB.
+#                             Engram store (sparse full-size .v41rows through io_uring O_DIRECT), K-quant and
+#                             KT2/KT3 trellis decode (host build of the device decoders, bit-exact)
+#   units                GPU  kernels vs the ops oracles (decoders bit-exact incl. KT2/KT3, act_quant exact,
+#                             linears <= 1 ulp, router ids exact, KT activation rotation bit-exact, KT Viterbi
+#                             encoder states == ops/lib/kt.viterbi, moe_routed Q3_K/Q4_K and KT3/KT2 cos >=
+#                             0.99999). Small: < 1 GiB.
 #   gemv_bench           GPU  every expert format's GEMV bytes/s vs a streaming read -> $OUT/gemv_bench.json
 #   golden_ref ARM       GPU  reference model.py dump, one layer at a time (tests/golden/ref_dump.py)
 #   golden ARM           GPU  CUDA vs that dump, layer by layer: isolated + chained cosine, argmax agreement;
@@ -59,12 +62,13 @@ cpu_gates)
   ./build/gate_tokenizer $SRC tests/data/tokenizer_vectors.json || die "tokenizer"
   ./build/gate_engram_hash tests/data || die "engram hash"
   mkdir -p build/engram_gate && ./build/gate_engram_store build/engram_gate tests/data/engram_tokmap.bin || die "engram store"
-  [ -f build/units/dec_Q4_K_ref.npy ] || ../$PY -I tests/v41_unit_ref.py --out build/units || die "unit refs"
+  [ -f build/units/moekt_ref.npy ] || ../$PY -I tests/v41_unit_ref.py --out build/units || die "unit refs"
   ./build/gate_kq_host build/units || die "K-quant host decode"
+  ./build/gate_kt_host build/units || die "KT trellis host decode"
   cd ..; mark cpu_gates ;;
 units)
   done_ units && exit 0; quiet
-  [ -f cuda/build/units/moe_ref.npy ] || $PY -I cuda/tests/v41_unit_ref.py --out cuda/build/units || die "unit refs"
+  [ -f cuda/build/units/moekt_ref.npy ] || $PY -I cuda/tests/v41_unit_ref.py --out cuda/build/units || die "unit refs"
   gpu units $B/gate_v41_units cuda/build/units || die "gate_v41_units"
   reclaim units; mark units ;;
 gemv_bench)

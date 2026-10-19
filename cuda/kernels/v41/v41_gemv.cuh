@@ -172,38 +172,6 @@ struct DecLUT {
     }
 };
 
-// KT-b (FORMAT_PROPOSAL.md §3): tail-biting bitshift trellis over 128-weight blocks, 3INST computed
-// codebook (QTIP). Block = 4*b uint32 words; weight i's state is the 16-bit window at bit i*b
-// (mod 128*b). One fp16 scale per 128 [N, K/128]. A 32-weight chunk q of a block starts exactly at
-// word q*b, so each lane needs only words q*b .. q*b+3 (wrapping) and every shift is a constant.
-__device__ __forceinline__ float kt_decode(uint32_t state) {
-    const uint32_t x = state * 89226354u + 64248484u;
-    const uint32_t m = (x & 0x8fff8fffu) ^ 0x3b603b60u;
-    const __half2 h = *reinterpret_cast<const __half2*>(&m);
-    return __low2float(h) + __high2float(h);
-}
-template <int B>
-struct DecKT {
-    const uint8_t* W0; const uint8_t* S0; const uint8_t* W1; const uint8_t* S1; int K; int split;
-    __device__ __forceinline__ void load(int row, int c, float (&w)[32]) const {
-        const uint8_t* W = W0; const uint8_t* S = S0;
-        if (row >= split) { W = W1; S = S1; row -= split; }
-        constexpr int NW = 4 * B;                       // words per 128-weight block
-        const int blk = c >> 2, q = c & 3;
-        const uint32_t* p = reinterpret_cast<const uint32_t*>(W) + ((size_t)row * (K / 128) + blk) * NW;
-        const float s = __half2float(reinterpret_cast<const __half*>(S)[(size_t)row * (K / 128) + blk]);
-        uint32_t wd[4];
-        #pragma unroll
-        for (int i = 0; i < 4; ++i) wd[i] = p[(q * B + i) % NW];
-        #pragma unroll
-        for (int i = 0; i < 32; ++i) {
-            const int bit = i * B, wi = bit >> 5, sh = bit & 31;
-            const uint32_t win = __funnelshift_r(wd[wi], wd[wi + 1 < 4 ? wi + 1 : 3], sh) & 0xFFFFu;
-            w[i] = kt_decode(win) * s;
-        }
-    }
-};
-
 // ggml K-quants (ops/lib/thor_format.md "Routed experts", arm A): rows are whole 256-element
 // superblocks, BYTE-IDENTICAL to ggml block_q{2,3,4}_K so the GGUF writer copies them verbatim.
 // A 32-element chunk c is chunk j = c&7 of superblock c>>3. Arithmetic follows the numpy reference
@@ -287,6 +255,62 @@ struct DecKQ {
                     w[e] = mul_rn(a, (float)q);
                 }
             }
+        }
+    }
+};
+
+
+// KT-b, thor-v1 qtypes KT2 / KT3 (ops/lib/thor_format.md "Trellis experts", encoder ops/lib/kt.py):
+// tail-biting bitshift trellis over 128-weight blocks of the RHT-rotated row, L = 12-bit windows,
+// QTIP's 3INST computed codebook. Block = 4*b uint32 words; weight i's window is the 12 bits at
+// stream bit i*b (mod 128*b), little-endian across words. One fp16 scale per block [N, K/128].
+// A 32-weight chunk q of a block starts exactly at word q*b, so a lane needs only words
+// q*b .. q*b+3 (wrapping inside the block) and every shift is a compile-time constant.
+// The ROTATION is not here: the activations are rotated once per pass (k_rht_rows in v41_moe.cu),
+// so this decoder emits the rotated-domain weight, exactly kt.dequant(.., sgn=None) in numpy:
+// value = (fp32(fp16 lo) + fp32(fp16 hi)) * fp32(scale), separate roundings. __host__ too, for
+// tests/gate_kt_host.cu.
+static constexpr int KT_L = 12;
+__host__ __device__ __forceinline__ float add_rn(float a, float b) {
+#ifdef __CUDA_ARCH__
+    return __fadd_rn(a, b);
+#else
+    return a + b;
+#endif
+}
+__host__ __device__ __forceinline__ uint32_t fshr32(uint32_t lo, uint32_t hi, int sh) {
+#ifdef __CUDA_ARCH__
+    return __funnelshift_r(lo, hi, sh);
+#else
+    return (uint32_t)((((uint64_t)hi << 32) | lo) >> sh);
+#endif
+}
+__host__ __device__ __forceinline__ float kt_value(uint32_t win) {
+    const uint32_t x = win * 89226354u + 64248484u;
+    const uint32_t m = (x & 0x8fff8fffu) ^ 0x3b603b60u;
+    return add_rn(__half2float(__ushort_as_half((unsigned short)(m & 0xFFFFu))),
+                  __half2float(__ushort_as_half((unsigned short)(m >> 16))));
+}
+template <int B>               // 2, 3
+struct DecKT {
+    const uint8_t* W0; const uint8_t* S0; const uint8_t* W1; const uint8_t* S1; int K; int split;
+    static_assert(B == 2 || B == 3, "KT2 / KT3 only: a 32-weight chunk's windows must fit 4 words");
+    __host__ __device__ __forceinline__ void load(int row, int c, float (&w)[32]) const {
+        const uint8_t* W = W0; const uint8_t* S = S0;
+        if (row >= split) { W = W1; S = S1; row -= split; }
+        constexpr int NW = 4 * B;                       // words per 128-weight block
+        const int blk = c >> 2, q = c & 3;
+        const size_t bi = (size_t)row * (K / 128) + blk;
+        const uint32_t* p = reinterpret_cast<const uint32_t*>(W) + bi * NW;
+        const float s = f16_at(S + bi * 2);
+        uint32_t wd[4];
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) wd[i] = p[(q * B + i) % NW];
+        #pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int bit = i * B, wi = bit >> 5, sh = bit & 31;     // wi + 1 <= 3 for B <= 3
+            const uint32_t win = fshr32(wd[wi], wd[wi + 1], sh) & ((1u << KT_L) - 1u);
+            w[i] = mul_rn(kt_value(win), s);
         }
     }
 };

@@ -23,7 +23,9 @@ LIBS="-lcuda"
 want() { [ -z "$1" ] || [ "$1" = "$2" ]; }
 if want "$1" v41_decode; then $NVCC src/v41_decode.cu $KOBJ $LIBS -o build/v41_decode; echo "built build/v41_decode"; fi
 if want "$1" v41_server; then $NVCC -Xcompiler -pthread server/server.cpp $KOBJ $LIBS -o build/v41_server; echo "built build/v41_server"; fi
-if want "$1" gate_v41_units; then $NVCC tests/gate_v41_units.cu $KOBJ $LIBS -o build/gate_v41_units; echo "built build/gate_v41_units"; fi
+if want "$1" gate_v41_units; then $NVCC tests/gate_v41_units.cu kernels/v41/kt_viterbi.cu $KOBJ $LIBS -o build/gate_v41_units; echo "built build/gate_v41_units"; fi
+# KT2/KT3 encoder for s07 thor-trellis (ops/lib/kt.py loads it through ctypes)
+if want "$1" libkt_viterbi; then $NVCC -shared -Xcompiler -fPIC kernels/v41/kt_viterbi.cu -o build/libkt_viterbi.so; echo "built build/libkt_viterbi.so"; fi
 if want "$1" gate_v41_golden; then $NVCC tests/gate_v41_golden.cu $KOBJ $LIBS -o build/gate_v41_golden; echo "built build/gate_v41_golden"; fi
 if want "$1" gemv_format_bench; then $NVCC tools/gemv_format_bench.cu $LIBS -o build/gemv_format_bench; echo "built build/gemv_format_bench"; fi
 
@@ -34,5 +36,6 @@ if want "$1" cpu_gates; then
   g++ -O2 -std=c++17 -I include tests/gate_engram_store.cpp src/engram_store.cpp src/engram_hash.cpp \
       -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -o build/gate_engram_store
   nvcc -O2 -std=c++17 -I include -Xcompiler -ffp-contract=off tests/gate_kq_host.cu -o build/gate_kq_host
+  nvcc -O2 -std=c++17 -I include -Xcompiler -ffp-contract=off tests/gate_kt_host.cu -o build/gate_kt_host
   echo "built CPU gates"
 fi

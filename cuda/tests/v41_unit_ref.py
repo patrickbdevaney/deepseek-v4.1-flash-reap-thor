@@ -11,6 +11,11 @@ Writes .npy files (little-endian, C order). Cases:
   blin_*             bf16_linear vs x @ W^T -> bf16
   rt_*               router (sqrtsoftplus, bias selects, bias_vl on image rows, x1.5)
   moe_*              moe_routed with Q3_K gate/up and Q4_K down over 8 experts, vs FQExpert-style math
+  dec_KT{2,3}_*      trellis decoders: random code words (every bit pattern is a valid stream) + fp16
+                     scales -> rotated-domain fp32, must match ops/lib/kt.dequant BIT-EXACTLY
+  rht_*              KT activation rotation, both pass widths: must match kt.rht_rows BIT-EXACTLY
+  vit_*              the CUDA Viterbi encoder: must return kt.viterbi's states exactly
+  moekt_*            moe_routed with KT3 gate/up and KT2 down (rotated passes), cos >= 0.99999
 """
 import argparse
 import os
@@ -22,6 +27,7 @@ import torch
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from ops.lib import ggml_quants as G  # noqa: E402
+from ops.lib import kt  # noqa: E402
 from ops.lib import torch_kernels as tk  # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -114,4 +120,56 @@ for m in range(M):
         midq = tk.act_quant(mid.clone()[None], 32, "ue8m0", inplace=True)[0].float()
         y[m] += bf16(midq @ Wd["w2"][e].t())
 save("moe_x", x.numpy()); save("moe_idx", idx.numpy()); save("moe_wts", wts.numpy()); save("moe_ref", y.numpy())
+# ---------------------------------------------------------------- KT (trellis) decoders
+for qt in ("KT2", "KT3"):
+    b = kt.bits_of(qt)
+    words = rng.integers(0, 2 ** 32, (R, C // kt.T, 4 * b), dtype=np.uint64).astype(np.uint32)
+    sc = (rng.uniform(0.002, 0.05, (R, C // kt.T)) / kt.CB_RMS).astype(np.float16)
+    qw = words.view(np.uint8).reshape(R, -1)
+    save(f"dec_{qt}_w", qw); save(f"dec_{qt}_s", sc.view(np.uint16))
+    save(f"dec_{qt}_ref", kt.dequant(qt, qw, sc, C, None))
+
+# ---------------------------------------------------------------- KT activation rotation
+for K in (5120, 2304):
+    xr = (rng.standard_normal((3, K)) * rng.uniform(0.1, 3.0, (3, 1))).astype(np.float32)
+    sg = kt.signs(f"unit{K}", K)
+    save(f"rht{K}_x", xr); save(f"rht{K}_sign", kt.pack_signs(sg)); save(f"rht{K}_ref", kt.rht_rows(xr, sg))
+
+# ---------------------------------------------------------------- KT Viterbi encoder
+NV = 192
+vx = (rng.standard_normal((NV, kt.T)) * kt.CB_RMS).astype(np.float32)
+vx[:8] *= 4.0                                        # far outside the codebook: saturating paths
+vw = rng.uniform(0.2, 3.0, (NV, kt.T)).astype(np.float32)
+vw[8:16] = 1.0
+save("vit_x", vx); save("vit_w", vw)
+for b in (2, 3):
+    save(f"vit_b{b}_states", kt.viterbi(vx, vw, b).astype(np.int32))
+
+# ---------------------------------------------------------------- moe_routed, KT3 w1/w3 + KT2 w2
+E, M, TOPK = 6, 2, 3
+s13, s2 = kt.signs("unit.w13", D), kt.signs("unit.w2", I)
+save("moekt_s13", kt.pack_signs(s13)); save("moekt_s2", kt.pack_signs(s2))
+Wk = {}
+for p, (o, i, qt) in {"w1": (I, D, "KT3"), "w3": (I, D, "KT3"), "w2": (D, I, "KT2")}.items():
+    b = kt.bits_of(qt)
+    words = rng.integers(0, 2 ** 32, (E, o, i // kt.T, 4 * b), dtype=np.uint64).astype(np.uint32)
+    sc = (np.full((E, o, i // kt.T), 0.02) / kt.CB_RMS).astype(np.float16)
+    qw = words.view(np.uint8).reshape(E, o, -1)
+    save(f"moekt_{p}", qw); save(f"moekt_{p}_s", sc.view(np.uint16))
+    sg = s13 if p != "w2" else s2
+    Wk[p] = torch.from_numpy(np.stack([kt.dequant(qt, qw[e], sc[e], i, sg) for e in range(E)]))
+x = bf16(torch.randn(M, D))
+idx = torch.stack([torch.randperm(E)[:TOPK] for _ in range(M)]).int()
+wts = torch.rand(M, TOPK) * 0.5
+xq = tk.act_quant(x.clone(), 32, "ue8m0", inplace=True).float()
+y = torch.zeros(M, D)
+for m in range(M):
+    for k in sorted(range(TOPK), key=lambda k: int(idx[m, k])):
+        e = int(idx[m, k])
+        g = bf16(xq[m] @ Wk["w1"][e].t()); u = bf16(xq[m] @ Wk["w3"][e].t())
+        u = u.clamp(-10, 10); g = g.clamp(max=10)
+        mid = bf16(wts[m, k] * (torch.nn.functional.silu(g) * u))
+        midq = tk.act_quant(mid.clone()[None], 32, "ue8m0", inplace=True)[0].float()
+        y[m] += bf16(midq @ Wk["w2"][e].t())
+save("moekt_x", x.numpy()); save("moekt_idx", idx.numpy()); save("moekt_wts", wts.numpy()); save("moekt_ref", y.numpy())
 print(f"unit reference vectors -> {a.out}")

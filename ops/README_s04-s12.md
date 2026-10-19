@@ -89,6 +89,11 @@ None of this code has been executed against weights yet. The only tests are pure
   - Output: `$V41_WORK/thor/A<n>/`, format **`ops/lib/thor_format.md`**, read by s08 (CUDA) and s09 (GGUF).
 - **`overlay`** (CPU) is an NVFP4 RTN dense overlay in `thor/overlay_nvfp4/`. It is used only if the s10 overlay gate adopts it.
 - **`thor-b`** (CPU) builds arm B: the 128 kept experts copied bit-exact as `MXFP4_SRC`. Run only when s10 picks arm B.
+- **`thor-trellis`** (CPU plan, then GPU) builds the pre-registered trellis sub-arm `thor/A<n>kt`. It needs `cuda/build/libkt_viterbi.so` (`cuda/scripts/build_v41.sh libkt_viterbi`).
+  - **Format.** KT2/KT3 experts (`lib/kt.py`, `lib/thor_format.md` "Trellis experts").
+  - **Process.** It uses the same keep-set, heal and two-phase units as `thor`, with block LDLQ and a tail-biting Viterbi in place of GPTQ.
+  - **Allocation.** `alloc_kt.json` comes from a sampled-row numpy plan. Its budget is the finished K-quant build's expert bytes, so it runs after `thor`.
+  - **Disk.** It is a second ~100 GiB build next to `thor/A<n>`. The build that loses the s10 `trellis` panel can be deleted.
 
 ## s10 `s10_eval.py` — paired gates
 
@@ -116,6 +121,22 @@ For each arm it reports:
 The gates and the **pre-registered arm decision** follow `s10_gates.json`. The winner is A only if the paired Δkl32 CI excludes 0 in A's favour, then by McNemar sign, otherwise B.
 
 Outputs: `s10/final/results.json` and `s10/gates.json` (`mxfp4_master`, `nvfp4`, `thor`, `thor_arm`, `overlay_adopted`).
+
+### s10 `trellis` (after `s07 thor-trellis` and the s08 `gemv_bench` step)
+
+The panel runs on the CONFIRM split. Its arms are the shipped MXFP4/NVFP4 arm, `thorA`, `thorA_kt` and `b128`.
+
+**Adoption rule.** Pre-registered in `s10_gates.json` → `trellis`. KT is adopted only if all of these hold:
+- the paired `d_kl32` CI upper bound is below 0;
+- McNemar top-1 z is above 0;
+- KT expert bytes are at most the K-quant build's;
+- the modelled routed-expert GEMV time from `$V41_WORK/s08/gemv_bench.json` is at most 1.10× the K-quant build's.
+
+A missing bench means not adopted.
+
+**If adopted.** The `thor_quant` gate and the A/B arm decision are re-run with the KT build as arm A.
+
+**Output.** `s10/gates.json` gains `trellis_adopted`, `thor_a_build` (`kq` or `kt`) and `thor_build_dir`. Publishing and serving must take the Thor build from `thor_build_dir` when it is present.
 
 ## s12 `s12_publish.py` — cards and visibility
 
