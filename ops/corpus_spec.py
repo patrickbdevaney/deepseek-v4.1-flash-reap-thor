@@ -202,8 +202,8 @@ SOURCES: dict[str, list[dict]] = {
         S("SWE-bench/SWE-bench", None, "train", 0.15, _qa(["problem_statement"], ["patch"]), licence="mit", generator="human", status="new"),
         S("Salesforce/xlam-function-calling-60k", None, "train", 0.20, _xlam, licence="cc-by-4.0",
           generator="unverified", status="new"),
-        S("nvidia/Nemotron-Post-Training-Dataset-v1", "tool_calling", "train", 0.15, _messages,
-          licence="cc-by-4.0", generator="unverified", status="new"),
+        S("nvidia/Nemotron-Post-Training-Dataset-v1", "tool_calling", "train", 0.15, _messages,   # card read 2026-10-19:
+          licence="cc-by-4.0", generator="DeepSeek-R1-0528 / Qwen3-235B-A22B", status="new"),  # responses from these two only
     ],
     "code": [
         S("nvidia/OpenCodeReasoning-2", "train", "python", 0.30, _qa(["question", "input"], ["solution"], ["r1_generation"]),
@@ -213,8 +213,8 @@ SOURCES: dict[str, list[dict]] = {
         S("nvidia/OpenCodeInstruct", None, "train", 0.25, _qa(["input", "instruction"], ["output"]),
           licence="cc-by-4.0", generator="Llama-3.3-70B-Instruct"),
         S("GPUMODE/KernelBook", None, "train", 0.20, _text("python_code", "triton_code"), licence="apache-2.0", generator="human + torch inductor"),
-        S("SakanaAI/AI-CUDA-Engineer-Archive", None, "level_1", 0.10, _text("CUDA_Code"), licence="cc-by-4.0",
-          generator="unverified"),
+        # SakanaAI/AI-CUDA-Engineer-Archive dropped 2026-10-19: kernels written by Sakana's agent, whose LLM ensemble is
+        # not disclosed on the card (possible Claude involvement) -> fails the no-claude rule.
     ],
     "math": [
         S("nvidia/OpenMathReasoning", "default", "cot", 0.35, _qa(["problem"], ["generated_solution"]),
