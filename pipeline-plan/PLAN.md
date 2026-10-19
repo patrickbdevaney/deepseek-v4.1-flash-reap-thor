@@ -2,6 +2,32 @@
 
 **The plan the evidence supports keeps 192 of 384 routed experts per layer in DeepSeek-V4.1-Flash-1017. It selects them with HOPE (REAP-sum diagonal, re-measured `protect_frac`, per-modality vision ranking, Super-Expert guard) on a balanced 1.5-3M-token, 8k-sequence corpus with Engram switched on. The deletion is bit-exact in MXFP4. The pipeline then folds a measured router-replay gain into the next quantizer and requantizes the survivors once, from the MXFP4 source, to about 2.85 average expert bpw. That last step uses a per-layer mix with attention at Q8_0, shared experts at Q6_K, and router and hyper-connection tensors at BF16/F32. The 189 GiB Engram tables are read from NVMe as 48 O_DIRECT rows per token.** The total is about **113 GiB against the 117 GiB envelope**. The "~2.3 bpw" premise fails on both counts. At 256 experts, 2.3 bpw does not fit: 256 experts need ≤2.24 bpw. At 192 experts it fits but costs about +15-21% perplexity in quantization alone, against +0.4-1.8% for trellis at about 3 bpw on this exact checkpoint. Decode on Thor is bandwidth-bound at roughly **11.1-11.7 GB per token with the native FP8 dense path** (about 10 tok/s at the 117 GB/s our engines achieve today). An NVFP4 dense overlay brings that to about 7.3-8.0 GB (about 15 tok/s), and closing the kernel gap to 160-200 GB/s gives 20-26 tok/s. Expert bit-width moves decode by only about 6%. No runtime serves V4.1 on sm_110 today. vLLM's FlashMLA and DeepSelect ship no sm_110 code, llama.cpp's port is an unmerged PR capped near 16K context, and ik_llama.cpp has an open NaN bug with MXFP4 experts on CUDA. The serving path is therefore our own pure-CUDA server, retargeted from the DSV4-0731 engine, with a lean llama.cpp fork as the independent reference and GGUF distribution. The claim of "best teacher agreement" is provable. It needs a teacher-forced reference from a layer-streamed forward on Thor plus a rented B200 node, and a Model Confidence Set over paired top-32 KL on a frozen split. Before any of that, our own GLM-5.3 pass3-hope checkpoint has to be fixed and measured. It shipped with a known-biased heal and attention quantization we had rejected, and it has never been evaluated end to end. So the "HOPE beats our v2 mask" premise behind the selection recipe is still untested on our own model.
 
+## Why 1017 is the teacher worth pruning
+
+The capability case rests on the **1017** checkpoint, not the earlier V4.1-Flash (0909). Numbers for the two builds must never be mixed. On Artificial Analysis (third party), 0909 scored 40 against GLM-5.3-Flash's 42. **1017 scores 45** on Intelligence Index v4.3.2, #2 of 121 ([Artificial Analysis](https://artificialanalysis.ai/models/deepseek-v4-1-flash-1017)). GLM-5.3-Flash's 42 was measured on v4.3, one point-release older, so treat the 3-point lead as close rather than exact. Some aggregators list 1017 at 39.5. That figure looks stale or comes from a different configuration.
+
+The vendor card (self-reported, [HF](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)) shows 1017 ahead of 0909 on every row. It is also ahead of the *full* 753B GLM-5.3 on every row that has a GLM number:
+
+| Benchmark | 1017 | V4.1-Flash (0909) | GLM-5.3 (753B) |
+|---|---|---|---|
+| HLE w/o tools | **42.6** | 36.8 | 42.0† |
+| Terminal-Bench 4.0 (Claude Code harness) | **42.3** | 31.2 | 37.9 |
+| DeepSWE v1.1 | **77.0** | 74.2 | 66.9 |
+| ProgramBench | **29.1** | 20.3 | 19.0 |
+| Automation-Bench v1.0.6 | **60.5** | 54.8 | 48.8 |
+| Agents' Last Exam | **35.4** | 31.8 | 28.5 |
+| Apex Bench v1.1 | **72.1** | 64.6 | 56.6 |
+
+† text-only HLE subset.
+
+**What this changes.** The question is no longer whether V4.1 beats GLM. It is whether a 192-expert, ~2.85 bpw REAP of 1017 loses less than its lead over GLM-5.3-Flash, given that GLM-REAP50 pays its own pruning cost too. The only V4.1 pruning measurement (LibertAI, +14.7% text PPL at 192) is on **0909**, so 1017's pruning cost is unmeasured. If it holds, a 1017 REAP supersedes GLM-5.3-Flash REAP50 and MiMo-V2.6-Flash REAP50 for text, agentic and vision work. MiMo keeps audio and video, which V4.1 lacks.
+
+**Go/no-go gate (pre-registered).** The 1017 REAP ships as our flagship only if both hold on our harness, against cached teacher references:
+1. It beats GLM-5.3-Flash REAP50 v2 on the paired task panel across agentic, code, math and ballast. v2 is our best measured checkpoint: FP8 top-1 0.84249, NVFP4 0.83857.
+2. It reaches at least 15 tok/s decode on Thor.
+
+The 25-30 tok/s target needs ~200 GB/s kernels *and* a DSpark verify path that amortizes. Neither is evidenced yet (DSpark measured 1.00x on the 0731 engine), so 15-20 tok/s is the planning number.
+
 ## The premises that the measurements overturn
 
 Four numbers in the brief need correcting before any byte arithmetic. **Active parameters are about 16.4B per decode token, not 13B.** The 13B figure belongs to DeepSeek-V4-Flash-0731. The V4.1 paper says "8B parameters per token during prefill and 16B during decode" ([arXiv 2609.19969](https://arxiv.org/html/2609.19969v1)). The header count agrees: 6 routed experts of 3×2304×5120 over 40 layers (8.49B), the shared expert (1.42B), attention (5.13B) and the head (0.66B) ([local serving note](/home/patrickd/glm-5.3-reap/research_notes/DeepSeek%20V4.1%20Flash%20REAP%20pipeline%20plan/thor_serving_speed.md)). **There is no MTP head.** vLLM's recipe states "MTP was dropped in V4.1. DSpark is the only speculative method" ([vLLM recipe](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)). The `mtp.*` tensors are a three-block DSpark drafter with its own 128-expert, top-3 pool, totalling 7.39 GiB. A backbone keep-set does not touch it. The **parameter count of about 763B is roughly right only if the drafter is counted**: one community card totals 754.6B, with 543.6B in routed experts and 196.6B in Engram ([pipenetwork](https://huggingface.co/pipenetwork/DeepSeek-V4.1-Flash-REAP50-MLX-mixed-4_8bit)). The count is the wrong frame anyway. **40% of the 475.24 GiB checkpoint is Engram lookup tables that never need to enter RAM.** The quantity that has to fit is 268.95 GiB of MXFP4 experts plus a 9.77 GiB floor ([1017 architecture note](/home/patrickd/glm-5.3-reap/research_notes/DeepSeek%20V4.1%20Flash%20REAP%20pipeline%20plan/v41_1017_architecture_runtime.md)).
