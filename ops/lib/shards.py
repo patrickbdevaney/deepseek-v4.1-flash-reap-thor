@@ -87,6 +87,9 @@ def build_block(M, args, layer: int, idx: ShardIndex, device: str, *, with_engra
     """Construct reference Block `layer` on `device` with its weights loaded (strict)."""
     layout = M.EngramLayout.from_args(args) if with_engram else None
     torch.set_default_dtype(torch.bfloat16)
+    # precompute_freqs_cis is lru_cached in model.py: without this a CPU block built after a CUDA one
+    # registers the CUDA freqs_cis tensor as its buffer (s01 oracle crash, 2026-10-19)
+    M.precompute_freqs_cis.cache_clear()
     if layout is not None and layer in layout.layer_ids:
         with torch.device("meta"):
             blk = M.Block(layer, args, layout)
