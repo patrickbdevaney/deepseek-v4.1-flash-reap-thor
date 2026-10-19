@@ -458,6 +458,55 @@ def cards_render_and_lint():
         assert cards.lint(cards.expand(t.read_text(), parts)) == [], t.name
 
 
+@test
+def thor_card_context_and_render():
+    """s12's Thor repo: resident GiB from the build + the s08 1M-context state + workspace, the shipping
+    arm's metrics, the serving-gate requirement, and a card with no literal numbers."""
+    from ops import s12_publish as S12
+    W = TMP / "thorcard"
+    tb = W / "thor" / "A192kt"
+    tb.mkdir(parents=True, exist_ok=True)
+    def summ(v):
+        ci = lambda m: {"mean": m, "lo": m - 0.01, "hi": m + 0.01, "n_tokens": 100}
+        b = {"kl32": ci(v), "top1": ci(1 - v), "dnll": ci(v / 2), "under_sampled": False}
+        return {"overall": {"kl32": ci(v), "top1": ci(1 - v), "dnll": ci(v / 2), "confident_flip_rate": v / 10},
+                "by_bucket": {"general": b, "code": b}}
+    (W / "s10" / "trellis").mkdir(parents=True, exist_ok=True)
+    json.dump({"summaries": {"thorA_kt": summ(0.11), "thorA": summ(0.13)}}, open(W / "s10" / "trellis" / "results.json", "w"))
+    tj = {"format": "thor-v1", "n_routed_experts": 192, "expert_bpw": 2.83, "expert_bytes": 95 * 2**30,
+          "keepset_sha256": "a" * 64, "files": {"layer-00.safetensors": {"bytes": 99 * 2**30, "sha256": "0" * 64}},
+          "kt": {"window_bits": 12, "block": 128, "rht_block": 256, "encoder": "block LDLQ"}}
+    old_logs = env.LOGS
+    env.LOGS = TMP / "thorcard_logs"
+    env.LOGS.mkdir(exist_ok=True)
+    try:
+        g = {"thor": True, "thor_arm": "A"}
+        c = S12.thor_context(W, tb, tj, "thorA_kt", g)
+        assert not c["verified"], "no s08 serving gates ran: must not be publishable"
+        assert abs(c["resident_bytes"] - (99 + 2 + 6) * 2**30) < 1 and c["fits"]
+        assert c["speed"] == "not measured yet" and "pre-registered default" in c["kv_src"]
+        (W / "s08").mkdir(exist_ok=True)
+        json.dump({"decode_tok_s": 9.5}, open(W / "s08" / "decode_A192kt.json", "w"))
+        json.dump({"state_bytes": 3 * 2**30}, open(W / "s08" / "ctx1m_A192kt.json", "w"))
+        for m in ("golden_store", "decode", "server"):
+            (env.LOGS / f"done.s08_{m}_A192kt").touch()
+        c = S12.thor_context(W, tb, tj, "thorA_kt", g)
+        assert c["verified"] and abs(c["resident_bytes"] - (99 + 3 + 6) * 2**30) < 1 and "9.50 tok/s" in c["speed"]
+        assert "| thorA_kt |" in c["overall_table"] and "| general |" in c["bucket_table"]
+        tj["files"]["layer-00.safetensors"]["bytes"] = 112 * 2**30
+        assert not S12.thor_context(W, tb, tj, "thorA_kt", g)["fits"]
+    finally:
+        env.LOGS = old_logs
+    parts = {p.name[: -len(".md.part")]: p.read_text() for p in (REPO / "ops" / "cards").glob("*.md.part")}
+    ctx = {"base": {"repo": "deepseek-ai/x", "revision": "r"}, "artifact": {"name": "n", "n_routed": 192, "n_routed_base": 384},
+           "thor": {"keepset_sha256": "a" * 64, "description": "d", "expert_bpw": 2.83, "expert_bytes": 95 * 2**30},
+           "thor_build": c, "gates": {"thor": "PASS"}, "engram": {"list": "- shards"}, "spec": {"summary": "s"},
+           "s10": {"tokens": 1000, "rows": 10, "gates_sha256": "f" * 64,
+                   "summaries": {k: summ(0.1) for k in ("control", "mxfp4_A", "thorA", "b128")}}}
+    text = cards.render((REPO / "ops" / "cards" / "thor.md.tmpl").read_text(), ctx, parts)
+    assert "{{" not in text and "fits" in text and "reap_keepset.json" in text
+
+
 if __name__ == "__main__":
     w = max(len(n) for n, _, _ in RESULTS)
     for n, st, msg in RESULTS:

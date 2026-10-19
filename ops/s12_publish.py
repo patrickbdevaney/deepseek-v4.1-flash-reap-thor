@@ -10,13 +10,19 @@ Artifacts:
           gate: $V41_WORK/s09/gates.json (ops/s09_gate.py, s10_gates.json "gguf"): at least one
           level passed; the manifest lists only passing levels. The card is filled from each level's
           teacher_kld.json and the writer's dense precision (Q8_0/Q6_K), not from the Thor build.
+  thor    the served Thor-format build ($V41_WORK/thor/<s10 gates.json thor_build_dir>: A<n> K-quant,
+          A<n>kt trellis or B<n> bit-exact MXFP4), uploaded with thor.json and its keep-set.
+          gate: gates.json thor (the pre-registered thor_quant gate of the arm that ships) AND the build
+          fits the Thor budget. Published only after chain2's s08 serving gates ran on that exact build
+          (golden_store + decode + server done markers); before that the repo is not created.
+          The CUDA server source is bundled into the repo only with V41_PUBLISH_RUNTIME=1.
 Every card carries the s11 speculative-decoding result ($V41_WORK/s11/decision.json, or "not
 measured yet").
 Every card states the teacher revision, corpus spec hash, keep-set fingerprint and the sha256 of
 the pre-registered gates file; Engram instructions come from the pinned HF tree. A repo whose gate
 failed keeps its card but stays PRIVATE.
 
-    python3 ops/s12_publish.py [--only mxfp4,nvfp4,gguf] [--dry-run]
+    python3 ops/s12_publish.py [--only mxfp4,nvfp4,gguf,thor] [--dry-run]
 """
 from __future__ import annotations
 
@@ -27,7 +33,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from ops.lib import cards, env, keepset  # noqa: E402
+from ops.lib import cards, env, gates as GT, keepset  # noqa: E402
 
 STAGE = "s12"
 OUT = env.WORK / "s12"
@@ -82,7 +88,9 @@ def context() -> dict:
     if m5.exists():
         ctx["master"] = json.load(open(m5))
     arm = g["thor_arm"]
-    tb = W / "thor" / (f"A{len(kA['0'])}" if arm == "A" else f"B{len(kB['0'])}")
+    # s10 trellis writes the served build dir (A<n>kt when the KT sub-arm was adopted); before it, the arm names it
+    tb = Path(g["thor_build_dir"]) if g.get("thor_build_dir") else \
+        W / "thor" / (f"A{len(kA['0'])}" if arm == "A" else f"B{len(kB['0'])}")
     if (tb / "thor.json").exists():
         tj = json.load(open(tb / "thor.json"))
         counts = {}
@@ -93,9 +101,64 @@ def context() -> dict:
                 "(per-layer mix, protected layers higher; counts of layer x projection-group: "
                 + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + "). The heal gain was folded into w2 before rounding."
                 if arm == "A" else "Experts are the bit-exact MXFP4 blocks of the smaller keep-set (no requantization).")
+        if tj.get("kt"):
+            desc = ("Experts were requantized once from the MXFP4 source into KT2/KT3 bitshift-trellis blocks (QTIP-style, "
+                    f"{tj['kt']['window_bits']}-bit window, {tj['kt']['block']}-weight blocks, a randomized Hadamard rotation of "
+                    f"width {tj['kt']['rht_block']} along the input dimension; encoder: {tj['kt']['encoder']}); counts of layer x "
+                    "projection-group: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+                    + ". The heal gain was folded into w2 before rounding.")
         ctx["thor"] = {"n_routed": tj["n_routed_experts"], "expert_bpw": tj["expert_bpw"], "expert_bytes": tj["expert_bytes"],
-                       "description": desc, "keepset_sha256": tj["keepset_sha256"], "arm_name": "thorA" if arm == "A" else "b128"}
+                       "description": desc, "keepset_sha256": tj["keepset_sha256"],
+                       "arm_name": ("thorA_kt" if tj.get("kt") else "thorA") if arm == "A" else "b128"}
+        ctx["thor_build"] = thor_context(W, tb, tj, ctx["thor"]["arm_name"], g)
     return ctx
+
+
+def thor_context(W: Path, tb: Path, tj: dict, arm_name: str, g: dict) -> dict:
+    """The Thor-build card's values: format, bytes, resident GiB on Thor (build + main 1M-context state +
+    workspace, s10_gates.json s11.fit), paired metrics of the arm that ships, and whether chain2's s08
+    serving gates ran on this exact build."""
+    res = jload(W / "s10" / ("trellis" if arm_name == "thorA_kt" else "final") / "results.json", "s10 results for the Thor arm")
+    S = {"s10": {"summaries": res["summaries"]}}
+    fit = GT.load()[0]["s11"]["fit"]
+    name = tb.name
+    build = sum(r["bytes"] for r in tj["files"].values())
+    kv1m, kv_src = fit["main_kv_1m_gib_default"] * 2**30, "the pre-registered default (not measured yet)"
+    c = W / "s08" / f"ctx1m_{name}.json"
+    if c.exists() and json.load(open(c)).get("state_bytes"):
+        kv1m, kv_src = json.load(open(c))["state_bytes"], f"measured by the s08 1M-context run (`{c.name}`)"
+    resident = build + kv1m + fit["workspace_gib"] * 2**30
+    dec, d8 = W / "s08" / f"decode_{name}.json", W / "s08" / f"decode8k_{name}.json"
+    marks = [env.LOGS / f"done.s08_{m}_{name}" for m in ("golden_store", "decode", "server")]
+    verified = dec.exists() and all(m.exists() for m in marks)
+    speed = "not measured yet"
+    if dec.exists():
+        speed = f"{json.load(open(dec))['decode_tok_s']:.2f} tok/s at a short context"
+        if d8.exists():
+            speed += f", {json.load(open(d8))['decode_tok_s']:.2f} tok/s after an 8k-token prompt"
+        speed += " (greedy, batch 1, Engram rows on NVMe; measured by the s08 decode gate on this build)"
+    bundle = os.environ.get("V41_PUBLISH_RUNTIME") == "1"
+    return {"name": name, "format": tj["format"], "arm": arm_name, "results_file": f"s10/{'trellis' if arm_name == 'thorA_kt' else 'final'}/results.json",
+            "build_bytes": build, "kv1m_bytes": kv1m, "kv_src": kv_src, "workspace_bytes": fit["workspace_gib"] * 2**30,
+            "resident_bytes": resident, "budget_bytes": fit["budget_gib"] * 2**30, "fits": resident <= fit["budget_gib"] * 2**30,
+            "fit_text": "fits" if resident <= fit["budget_gib"] * 2**30 else "DOES NOT FIT",
+            "overall_table": cards.table(S, "table_arms", arm_name), "bucket_table": cards.table(S, "table_buckets", arm_name),
+            "speed": speed, "verified": verified,
+            "runtime_note": ("The CUDA server source used to verify this build is bundled here as `runtime/v41-thor-runtime.tar.gz` "
+                             "(the `cuda/` tree and the Engram row-file builder of the build pipeline, at the commit named in the "
+                             "archive name inside it)." if bundle else
+                             "The CUDA server that runs this format (`v41_server`) is not public yet; the files here are complete "
+                             "and verified, but you need that runtime to load them.")}
+
+
+def runtime_bundle(out: Path) -> Path:
+    """git archive of the runtime (cuda/ without build products, the Engram row-file builder and its lib)."""
+    import subprocess
+    sha = subprocess.check_output(["git", "rev-parse", "--short=12", "HEAD"], cwd=env.REPO, text=True).strip()
+    f = out / "v41-thor-runtime.tar.gz"
+    subprocess.check_call(["git", "archive", "--format=tar.gz", f"--prefix=v41-thor-runtime-{sha}/", "-o", str(f), "HEAD",
+                           "cuda", "ops/s09_engram_rowfile.py", "ops/lib", "llamacpp/ENGRAM_ROWFILE.md"], cwd=env.REPO)
+    return f
 
 
 def spec_context(W: Path) -> dict:
@@ -159,7 +222,7 @@ def publish(a):
     ctx = context()
     parts = {p.stem.replace(".md", ""): p.read_text() for p in CARDS.glob("*.md.part")}
     g = json.load(open(env.WORK / "s10" / "gates.json"))
-    only = set(a.only.split(",")) if a.only else {"mxfp4", "nvfp4", "gguf"}
+    only = set(a.only.split(",")) if a.only else {"mxfp4", "nvfp4", "gguf", "thor"}
     led = env.Ledger(env.LOGS / "s12_ledger.json")
     h = None if a.dry_run else api()
     nA = len(keepset.load(env.WORK / "s04" / "keepset.json")[0]["0"])
@@ -185,6 +248,28 @@ def publish(a):
             ctx["gguf"] = gguf_context(m, gg)
             plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "n_routed": m["n_routed_experts"]},
                          [Path(f["path"]) for f in m["files"]]))
+    if "thor" in only:
+        tc = ctx.get("thor_build")
+        if tc is None:
+            env.log("thor: no complete served Thor build; skipping the Thor repo", STAGE, "WARN")
+        elif not tc["verified"]:
+            env.log(f"thor: {tc['name']} has not passed chain2's s08 serving gates yet (golden_store/decode/server); "
+                    "skipping the Thor repo (chain2 re-runs s12 after them)", STAGE)
+        else:
+            tb = Path(g["thor_build_dir"]) if g.get("thor_build_dir") else env.WORK / "thor" / tc["name"]
+            tj = json.load(open(tb / "thor.json"))
+            kp = env.WORK / "s04" / ("keepset_128.json" if g["thor_arm"] == "B" else "keepset.json")
+            keepset.require(tj["keepset_sha256"], keepset.load(kp)[1], where=str(tb))
+            d = OUT / "thor"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "reap_keepset.json").write_bytes(kp.read_bytes())
+            files = [tb / f for f in sorted(tj["files"])] + [tb / "thor.json", d / "reap_keepset.json"]
+            if os.environ.get("V41_PUBLISH_RUNTIME") == "1":
+                files.append(runtime_bundle(d))
+            user = "<user>" if a.dry_run else h.whoami()["name"]
+            repo = f"{user}/DeepSeek-V4.1-Flash-1017-REAP{tj['n_routed_experts']}-Thor"
+            plan.append(("thor", repo, bool(g["thor"]) and tc["fits"],
+                         {"name": repo.split("/")[-1], "n_routed": tj["n_routed_experts"]}, files))
     for kind, repo, passed, art, files in plan:
         c = dict(ctx, artifact={**art, "n_routed_base": N_BASE, "kind": kind})
         text = cards.render((CARDS / f"{kind}.md.tmpl").read_text(), c, parts)
@@ -196,9 +281,10 @@ def publish(a):
             continue
         h.create_repo(repo, private=True, exist_ok=True, repo_type="model")
         for f in files:
-            if not led.done(f"{kind}/file/{f.name}"):
-                h.upload_file(path_or_fileobj=str(f), path_in_repo=f.name, repo_id=repo, repo_type="model")
-                led.finish(f"{kind}/file/{f.name}")
+            dst = f"runtime/{f.name}" if f.name.endswith(".tar.gz") else f.name
+            if not led.done(f"{kind}/file/{dst}"):
+                h.upload_file(path_or_fileobj=str(f), path_in_repo=dst, repo_id=repo, repo_type="model")
+                led.finish(f"{kind}/file/{dst}")
         if kind == "gguf":
             env.atomic_json(d / "gguf_manifest.json", ctx["gguf"])
             h.upload_file(path_or_fileobj=str(d / "gguf_manifest.json"), path_in_repo="gguf_manifest.json", repo_id=repo)

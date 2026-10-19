@@ -1,5 +1,6 @@
 #!/bin/bash
-# ops/chain2.sh: the post-chain. s08 CUDA server gates -> s09 GGUF ladder -> s12 (GGUF repo) -> s11 speculative head -> s12.
+# ops/chain2.sh: the post-chain. s07/s10 trellis -> s08 CUDA server gates -> s12 (Thor repo) -> s09 GGUF ladder -> s12 (GGUF repo)
+# -> s11 speculative head -> s12.
 # Detached: setsid nohup bash ops/chain2.sh > /dev/null 2>&1 < /dev/null &
 # Waits for ops/chain.sh to log "chain reached the end of implemented stages"; exits if ops/logs/chain.STOP exists.
 # Same conventions as chain.sh: one model-loading process at a time, quiet() before and reclaim() after every
@@ -154,6 +155,10 @@ gpu s08 golden_store $ARM
 gpu s08 decode $ARM
 gpu s08 ctx1m $ARM
 gpu s08 server $ARM
+if ! step_done s12_thor; then      # the served Thor build, now that s08 has decoded it (gate: thor + fits the budget)
+  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only thor > $L/s12_thor.log 2>&1 || stop "s12 thor publish"
+  mark s12_thor
+fi
 
 # ------------------------------------------------------------------------------------------------ phase C: GGUF ladder
 MASTER="$SEAW/master_REAP$NKEEP"
