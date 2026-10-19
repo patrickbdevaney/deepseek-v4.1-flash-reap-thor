@@ -7,7 +7,14 @@
 **Goal:** run `deepseek-ai/DeepSeek-V4.1-Flash-1017` (~763B MoE) memory-resident on a single
 Jetson AGX Thor (122 GiB unified memory, ~117 GiB usable, sm_110a).
 
-## Proposed recipe
+**Start here: [`pipeline-plan/PLAN.md`](pipeline-plan/PLAN.md)** (2026-10-19). This is the end-to-end plan from the unpruned teacher to the published MXFP4, NVFP4 and GGUF outputs. It draws on 7 research notes in [`pipeline-plan/notes/`](pipeline-plan/notes/), including the playbook of everything that worked and failed on GLM-5.3 and MiMo. It supersedes the 10-17 numbers below wherever they disagree. Key corrections:
+- The expert bit-width should be **~2.85 bpw, not 2.3**. The quality cliff for experts that start as FP4 sits at 2.79–2.58 bpw.
+- The model has **16.4B active parameters, not 13B**.
+- There are **no MTP heads**; the only draft model is DSpark.
+- **All 48 weight shards changed in 1017**, so 0909 artifacts are invalid.
+- On Thor, the blocker is **FlashMLA/DeepSelect shipping no sm_110 build**.
+
+## Proposed recipe (10-17 version)
 
 | component | plan | bytes |
 |---|---|---|
@@ -24,7 +31,7 @@ Jetson AGX Thor (122 GiB unified memory, ~117 GiB usable, sm_110a).
 - Requantizing MXFP4-source experts to 2.9 bpw is a double quantization (about +8% PPL, extrapolated).
 
 ## Showstoppers (open)
-1. **Disk.** The checkpoint is about 475 GiB and Engram needs at least 97 GiB, but the NVMe has about 26 GB free. A second drive is needed.
+1. **Disk.** The checkpoint is about 475 GiB and Engram needs at least 97 GiB, but the NVMe has about 102 GB free. A second drive is needed.
 2. **Runtime.** Nobody has booted V4.1 on sm_110a yet.
 3. **Source format.** The experts ship pre-quantized (MXFP4), so only bit-exact operations are free.
 
