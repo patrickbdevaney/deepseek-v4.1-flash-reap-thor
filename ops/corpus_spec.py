@@ -27,7 +27,9 @@ import json
 import re
 
 SEQ_LEN = 8192
-TOTAL_TOKENS = 2_000_000           # PLAN: 1.5-3M; 2M = 244 rows of 8k
+TOTAL_TOKENS = 5_000_000           # >=500k routed tokens per pool (dose-response note; GLM pass-1 under-calibration
+                                   # was its main defect). Hidden states page to NVMe (~40 KB/token, ~205 GB): Engram
+                                   # shards 47/48 read from the Seagate to make room (decision 2026-10-19)
 HELDOUT_ROWS_FRACTION = 0.10       # frozen held-out split for s04 arbitration (top-32 KL), per bucket
 
 # PLAN.md gave general 20 / agentic 15 / code 15 / vision 14 / math 12 / science 12 / finance 10
@@ -169,7 +171,9 @@ def S(hf_id, config, split, weight, fn, *, licence, generator, status="reused-gl
 #         "new"        = not yet loaded by any of our pipelines; s02 --probe must show yield.
 SOURCES: dict[str, list[dict]] = {
     "general": [
-        S("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", 0.55, _text("text"), licence="odc-by", generator="human"),
+        S("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", 0.43, _text("text"), licence="odc-by", generator="human"),
+        # encyclopedic breadth (CC-BY-SA allowed for calibration statistics, decision 2026-10-19)
+        S("wikimedia/wikipedia", "20231101.en", "train", 0.12, _text("text"), licence="cc-by-sa-3.0", generator="human", status="new"),
         # long-tail world knowledge: rare-fact experts fire rarely, so saliency undercounts them
         # unless the corpus asks many different factual questions across many topics.
         S("HuggingFaceFW/fineweb-edu", "sample-10BT", "train", 0.15, _text("text"), licence="odc-by", generator="human",
@@ -307,22 +311,21 @@ EXCLUDED = {
     ],
     "licence_nc": ["EricLu/SCP-116K", "camel-ai/physics", "camel-ai/chemistry", "camel-ai/biology",
                    "osunlp/UGround-V1-Data", "allenai/sciq"],
-    "licence_sharealike": ["tattabio/OG",
-                           # Wikipedia is CC-BY-SA. Calibration produces statistics, not a derivative
-                           # text, but the standing policy excludes share-alike; README open question.
-                           "wikimedia/wikipedia", "google-research-datasets/natural_questions"],
+    # share-alike (Wikipedia, Natural Questions, tattabio/OG) is ALLOWED (decision 2026-10-19): calibration
+    # yields saliency statistics, not a derivative text, and nothing from these sources is redistributed.
     "gated_401": ["nvidia/Nemotron-CC-Math", "TheFinAI/MultiFinBen", "mlfoundations/MINT-1T"],
 }
 
 def licence_ok(lic: str | None) -> bool | None:
-    """False for an explicit NC / share-alike / GPL licence, True for a named permissive one,
+    """False for an explicit NC / GPL licence, True for a named permissive or share-alike one (SA allowed for
+    calibration statistics, decision 2026-10-19),
     None when the card says nothing usable ("other", missing): recorded as needs-review."""
     if not lic or lic.strip().lower() in ("other", "unknown"):
         return None
     low = lic.lower()
     toks = set(re.split(r"[^a-z0-9.]+", low))
     flat = low.replace("-", "").replace("_", "")
-    if toks & {"nc", "sa", "gpl", "agpl", "lgpl"} or "noncommercial" in flat or "sharealike" in flat:
+    if toks & {"nc", "gpl", "agpl", "lgpl"} or "noncommercial" in flat:
         return False
     return True
 

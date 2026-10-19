@@ -188,7 +188,7 @@ def corpus_provenance_rules():
     assert spec.usable(r1, False, "no-claude")[0] and not spec.usable(r1, False, "human-or-self")[0]
     selfgen = next(s for s in all_src if s["generator"] == spec.SELF_GEN)
     assert spec.usable(selfgen, False, "human-or-self")[0]
-    assert spec.licence_ok("cc-by-nc-sa-4.0") is False and spec.licence_ok("cc-by-sa-3.0") is False
+    assert spec.licence_ok("cc-by-nc-sa-4.0") is False and spec.licence_ok("cc-by-sa-3.0") is True   # SA allowed 2026-10-19
     assert spec.licence_ok("apache-2.0") and spec.licence_ok("other") is None
 
 

@@ -347,3 +347,18 @@ This implements KQ4 of `notes/long_context_routing_drift.md`.
 5. **`unverified` sources.** These are xlam, the Nemotron tool-calling split and AI-CUDA-Engineer. Their cards need a human read before `--allow-unverified` is used.
 6. **Long-row memory.** The ~30 GB activation estimate at 128k is unmeasured. Run s01 with `--tokens 32768`, or a first long s03 row, before committing to 128k rows.
 7. **DSpark taps.** Held-out-only taps are about 6 GB, while all rows would be about 60 GB. How much does s11 need?
+
+## Decisions taken 2026-10-19 (standing autonomy grant, see memory dsv41-1017-reap-pipeline)
+1. **Generator policy stays `no-claude`.** Other open-model reasoning traces (R1 is V4's own lineage, QwQ, Llama) are
+   calibration input only: they shape routing statistics, nothing is redistributed. Claude-written sources stay excluded.
+   Switch to `human-or-self` once s02b has teacher-self-generated traces.
+2. **Share-alike allowed for calibration** (Wikipedia, Natural Questions): the output is saliency statistics, not a
+   derivative text. `wikimedia/wikipedia 20231101.en` added to `general` (w 0.12). NC and GPL stay excluded.
+3. **Corpus 2M -> 5M tokens** so every pool gets >= ~500k routed tokens (dose-response note; GLM pass 1's main defect was
+   under-calibration). Hidden states page to NVMe (~205 GB).
+4. **Engram shards 47/48 move to the Seagate before s03** (sha256-verified copy, then the NVMe copies are deleted), and
+   s03 runs with `--engram-dir "/media/patrickd/Seagate Portable Drive/v41_1017_engram"`. Calibration reads them once,
+   sequentially, which USB handles. **Serving never reads Engram from the Seagate:** the packed O_DIRECT row file is
+   rebuilt on the NVMe once the source backbone shards are gone.
+5. The three default-off sources (xlam, Nemotron tool-calling split, AI-CUDA-Engineer) are enabled only after their
+   dataset cards are read and recorded (generator + licence).
