@@ -65,6 +65,12 @@ step=${1:?step}; ARM=${2:-}; DRAFT=${3:-}; TAG=${4:-native}
 spec_sweep() { local c=$1 f=$OUT/spec_${1}_${ARM}_${TAG}.json; [ -f $f ] && return 0
   local K="--ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS" D=""; [ -n "$DRAFT" ] && D="--draft $DRAFT"
   [ -f $ROWS/engram_L14.v41rows ] || die "Engram row files missing ($ROWS)"
+  # fit guard (unified memory: an overcommit hard-reboots Thor): resident build + drafter (the build's own
+  # mtp shards, or the s11 head dir) + 12 GiB reserve for KV/activations/driver must fit MemAvailable
+  local ck=$(ckpt_of $ARM) need avail
+  need=$(( ( $(du -sbL $ck | cut -f1) + $( [ -n "$DRAFT" ] && du -sbL $DRAFT | cut -f1 || echo 0 ) ) / 1073741824 + 12 ))
+  avail=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
+  [ $need -le $avail ] || die "spec $c $ARM $TAG: needs ~${need} GiB (build + drafter + 12 reserve) > MemAvailable ${avail} GiB"
   if [ $c = 128 ]; then
     gpu spec128_${ARM}_$TAG $B/v41_decode $K $D --chat "Write a short paragraph about the history of the printing press." \
         --n 256 --seqmax 4096 --spec-sweep 1,2,3,4 --json $f.tmp
