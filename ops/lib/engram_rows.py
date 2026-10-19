@@ -17,6 +17,8 @@ import json
 import struct
 from pathlib import Path
 
+import os
+
 import numpy as np
 
 ST_DTYPES = {"F8_E4M3": 1, "F8_E8M0": 1, "U8": 1, "I8": 1, "BF16": 2, "F16": 2, "F32": 4, "I32": 4, "I64": 8}
@@ -68,6 +70,30 @@ class EngramTables:
         return gather(self.values, ids), gather(self.scales, ids)
 
 
+def read_rows(table: np.ndarray, a: int, b: int, *, chunk: int = 64 << 20) -> np.ndarray:
+    """table[a:b] as an in-memory array. For a memmap this reads the byte range with large pread()s
+    instead of faulting it in 4 KiB pages: over the NTFS USB drive (ntfs-3g, FUSE) page faults ran at
+    ~8 MB/s, a 64 MiB pread loop at the drive's sequential rate (2026-10-19)."""
+    if not isinstance(table, np.memmap) or table.filename is None:
+        return np.asarray(table[a:b])
+    width = table.shape[1] * table.itemsize
+    buf = np.empty((b - a, table.shape[1]), dtype=table.dtype)
+    mv = memoryview(buf.reshape(-1).view(np.uint8))
+    off, n = table.offset + a * width, (b - a) * width
+    fd = os.open(table.filename, os.O_RDONLY)
+    try:
+        os.posix_fadvise(fd, off, n, os.POSIX_FADV_SEQUENTIAL)
+        done = 0
+        while done < n:
+            k = os.preadv(fd, [mv[done:done + min(chunk, n - done)]], off + done)
+            if k <= 0:
+                raise IOError(f"short read at {off + done} in {table.filename}")
+            done += k
+    finally:
+        os.close(fd)
+    return buf
+
+
 def gather_windowed(table: np.memmap, ids: np.ndarray, out: np.ndarray, *, window_rows: int = 1 << 22,
                     start_window: int = 0, on_window=None) -> None:
     """out[i] = table[ids[i]] for a flat id array, reading the table ONCE, sequentially, in windows
@@ -84,7 +110,7 @@ def gather_windowed(table: np.memmap, ids: np.ndarray, out: np.ndarray, *, windo
         a, b = w * window_rows, min(n_rows, (w + 1) * window_rows)
         sel = np.flatnonzero((flat >= a) & (flat < b))
         if sel.size:
-            block = np.asarray(table[a:b])
+            block = read_rows(table, a, b)
             out[sel] = block[flat[sel] - a]
         if on_window is not None:
             on_window(w)
