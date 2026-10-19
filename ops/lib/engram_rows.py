@@ -76,8 +76,8 @@ def read_rows(table: np.ndarray, a: int, b: int, *, chunk: int = 64 << 20) -> np
     ~8 MB/s, a 64 MiB pread loop at the drive's sequential rate (2026-10-19)."""
     if not isinstance(table, np.memmap) or table.filename is None:
         return np.asarray(table[a:b])
-    width = table.shape[1] * table.itemsize
-    buf = np.empty((b - a, table.shape[1]), dtype=table.dtype)
+    width = int(np.prod(table.shape[1:])) * table.itemsize
+    buf = np.empty((b - a, *table.shape[1:]), dtype=table.dtype)
     mv = memoryview(buf.reshape(-1).view(np.uint8))
     off, n = table.offset + a * width, (b - a) * width
     fd = os.open(table.filename, os.O_RDONLY)

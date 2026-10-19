@@ -330,13 +330,34 @@ def unit_layer(a):
     jw = JournalWriter()                  # journals are written + fsynced off the GPU's critical path
     taps = L in CFG["dspark_target_layer_ids"] and a.taps != "none"
     t_start, n_done = time.time(), 0
-    for r, row in enumerate(C.rows):
-        if r in covered:
-            continue
+    tm = dict.fromkeys(("load", "fwd", "out", "drain", "ckpt", "apply_wait"), 0.0)   # phase seconds
+    from concurrent.futures import ThreadPoolExecutor
+    from ops.lib.engram_rows import read_rows
+    io = ThreadPoolExecutor(max_workers=1)        # prefetches the next row's stream input (pread)
+    ap = ThreadPoolExecutor(max_workers=1)        # applies a checkpoint's rows + syncs + marks, in order
+    ap_fut = None
+    todo = [r for r in range(len(C.rows)) if r not in covered]
+    pre = {todo[0]: io.submit(read_rows, H, C.sl(todo[0]).start, C.sl(todo[0]).stop)} if todo else {}
+
+    def apply_batch(batch: dict, L=L):
+        for pr, pl in batch.items():
+            apply_payload(C, pr, pl, H, PM, rid, rw, L)
+        sync_stream(H, PM, rid, rw)              # durable before any row is marked applied
+        lst.finish_many([f"r{pr}" for pr in batch])
+        for pr in batch:
+            (jdir / f"r{pr:05d}.npz").unlink()
+
+    for ti, r in enumerate(todo):
+        row = C.rows[r]
+        t0 = time.time()
         s = C.sl(r)
         n = s.stop - s.start
         memfence.require(n * BYTES_PER_TOKEN_PEAK / 2**30 + 2.0, f"L{L} r{r} ({n} tok)")
-        x = torch.from_numpy(np.ascontiguousarray(H[s])).cuda().view(torch.bfloat16)[None]   # [1, n, 4, dim]
+        hx = pre.pop(r).result()
+        if ti + 1 < len(todo):
+            nx = C.sl(todo[ti + 1]); pre[todo[ti + 1]] = io.submit(read_rows, H, nx.start, nx.stop)
+        x = torch.from_numpy(hx).cuda().view(torch.bfloat16)[None]   # [1, n, 4, dim]
+        del hx
         pm = torch.from_numpy(np.ascontiguousarray(PM[s])).cuda()[None]
         ty = C.types[s]
         image_mask = torch.from_numpy(ty >= 0).cuda()[None] if (ty >= 0).any() else None
@@ -346,11 +367,13 @@ def unit_layer(a):
         if row["heldout"]:
             valid = torch.zeros_like(valid)
         st.start_row(torch.full((n,), row["bucket_id"], dtype=torch.long, device="cuda"), valid)
+        torch.cuda.synchronize(); t1 = time.time(); tm["load"] += t1 - t0
         with torch.inference_mode():
             if blk.engram is not None:
                 x = run_engram(blk, x, L, s, image_mask, a.token_chunk)
             tap = x.mean(dim=2)[0] if taps and (a.taps == "all" or row["heldout"]) else None
             y, ffn_pre = blk(x, 0, pm, image_mask)
+        torch.cuda.synchronize(); t2 = time.time(); tm["fwd"] += t2 - t1
         ridx = torch.cat([i for i, _ in st.route]).cpu().numpy().astype(np.uint16)
         rwt = torch.cat([w for _, w in st.route]).cpu().numpy().astype(np.float16)
         assert ridx.shape == (n, K)
@@ -364,22 +387,28 @@ def unit_layer(a):
         pending[r] = payload
         del x, y, ffn_pre
         n_done += n
+        tm["out"] += time.time() - t2
         if len(pending) >= a.ckpt_rows or r == len(C.rows) - 1:
+            t3 = time.time()
             jw.drain()                               # every pending row's journal durable first
+            t4 = time.time(); tm["drain"] += t4 - t3
+            if ap_fut is not None:                   # the previous checkpoint's apply must have landed
+                ap_fut.result()
+            t4b = time.time(); tm["apply_wait"] += t4b - t4; t4 = t4b
             covered |= set(pending)
             tmp = ck.with_suffix(".tmp")
             torch.save({"state": {k: v.clone() for k, v in st.state().items()}, "rows": sorted(covered)}, tmp)
             os.replace(tmp, ck)
-            for pr, pl in pending.items():
-                apply_payload(C, pr, pl, H, PM, rid, rw, L)
-            sync_stream(H, PM, rid, rw)              # durable before any row is marked applied
-            lst.finish_many([f"r{pr}" for pr in pending])
-            for pr in pending:
-                (jdir / f"r{pr:05d}.npz").unlink()
+            t5 = time.time(); tm["ckpt"] += t5 - t4
+            ap_fut = ap.submit(apply_batch, pending)  # overlaps the next rows' compute
             pending = {}
             el = time.time() - t_start
             env.log(f"L{L}: {len(covered)}/{len(C.rows)} rows, {n_done / max(el, 1e-9):.0f} tok/s, "
-                    f"cuda peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB", STAGE)
+                    f"cuda peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB, phase s "
+                    + " ".join(f"{k}={v:.0f}" for k, v in tm.items()), STAGE)
+    if ap_fut is not None:
+        ap_fut.result()
+    io.shutdown(); ap.shutdown()
     jw.close()
     finalize_layer(L, st, C)
 
