@@ -200,7 +200,11 @@ def _prepare_run(a):
 
 
 def arbitrate(a):
-    from ops.lib import replay
+    from ops.lib import park, replay
+    # s03 parked the decoder-layer shards on the Seagate while its stream filled the NVMe; bring them
+    # back (dropping the dead stream if needed) before any replay reads the source
+    if (k := park.restore()):
+        env.log(f"restored {k} parked source shards before arbitration", STAGE)
     run = _prepare_run(a)
     names = [x["name"] for x in run.arms]
     todo = [n for n in names if not run.led.done(f"{n}/head")]
