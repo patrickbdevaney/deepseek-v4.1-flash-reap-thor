@@ -174,7 +174,28 @@ def _ci(m: dict, f: str) -> str:
     return f"{cards.fmt(m['mean'], f)} [{cards.fmt(m['ci95'][0], f)}, {cards.fmt(m['ci95'][1], f)}]"
 
 
-def gguf_context(m: dict, gate: dict, root: Path | None = None) -> dict:
+def gguf_heal_sentence(m: dict, heal: dict | None = None) -> str:
+    """One card sentence on the heal gain, from the gains s09 read back out of the published files
+    (manifest routed_gain). With the s10 heal decision for the same keep-set, the two must agree."""
+    g = m.get("routed_gain")
+    if heal is not None and heal.get("keepset_sha256") == m["keepset_sha256"]:
+        want = [float(heal["gains"][str(L)]) for L in range(len(heal["gains"]))] if heal["adopt"] else None
+        if want is not None and all(v == 1.0 for v in want):
+            want = None
+        if (g is None) != (want is None) or (g is not None and (len(g) != len(want) or any(
+                abs(a - b) > 1e-6 * max(1.0, abs(b)) for a, b in zip(g, want)))):
+            raise SystemExit("gguf: the files' deepseek41.reap.routed_gain does not match the s10 heal decision "
+                             f"(adopt={heal['adopt']}); rebuild s09 convert after the decision")
+    if g is None:
+        return ("No heal gain is applied: the files carry no `deepseek41.reap.routed_gain` key, so the routed experts' "
+                "summed output is used exactly as converted from the unhealed MXFP4 master.")
+    s = sorted(g)
+    return (f"The per-layer heal gain is carried in the files as `deepseek41.reap.routed_gain` ({len(g)} layers, median "
+            f"{s[len(s) // 2]:.4f}, range {s[0]:.4f}-{s[-1]:.4f}), and the fork's patch 0004 multiplies each layer's "
+            "routed-expert sum by it before the shared expert is added, the same gain the NVFP4 build folds into `w2`.")
+
+
+def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | None = None) -> dict:
     """The GGUF card's values: one row per published level from its own teacher_kld.json stats (carried
     in the s09 manifest) and the s09 gate; the dense precision the writer used."""
     rows = ["| level | expert bpw | size (GiB) | kl32 (95% CI) | top-1 agreement | dNLL | GPU layers in the eval |",
@@ -201,6 +222,7 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None) -> dict:
     dense = ["| tensors | precision |", "|---|---|"] + [f"| {k} | {v} |" for k, v in m["dense_precision"].items()]
     return {"manifest_name": "gguf_manifest.json", **m, "levels_table": "\n".join(rows), "offload_note": note,
             "dense_table": "\n".join(dense), "eval_tokens": tokens.pop(), "engram_doc": m.get("engram", ""),
+            "heal_sentence": gguf_heal_sentence(m, heal),
             "gate_status": "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
 
 
@@ -232,7 +254,10 @@ def publish(a):
         plan.append(("mxfp4", m["repo"], g["mxfp4_master"], {"name": m["repo"].split("/")[-1], "n_routed": nA}, []))
     if "nvfp4" in only:
         m = json.load(open(env.WORK / "s07" / f"manifest_nvfp4_REAP{nA}.json"))
-        plan.append(("nvfp4", m["repo"], g["nvfp4"], {"name": m["repo"].split("/")[-1], "n_routed": nA}, []))
+        if m.get("skipped"):
+            env.log(f"nvfp4: not built ({m['skipped']}); no NVFP4 repo", STAGE)
+        else:
+            plan.append(("nvfp4", m["repo"], g["nvfp4"], {"name": m["repo"].split("/")[-1], "n_routed": nA}, []))
     if "gguf" in only:
         mf = env.WORK / "s09" / "manifest.json"
         if not mf.exists():
@@ -245,7 +270,7 @@ def publish(a):
                 raise SystemExit(f"gguf: manifest lists levels that did not pass the s09 gate: {stray}")
             user = "<user>" if a.dry_run else h.whoami()["name"]
             repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{m['n_routed_experts']}-GGUF"
-            ctx["gguf"] = gguf_context(m, gg)
+            ctx["gguf"] = gguf_context(m, gg, heal=ctx["heal"])
             plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "n_routed": m["n_routed_experts"]},
                          [Path(f["path"]) for f in m["files"]]))
     if "thor" in only:

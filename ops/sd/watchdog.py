@@ -13,8 +13,8 @@ Each tick:
      ops/logs/NEEDS_OWNER. A retried STOP is moved to ops/logs/stop_history/;
   4. starts dsv41-chain.service and dsv41-chain2.service (no-ops when active; should_run.sh skips finished chains,
      a STOP, or an unmounted Seagate; chain.sh/chain2.sh flocks reject a duplicate of a setsid-launched copy);
-  5. leafllm: removes ~/leafllm/run/runner.stop once chain2 reached its end with no STOP (the REAP's
-     Thor-exclusive work is done). Never earlier.
+  5. leafllm: removes ~/leafllm/run/runner.stop once chain2 reached its end with no STOP and no OWNER_FOLLOWUP
+     (soft-failed CUDA/s11 work is Thor-exclusive work still owed). Never earlier.
 
     python3 -I ops/sd/watchdog.py [--dry-run] [--selftest]
 """
@@ -37,6 +37,7 @@ STOP = L / "chain.STOP"
 STATE = L / "sd_state.json"
 HEALTH = L / "sd_health.log"
 OWNER = L / "NEEDS_OWNER"
+FOLLOW = L / "OWNER_FOLLOWUP"      # chain2 soft failures (CUDA server, s11): the release went out without them
 HIST = L / "stop_history"
 MEMGUARD_LOG = R / "logs" / "memguard.log"
 LEAF_STOP = Path.home() / "leafllm" / "run" / "runner.stop"
@@ -239,14 +240,15 @@ def main(dry: bool) -> None:
 
     # ---- 5. leafllm
     done2 = (L / "done.c2_s12_final").exists() and "chain2 reached the end" in (L / "chain.log").read_text(errors="replace")
-    if done2 and not STOP.exists() and not ch and LEAF_STOP.exists():
+    if done2 and not STOP.exists() and not FOLLOW.exists() and not ch and LEAF_STOP.exists():
         chain_log("REAP Thor-exclusive stages done: removing ~/leafllm/run/runner.stop (leafllm resumes)")
         if not dry:
             LEAF_STOP.unlink()
 
     mounted = os.path.ismount(SEA)
     health(f"chains={ch or '-'} work={stage} mem={mem_avail()} nvme={gib_free(Path.home())} "
-           f"seagate={gib_free(SEA) if mounted else 'UNMOUNTED'} {note or 'no STOP'}")
+           f"seagate={gib_free(SEA) if mounted else 'UNMOUNTED'} {note or 'no STOP'}"
+           + (f" follow-ups={len(FOLLOW.read_text().splitlines())}" if FOLLOW.exists() else ""))
     if not dry:
         STATE.write_text(json.dumps(st, indent=1))
 

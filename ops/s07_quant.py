@@ -137,6 +137,13 @@ def cmd_nvfp4(a):
     keep, fp = keepset.load(Path(a.keepset))
     n_keep = len(keep["0"])
     gains = heal_decision(fp)
+    if all(g == 1.0 for g in gains.values()):
+        # Without an adopted heal gain the repack is the published MXFP4 master re-encoded, value for value: a second
+        # ~150 GB repository of the same model. Skip it; s12 then publishes the MXFP4 master and the GGUF only.
+        env.atomic_json(OUT / f"manifest_nvfp4_REAP{n_keep}.json", {
+            "keepset_sha256": fp, "skipped": "heal gain not adopted: NVFP4 would equal the MXFP4 master", "ts": env.now()})
+        env.log("nvfp4: heal gain not adopted, so the repack would duplicate the MXFP4 master; skipped", STAGE)
+        return
     led = env.Ledger(env.LOGS / f"s07_nvfp4_REAP{n_keep}_ledger.json")
     if led.get("keepset"):
         keepset.require(fp, led.get("keepset")["sha256"], where="s07 nvfp4 ledger")
