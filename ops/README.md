@@ -428,3 +428,33 @@ s03's NVMe paging (~82 GB for a 2M-token corpus) belongs to chain 1, and s04 dro
 - `kld` refuses a partial offload from `/media`.
 
 The exception is `s11_tapdump`, which reads the source backbone's dense weights through the symlinks at about 36 min per pass. That is calibration-style sequential reading, not serving.
+
+## Unattended operation (systemd user units, 2026-10-21)
+
+From s04 through the REAP and GGUF HF publishes and s11, the chains run without an interactive session. The units
+live in `ops/sd/` and are symlinked into `~/.config/systemd/user/`; lingering is on, so they survive logout and reboot.
+
+| unit | what it does |
+|---|---|
+| `dsv41-memguard.service` | `ops/memguard.sh`, `Restart=always`, enabled at boot |
+| `dsv41-chain.service` / `dsv41-chain2.service` | `bash ops/chain.sh` / `bash ops/chain2.sh`; `ExecCondition=ops/sd/should_run.sh` skips a finished chain, a `chain.STOP`, or an unmounted Seagate (it tries `udisksctl mount` first). No `Restart=`: the watchdog starts them |
+| `dsv41-watchdog.timer` → `.service` | `ops/sd/watchdog.py` every 15 min and 3 min after boot |
+
+The watchdog, each tick:
+- writes one line to `ops/logs/sd_health.log`;
+- kills the chains' working processes, by exact PID, after 2 h with no CPU time and no read/write bytes (sockets count, so a hung upload qualifies);
+- retries a `chain.STOP` only for transient classes, at least 20 min after it was written:
+  - upload, publish, download or copy failures: 3 tries;
+  - resource conflicts (a vLLM server, a leafllm runner, a busy GPU, memory not back to baseline, the Seagate unmounted): 48 tries;
+  - an unclassified step failure within 15 min of a memguard kill: 2 tries.
+- never retries gates, sha/verify failures, missing artifacts or disk shortfalls. Those write `ops/logs/NEEDS_OWNER` and wait for you.
+- starts both chain services. If they are already running, or an earlier setsid copy holds the flock, this does nothing.
+- removes `~/leafllm/run/runner.stop` only once chain2 has reached its end with no STOP.
+
+Retried STOP files go to `ops/logs/stop_history/`. Uploads run with `HF_XET_FIXED_UPLOAD_CONCURRENCY=8` and never with
+`HF_XET_HIGH_PERFORMANCE` (`ops/sd/env`). chain2 turns HP on only for its master download.
+
+    systemctl --user status dsv41-memguard dsv41-chain dsv41-chain2 dsv41-watchdog.timer
+    tail ops/logs/sd_health.log; cat ops/logs/NEEDS_OWNER 2>/dev/null
+    # after fixing a non-retryable STOP: rm ops/logs/chain.STOP   (the next tick restarts the chains)
+    # pause everything: systemctl --user stop dsv41-watchdog.timer dsv41-chain dsv41-chain2

@@ -1,0 +1,10 @@
+[Unit]
+Description=DSV4.1-1017 REAP watchdog every 15 min (and 3 min after boot)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=DSV4.1-1017 REAP memguard (page-cache reclaim + last-resort kill of this project's own stage)
+
+[Service]
+Type=simple
+WorkingDirectory=/home/patrickd/deepseek-v4.1-flash-reap-thor
+# argv matches chain.sh's `pgrep -f ops/memguard.sh`, so the chains never spawn a second guard; its flock does the rest
+ExecStart=/bin/bash ops/memguard.sh
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=default.target

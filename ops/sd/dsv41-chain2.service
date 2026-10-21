@@ -1,0 +1,18 @@
+[Unit]
+Description=DSV4.1-1017 REAP chain2 (s07 trellis -> s08 -> s12 thor -> s09 GGUF -> s12 gguf -> s11 -> s12), resumable
+After=network-online.target dsv41-memguard.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/patrickd/deepseek-v4.1-flash-reap-thor
+ExecCondition=/bin/bash ops/sd/should_run.sh chain2
+# Same argv as the setsid launches.
+ExecStart=/bin/bash ops/chain2.sh
+# No Restart=: a STOP is a decision (ops/sd/watchdog.py retries only the transient classes); a lock held by an
+# earlier setsid copy makes this exit 0 and the watchdog timer tries again.
+Restart=no
+KillMode=control-group
+TimeoutStopSec=600
+StandardOutput=append:/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/logs/sd_chain2.out
+StandardError=append:/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/logs/sd_chain2.out
+EnvironmentFile=/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/sd/env

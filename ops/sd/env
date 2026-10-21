@@ -1,0 +1,8 @@
+# Environment for the dsv41 user units (systemd EnvironmentFile syntax: no expansion).
+PATH=/home/patrickd/.local/bin:/usr/local/cuda-13.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LD_LIBRARY_PATH=/usr/local/cuda-13.0/targets/sbsa-linux/lib:/usr/local/cuda-13.0/lib64
+LANG=en_US.UTF-8
+PYTHONUNBUFFERED=1
+# Uploads: fixed concurrency, NEVER HF_XET_HIGH_PERFORMANCE (it OOMs the unified memory). chain2 turns HP on
+# explicitly for its one download.
+HF_XET_FIXED_UPLOAD_CONCURRENCY=8

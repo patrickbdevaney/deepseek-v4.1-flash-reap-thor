@@ -1,0 +1,8 @@
+[Unit]
+Description=DSV4.1-1017 REAP watchdog: health log, stall kill, bounded STOP retry, (re)start the chains
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/patrickd/deepseek-v4.1-flash-reap-thor
+ExecStart=/usr/bin/python3 -I ops/sd/watchdog.py
+TimeoutStartSec=600
