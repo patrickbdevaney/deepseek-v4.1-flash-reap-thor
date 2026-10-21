@@ -26,7 +26,8 @@ Protected layers: 0-1, Engram 1/14, KV sources 2/8/14/20, DSpark taps 37-39 (fro
   quant   LEVEL                      llama-quantize (+ optional --ef error feedback) -> gguf-split (<50 GB) -> verify
   verify  LEVEL                      types, eos/eot, keep-set fingerprint and split sizes, from the written files
   manifest [--levels ..] [--repo R]  $V41_WORK/s09/manifest.json for ops/s12_publish.py:
-                                     {"repo"?, "files": [{"path", "sha256"}], "dense_precision", ...}
+                                     {"repo"?, "files": [{"path", "sha256"}], "dense_precision", "routed_gain", ...}
+                                     (routed_gain: the heal gains read back from split 1, or null)
                                      only levels whose splits re-verify; sha256 cached by (size, mtime)
 
 CPU and disk only, no GPU. llama-quantize runs at -t 4 unless S09_THREADS says otherwise.
@@ -74,6 +75,7 @@ LEVELS = {
     "L2": {"target": 2.85, "ladder": ["IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S"], "protected": "IQ3_S"},
     "L3": {"target": 2.46, "ladder": ["IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS"], "protected": "IQ3_XXS"},
 }
+GAIN_KEY = "deepseek41.reap.routed_gain"   # per-layer heal gain on the routed sum (fork patch 0004); absent = 1.0
 EXPERT_RE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.weight$")
 
 
@@ -288,6 +290,8 @@ def verify_whole(level: str, path: Path, p: dict) -> None:
     fp_key = "deepseek41.reap.keep_set_sha256"
     if not kv.get(fp_key) or kv.get(fp_key) != src.get(fp_key):
         bad.append(f"keep-set fingerprint {kv.get(fp_key)} != source {src.get(fp_key)}")
+    if kv.get(GAIN_KEY) != src.get(GAIN_KEY):
+        bad.append(f"{GAIN_KEY} {kv.get(GAIN_KEY)} != source {src.get(GAIN_KEY)} (the heal gain must survive quantize)")
     if bad:
         raise SystemExit("FATAL verify:\n  " + "\n  ".join(bad[:40]))
     log(f"verify {level}: {path.name} types, eos/eot={EOS_ID}, keep-set {kv[fp_key][:12]} OK "
@@ -328,17 +332,20 @@ def write_manifest(levels: list[str], repo: str | None) -> dict:
     re-verify are listed; a level without a teacher_kld.json is listed with kld = null."""
     cache_f = OUT / "sha256_cache.json"
     cache = json.loads(cache_f.read_text()) if cache_f.exists() else {}
-    files, lv_out, fps = [], {}, set()
+    files, lv_out, fps, gains = [], {}, set(), set()
     for lv in levels:
         parts = sorted((OUT / lv).glob(f"{NAME}-{lv}-0*-of-*.gguf"))
         if not parts:
             log(f"manifest: {lv} has no splits, not listed")
             continue
         verify_splits(lv)
-        fp = gguf_kv(parts[0]).get("deepseek41.reap.keep_set_sha256")
+        kv1 = gguf_kv(parts[0])
+        fp = kv1.get("deepseek41.reap.keep_set_sha256")
         if not fp:
             raise SystemExit(f"FATAL: {parts[0].name} carries no keep-set fingerprint")
         fps.add(fp)
+        g = kv1.get(GAIN_KEY)
+        gains.add(None if g is None else tuple(float(x) for x in g))
         for f in parts:
             files.append({"path": str(f), "sha256": sha256_cached(f, cache), "bytes": f.stat().st_size, "level": lv})
             cache_f.write_text(json.dumps(cache))
@@ -351,10 +358,14 @@ def write_manifest(levels: list[str], repo: str | None) -> dict:
         raise SystemExit("FATAL: no verified GGUF level to put in the manifest")
     if len(fps) != 1:
         raise SystemExit(f"FATAL: levels disagree on the keep-set: {sorted(fps)}")
+    if len(gains) != 1:
+        raise SystemExit(f"FATAL: levels disagree on {GAIN_KEY}: {sorted(gains, key=str)}")
+    gain = gains.pop()
     fork = subprocess.run(["git", "-C", str(LCPP / "llama.cpp"), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     m = {"files": files, "dense_precision": DENSE_PRECISION, "keepset_sha256": fps.pop(), "n_routed_experts": NKEEP,
          "levels": lv_out, "llama_cpp": {"pr": 28696, "pr_head": "2076412598e99127ea2554467b2b7530856895d3",
                                          "fork_head": fork, "patches": sorted(p.name for p in (LCPP / "patches").glob("*.patch"))},
+         "routed_gain": None if gain is None else list(gain),
          "eos_token_id": EOS_ID, "eot_token_id": EOS_ID, "engram": "llamacpp/ENGRAM_ROWFILE.md", "ts": env.now()}
     if repo:
         m["repo"] = repo

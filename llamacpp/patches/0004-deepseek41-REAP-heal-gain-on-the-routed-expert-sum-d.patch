@@ -1,0 +1,126 @@
+From ce1c236b6eec996f9edcbde5c286c5174bf363ee Mon Sep 17 00:00:00 2001
+From: Patrick Devaney <patrickbdevaney@gmail.com>
+Date: Wed, 21 Oct 2026 03:47:38 -0400
+Subject: [PATCH] deepseek41 : REAP heal gain on the routed-expert sum
+ (deepseek41.reap.routed_gain)
+
+Optional f32 array KV, one entry per decoder layer. When present, the routed MoE output
+of layer il is scaled by gain[il] before the shared expert is added; the shared expert is
+not scaled. That equals folding the gain into every routed expert's down-projection (w2),
+which is what the NVFP4 and Thor builds do, because the reference sums
+y = sum_k w_k * w2_k(...) + shared(x). Absent key, or all gains 1.0: graph unchanged.
+Load rejects a wrong length or a non-positive / non-finite gain.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/llama-arch.cpp         |  1 +
+ src/llama-arch.h           |  1 +
+ src/llama-hparams.h        |  6 ++++++
+ src/llama-model-loader.cpp |  1 +
+ src/models/deepseek41.cpp  | 30 ++++++++++++++++++++++++++++++
+ 5 files changed, 39 insertions(+)
+
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 6315b6ded..80abdc3d0 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -302,6 +302,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+     { LLM_KV_ENGRAM_OFFSETS,                         "%s.engram.offsets"                         },
+     { LLM_KV_ENGRAM_TOKEN_MAP,                       "%s.engram.token_map"                       },
+     { LLM_KV_ENGRAM_PAD_ID,                          "%s.engram.pad_id"                          },
++    { LLM_KV_REAP_ROUTED_GAIN,                       "%s.reap.routed_gain"                       },
+     { LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,           "%s.attention.output_group_count"           },
+     { LLM_KV_ATTENTION_OUTPUT_LORA_RANK,             "%s.attention.output_lora_rank"             },
+     { LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE,      "%s.attention.compress_rope_freq_base"      },
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index ce4823b3d..4652689e0 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -307,6 +307,7 @@ enum llm_kv {
+     LLM_KV_ENGRAM_OFFSETS,
+     LLM_KV_ENGRAM_TOKEN_MAP,
+     LLM_KV_ENGRAM_PAD_ID,
++    LLM_KV_REAP_ROUTED_GAIN,
+     LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,
+     LLM_KV_ATTENTION_OUTPUT_LORA_RANK,
+     LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE,
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index 69d017286..69dfd47b0 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -315,6 +315,12 @@ struct llama_hparams {
+     uint32_t engram_max_ngram_size  = 0;
+     std::array<uint32_t, LLAMA_MAX_LAYERS> engram_layer_ids;
+ 
++    // REAP heal gain for DeepSeek-V4.1: per decoder layer, scales the routed-expert weighted sum
++    // before the shared expert is added (the same as folding it into every routed down-proj).
++    // Read from the optional %s.reap.routed_gain; all 1.0 and unused when the key is absent.
++    bool reap_has_routed_gain = false;
++    std::array<float, LLAMA_MAX_LAYERS> reap_routed_gain;
++
+     // DeepSeek-V4.1 compresses KV on a few source layers and shares each stream with the layers
+     // that follow, so for every layer these hold the layer that published what it reads, or -1
+     // when it reads nothing. A layer whose entry is itself is a source. The KV cache needs these
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index ccfc99575..095926e6c 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -414,6 +414,7 @@ namespace GGUFMeta {
+     template bool llama_model_loader::get_arr<std::array<uint32_t, LLAMA_MAX_LAYERS>>(enum llm_kv kid, std::array<uint32_t, LLAMA_MAX_LAYERS> & result, bool required);
+     template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
+     template bool llama_model_loader::get_arr<std::vector<uint64_t>>(enum llm_kv kid, std::vector<uint64_t> & result, bool required);
++    template bool llama_model_loader::get_arr<std::vector<float>>(enum llm_kv kid, std::vector<float> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
+ 
+diff --git a/src/models/deepseek41.cpp b/src/models/deepseek41.cpp
+index c5555427a..7fab76214 100644
+--- a/src/models/deepseek41.cpp
++++ b/src/models/deepseek41.cpp
+@@ -78,6 +78,28 @@ void llama_model_deepseek41::load_arch_hparams(llama_model_loader & ml) {
+         }
+     }
+ 
++    // optional REAP heal gain on the routed-expert sum, one f32 per decoder layer
++    hparams.reap_routed_gain.fill(1.0f);
++    hparams.reap_has_routed_gain = false;
++    {
++        std::vector<float> gain;
++        if (ml.get_arr(LLM_KV_REAP_ROUTED_GAIN, gain, false)) {
++            if (gain.size() != hparams.n_layer()) {
++                throw std::runtime_error(format("reap.routed_gain has %zu entries, expected one per layer (%u)",
++                                                gain.size(), hparams.n_layer()));
++            }
++            for (size_t il = 0; il < gain.size(); ++il) {
++                if (!std::isfinite(gain[il]) || gain[il] <= 0.0f) {
++                    throw std::runtime_error(format("reap.routed_gain[%zu] = %f is not a positive finite gain", il, gain[il]));
++                }
++                hparams.reap_routed_gain[il] = gain[il];
++                hparams.reap_has_routed_gain |= gain[il] != 1.0f;
++            }
++            LLAMA_LOG_INFO("%s: REAP routed-expert heal gain present (layer 0: %.6f, layer %zu: %.6f)\n", __func__,
++                           gain.front(), gain.size() - 1, gain.back());
++        }
++    }
++
+     ml.get_arr(LLM_KV_ENGRAM_MULTIPLIERS, engram_multipliers);
+     ml.get_arr(LLM_KV_ENGRAM_PRIMES,      engram_primes);
+     ml.get_arr(LLM_KV_ENGRAM_OFFSETS,     engram_offsets);
+@@ -952,6 +974,14 @@ llama_model_deepseek41::graph::graph(const llama_model & model, const llm_graph_
+                 il);
+         cb(moe_out, "ffn_moe_out", il);
+ 
++        // REAP heal gain: scales the routed weighted sum only, never the shared expert. The
++        // reference sums y = sum_k w_k * expert_k(x) + shared(x), and every routed expert ends in
++        // its w2, so this equals the gain folded into the routed down-projections (NVFP4/Thor).
++        if (hparams.reap_has_routed_gain && hparams.reap_routed_gain[il] != 1.0f) {
++            moe_out = ggml_scale(ctx0, moe_out, hparams.reap_routed_gain[il]);
++            cb(moe_out, "ffn_moe_out_healed", il);
++        }
++
+         ggml_tensor * ffn_shexp = build_ffn(cur,
+                 layer.ffn_up_shexp, nullptr, nullptr,
+                 layer.ffn_gate_shexp, nullptr, nullptr,
+-- 
+2.43.0
+

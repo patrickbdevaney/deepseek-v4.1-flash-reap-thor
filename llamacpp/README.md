@@ -5,12 +5,12 @@ This is a lean llama.cpp fork that serves two purposes:
 - **Independent reference** for the CUDA server (`cuda/`).
 - **Consumer of the GGUF ladder** that the community uses.
 
-The fork is upstream llama.cpp at the **head of PR #28696** (DeepSeek-V4.1), which is still open and unmerged, plus three patches. `PINNED` records the shas.
+The fork is upstream llama.cpp at the **head of PR #28696** (DeepSeek-V4.1), which is still open and unmerged, plus four patches. `PINNED` records the shas.
 
 ```
 setup.sh      clone upstream, fetch pull/28696/head, check out 2076412598e9…, git am patches/  (branch v41-thor)
 build.sh      CUDA build for Thor (sm_110), -j4 by default; compile only
-patches/      0001 HC tensors F32 · 0002 reader layers reuse the index source's top-k · 0003 Engram O_DIRECT row store
+patches/      0001 HC tensors F32 · 0002 reader layers reuse the index source's top-k · 0003 Engram O_DIRECT row store · 0004 REAP heal gain
 convert_v41_reap.py    REAP-aware converter (wraps the fork's convert_hf_to_gguf.py, no edits to it)
 ENGRAM_ROWFILE.md      the packed row-file format, shared with the CUDA server
 tools/v41-teacher-kld.cpp   paired top-32 KL / top-1 / NLL against the cached teacher
@@ -42,6 +42,11 @@ The stage code lives in `ops/`:
    - The GGUF then needs no `engram_embd` tensors; if they are present they are skipped.
    - Without the variable, the PR's lazy mmap path is unchanged.
 
+4. **REAP heal gain on the routed sum** (`src/models/deepseek41.cpp`, KV plumbing in `llama-arch`, `llama-hparams.h`, `llama-model-loader.cpp`). An optional f32 array KV `deepseek41.reap.routed_gain`, one entry per decoder layer. When present, layer `il`'s routed-MoE output is multiplied by `gain[il]` (`ggml_scale`) before the shared expert is added; the shared expert is not scaled.
+   - This is the same gain the NVFP4 and Thor builds fold into every routed expert's `w2` (`ops/s07_quant.py`): the reference computes `y = sum_k w_k * w2_k(...) + shared(x)`, so a gain on every routed `w2` is a gain on the routed weighted sum.
+   - The MXFP4 master cannot carry it (an E8M0 scale moves only by powers of two), so the GGUF carries it as metadata instead and every level inherits it through `llama-quantize`.
+   - Absent key: graph unchanged. Load rejects a wrong length and any non-positive or non-finite gain.
+
 The REAP-aware converter is `convert_v41_reap.py`. It refuses to convert unless:
 
 - `<master>/reap_keepset.json` exists (s05 writes it with `keepset.save`);
@@ -57,6 +62,8 @@ All of these checks are fatal; none is a warning. `KeepsetMismatch` subclasses `
 - Engram is dropped.
 
 The fingerprint, source expert count, kept ids and teacher revision go into `deepseek41.reap.*`.
+
+`--heal-gains PATH` (JSON `{"0": g, ..., "39": g}`, or `{"keepset_sha256", "gains": {...}}`) writes `deepseek41.reap.routed_gain` only if some gain differs from 1.0 (patch 4 applies it). CHAIN_STEPS `convert` derives the file with `ops/s07_quant.py heal_decision()`, the same rule as the NVFP4/Thor builds, and fails if `s10/heal/decision.json` is missing; arm B ships unhealed, as `s07 thor-b` does. `quant` verifies that every level keeps the source's gain, and `manifest` records it as `routed_gain` for s12's card.
 
 ### Contracts with the other stages
 

@@ -258,3 +258,95 @@ def test_manifest_matches_s12_contract(tmp_path, monkeypatch):
     for f in m["files"]:
         assert f["sha256"] == hashlib.sha256(Path(f["path"]).read_bytes()).hexdigest()
     assert sorted(m["levels"]) == ["L2", "L3"] and m["keepset_sha256"] == "a" * 64
+
+
+# ---------------------------------------------------------------- heal gain (deepseek41.reap.routed_gain)
+def _write_kv_only(path: Path, reap: dict):
+    import gguf
+    sys.path.insert(0, str(REPO / "llamacpp"))
+    conv = importlib.import_module("convert_v41_reap")
+    w = gguf.GGUFWriter(str(path), "deepseek41")
+    conv.write_reap_kv(w, "deepseek41", reap)
+    w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+    from ops import s09_gguf_ladder as lad
+    return lad.gguf_kv(path)
+
+
+def test_converter_routed_gain_kv(tmp_path):
+    sys.path.insert(0, str(REPO / "llamacpp"))
+    conv = importlib.import_module("convert_v41_reap")
+    from ops.lib import keepset
+    from ops import s09_gguf_ladder as lad
+    n = 40
+    keep = {str(L): [L, L + 1] for L in range(n)}
+    fp = keepset.fingerprint(keep)
+    gains = {str(L): 1.0 + 0.003 * L for L in range(n)}
+    gains["7"] = 1.0                                             # a layer at exactly 1 is still written
+    (tmp_path / "g.json").write_text(json.dumps({"keepset_sha256": fp, "source": "t", "gains": gains}))
+    g = conv.load_heal_gains(tmp_path / "g.json", n, fp)
+    assert g is not None and len(g) == n and g[7] == 1.0
+    reap = {"fingerprint": fp, "n_source": 384, "keep": keep, "n_layers": n, "routed_gain": g}
+    kv = _write_kv_only(tmp_path / "healed.gguf", reap)
+    got = kv[lad.GAIN_KEY]
+    assert lad.GAIN_KEY == "deepseek41." + conv.ROUTED_GAIN_KEY
+    assert len(got) == n and np.array_equal(np.asarray(got, np.float32), np.asarray(g, np.float32))
+    from gguf import GGUFReader, GGUFValueType
+    f = GGUFReader(str(tmp_path / "healed.gguf")).fields[lad.GAIN_KEY]
+    assert f.types == [GGUFValueType.ARRAY, GGUFValueType.FLOAT32]     # the fork reads std::vector<float>
+
+    # all 1.0 (heal not adopted, or arm B): no key at all, the graph stays unchanged
+    (tmp_path / "ones.json").write_text(json.dumps({str(L): 1.0 for L in range(n)}))
+    assert conv.load_heal_gains(tmp_path / "ones.json", n) is None
+    kv = _write_kv_only(tmp_path / "plain.gguf", {**reap, "routed_gain": None})
+    assert lad.GAIN_KEY not in kv and kv["deepseek41.reap.keep_set_sha256"] == fp
+
+    # malformed or foreign gains are fatal
+    for bad, msg in (({str(L): 1.0 for L in range(n - 1)}, "cover"), ({**gains, "3": 0.0}, "positive"),
+                     ({**gains, "3": float("nan")}, "positive")):
+        (tmp_path / "b.json").write_text(json.dumps(bad))
+        with pytest.raises(SystemExit, match=msg):
+            conv.load_heal_gains(tmp_path / "b.json", n)
+    with pytest.raises(SystemExit, match="MISMATCH"):
+        conv.load_heal_gains(tmp_path / "g.json", n, "0" * 64)
+
+
+def test_manifest_and_card_carry_routed_gain(tmp_path, monkeypatch):
+    from ops import s09_gguf_ladder as lad, s12_publish as P
+    import gguf
+    monkeypatch.setattr(lad, "OUT", tmp_path)
+    monkeypatch.setattr(lad, "MANIFEST", tmp_path / "manifest.json")
+    g = [1.0 + 0.01 * L for L in range(40)]
+    for lv in ("L2", "L3"):
+        (tmp_path / lv).mkdir()
+        f = tmp_path / lv / f"{lad.NAME}-{lv}-00001-of-00001.gguf"
+        w = gguf.GGUFWriter(str(f), "deepseek41")
+        w.add_string("deepseek41.reap.keep_set_sha256", "a" * 64)
+        w.add_array(lad.GAIN_KEY, [float(v) for v in g])
+        w.add_uint32("tokenizer.ggml.eos_token_id", 1)
+        w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+        w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
+        w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+    m = lad.write_manifest(["L2", "L3"], None)
+    assert np.allclose(m["routed_gain"], g) and len(m["routed_gain"]) == 40
+    s = P.gguf_heal_sentence(m)
+    assert "`deepseek41.reap.routed_gain`" in s and "median 1.2000" in s and "range 1.0000-1.3900" in s
+    heal = {"keepset_sha256": "a" * 64, "adopt": True, "gains": {str(L): v for L, v in enumerate(g)}}
+    assert P.gguf_heal_sentence(m, heal) == s
+    with pytest.raises(SystemExit, match="heal decision"):
+        P.gguf_heal_sentence(m, {**heal, "adopt": False, "gains": None})
+    with pytest.raises(SystemExit, match="heal decision"):
+        P.gguf_heal_sentence({**m, "routed_gain": None}, heal)
+    assert "No heal gain" in P.gguf_heal_sentence({**m, "routed_gain": None}, {**heal, "adopt": False})
+    # a different keep-set (arm B) is not checked against arm A's decision
+    assert "No heal gain" in P.gguf_heal_sentence({**m, "routed_gain": None}, {**heal, "keepset_sha256": "b" * 64})
+    # levels that disagree on the gain are fatal (L3 rewritten without the key)
+    f = tmp_path / "L3" / f"{lad.NAME}-L3-00001-of-00001.gguf"
+    w = gguf.GGUFWriter(str(f), "deepseek41")
+    w.add_string("deepseek41.reap.keep_set_sha256", "a" * 64)
+    w.add_uint32("tokenizer.ggml.eos_token_id", 1)
+    w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+    w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+    with pytest.raises(SystemExit, match="disagree"):
+        lad.write_manifest(["L2", "L3"], None)

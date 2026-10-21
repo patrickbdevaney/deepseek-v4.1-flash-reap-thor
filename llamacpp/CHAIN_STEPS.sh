@@ -75,7 +75,26 @@ convert)
   KEEP_SHA=${KEEP_SHA:-$($PY -c "import sys;sys.path.insert(0,'.');from ops.lib import keepset;print(keepset.load('$WORK/s04/keepset.json')[1])")} \
       || die "no arbitrated keep-set (s04/keepset.json)"
   mkdir -p $G/src
-  $PY llamacpp/convert_v41_reap.py "$MASTER" --expect-keep-sha "$KEEP_SHA" --no-mtp \
+  # heal gains: the SAME rule as the NVFP4/Thor builds (ops/s07_quant.py heal_decision: s10/heal/decision.json
+  # adopt + s06/heal_gain.json, both keep-set checked; no decision file -> fatal, the GGUF must not precede it).
+  # Arm B ships unhealed, as s07 thor-b does (s06 measured arm A's keep-set).
+  $PY - "$KEEP_SHA" "$G/src/heal_gains.json" > $L/s09_heal_gains.log 2>&1 <<'EOF' || die "heal gains (see $L/s09_heal_gains.log)"
+import json, sys
+sys.path.insert(0, ".")
+from ops.lib import env, keepset
+from ops.s07_quant import N_LAYERS, heal_decision
+sha, out = sys.argv[1], sys.argv[2]
+dec = env.WORK / "s10" / "heal" / "decision.json"
+b = env.WORK / "s04" / "keepset_128.json"
+if dec.exists() and b.exists() and keepset.load(b)[1] == sha and json.load(open(dec))["keepset_sha256"] != sha:
+    gains, why = {str(L): 1.0 for L in range(N_LAYERS)}, "arm B ships unhealed (as s07 thor-b)"
+else:
+    gains, why = heal_decision(sha), "s07 heal_decision"
+json.dump({"keepset_sha256": sha, "source": why, "gains": gains}, open(out, "w"), indent=1)
+print(f"heal gains ({why}): {sum(v != 1.0 for v in gains.values())} of {len(gains)} layers != 1.0 -> {out}")
+EOF
+  cat $L/s09_heal_gains.log >> $C
+  $PY llamacpp/convert_v41_reap.py "$MASTER" --expect-keep-sha "$KEEP_SHA" --heal-gains $G/src/heal_gains.json --no-mtp \
       --outfile $G/src/V4.1-1017-REAP$V41_NKEEP-src.gguf > $L/s09_convert.log 2>&1 || die "convert (keep-set errors are fatal by design)"
   reclaim convert; mark convert ;;
 imatrix)

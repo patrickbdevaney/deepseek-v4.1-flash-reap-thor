@@ -1,5 +1,5 @@
 #!/bin/bash
-# Recreate the lean fork: upstream llama.cpp at the pinned PR #28696 head + our three patches (branch v41-thor).
+# Recreate the lean fork: upstream llama.cpp at the pinned PR #28696 head + our four patches (branch v41-thor).
 set -euo pipefail
 cd "$(dirname "$0")"
 PIN=2076412598e99127ea2554467b2b7530856895d3
