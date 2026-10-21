@@ -268,6 +268,21 @@ def drift_no_false_rising_at_v41_scale():
 
 
 @test
+def drift_domain_specialist_in_long_rows_not_rising():
+    # many short rows of a uniform mix + a few long rows where expert 5 is busy at EVERY position
+    # (a books/code specialist): flat in position, so it must not even reach the bootstrap
+    rng = np.random.default_rng(3)
+    rows = _rows(24, 1024, 32, 4, rng)
+    for _ in range(3):
+        (idx, w), = _rows(1, 16384, 32, 4, rng)
+        on = rng.random(16384) < 0.5
+        idx[on, 1:] = np.where(idx[on, 1:] == 5, 6, idx[on, 1:]); idx[on, 0] = 5
+        rows.append((idx, w))
+    rep = drift.layer_report(rows, np.ones(32, bool), n_draws=200)
+    assert 5 not in rep["rising_slope"] and 5 not in rep["block_rising"], rep["rising_slope"]
+
+
+@test
 def drift_helpers():
     assert drift.pos_bin(np.array([0, 7, 8, 1023, 1024, 8191, 8192, 131071, 131072])).tolist() == [0, 0, 1, 3, 4, 6, 7, 10, 11]
     R = np.array([[0.0, 1, 2, 3], [5, 6, 7, 8]]) + 0

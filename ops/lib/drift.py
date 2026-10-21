@@ -173,12 +173,17 @@ def _layer_report(rows, pruned, super_cand, n_draws, seed, sink_ratio, sink_floo
     # RISING. The sink bin is excluded (8 tokens, handled above). With hundreds of experts a CI
     # alone flags a few flat experts by chance, so a rising expert must also show an effect on
     # POOLED mass (per-row shares in the small early bins are too noisy): its pooled share in the
-    # two furthest populated bins >= rise_ratio x its pooled share in [8, 1k).
+    # two furthest populated bins >= rise_ratio x its pooled share in [8, 1k) OF THE SAME ROWS.
+    # Matched rows matter: only the few long rows reach the far bins, so an [8, 1k) baseline pooled
+    # over every row compares long-document domains (books, code) against the whole corpus mix and
+    # flags domain specialists as position-rising (2026-10-20: 35-48% of the flags on L2/L5/L13).
     pm = Ms.sum(0)                                                  # [E, bins] pooled over rows
     pop = np.flatnonzero(pm.sum(0) > 0)
     far = pop[-2:] if pop.size >= 2 else pop
+    reach = Ms[:, :, far].sum((1, 2)) > 0                           # rows that populate the far bins
+    pe = Ms[reach].sum(0)
     with np.errstate(invalid="ignore", divide="ignore"):
-        early = pm[:, 1:REF_BIN + 1].sum(1) / pm[:, 1:REF_BIN + 1].sum()
+        early = pe[:, 1:REF_BIN + 1].sum(1) / pe[:, 1:REF_BIN + 1].sum()
         late = pm[:, far].sum(1) / pm[:, far].sum()
     rising = np.zeros(E, bool)
     slopes = np.full(E, np.nan)
