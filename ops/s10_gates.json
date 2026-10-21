@@ -36,7 +36,9 @@
       "must_beat_random_kl32": true,
       "drift_verdict_not": [
         "BLOCK"
-      ]
+      ],
+      "long_bins_required": false,
+      "long_bins_note": "Amended 2026-10-21 before any s10 result: the CONFIRM split has no row past 8k (the only held-out longctx row, 58,789 tokens, falls in SCREEN), so the long-bin clause cannot be evaluated on the release panel. It is NOT a release gate; long-context retention is reported from the SCREEN longctx row as a diagnostic and the cards say so. gates.py fails closed if long_bins_required is true and no long bin is sampled."
     },
     "nvfp4": {
       "why": "lossless repack of the MXFP4 master plus the folded heal gain: it is the healed MXFP4 arm",
@@ -59,7 +61,7 @@
     "adopt_if": "KT - KQ paired d_kl32 95% CI upper < max_d_kl32_hi AND McNemar top-1 z > min_top1_z AND KT expert bytes <= KQ expert bytes AND the KT build's modelled routed-expert GEMV time per token (s08 gemv_bench, M=1, summed over every layer's two passes with its allocated formats) <= max_gemv_time_ratio x the KQ build's; a missing bench means not adopted",
     "max_d_kl32_hi": 0.0,
     "min_top1_z": 0.0,
-    "max_gemv_time_ratio": 1.10,
+    "max_gemv_time_ratio": 1.1,
     "then": "if adopted, the KT build replaces thorA: the thor_quant gate (vs the shipped MXFP4/NVFP4 arm) and the A/B arm decision are re-run on this panel with thorA_kt as arm A; otherwise the K-quant build ships unchanged"
   },
   "arm_decision": {

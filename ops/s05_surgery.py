@@ -133,8 +133,24 @@ class Uploader:
             return
         if not self.api.model_info(self.repo).private:
             raise SystemExit(f"{self.repo} is PUBLIC before the s10 gates: refusing to upload {path_in_repo}")
-        self.api.upload_file(path_or_fileobj=str(local), path_in_repo=path_in_repo, repo_id=self.repo,
-                             repo_type="model", commit_message=f"s05: {path_in_repo}")
+        retry(lambda: self.api.upload_file(path_or_fileobj=str(local), path_in_repo=path_in_repo, repo_id=self.repo,
+                                           repo_type="model", commit_message=f"s05: {path_in_repo}"), what=path_in_repo)
+
+
+def retry(fn, what: str, tries: int = 5, wait: float = 60.0):
+    """Transient HF/network errors (timeouts, 5xx, connection resets) must not STOP an unattended chain: back off and
+    retry. Client errors (4xx other than 408/429) are re-raised at once - they will not heal by waiting."""
+    import time
+    for k in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - classified below, re-raised when not transient
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            transient = code is None or code >= 500 or code in (408, 429)
+            if not transient or k == tries - 1:
+                raise
+            env.log(f"{what}: transient upload error ({type(e).__name__} {code}); retry {k + 1}/{tries - 1} in {wait:.0f}s", STAGE, "WARN")
+            time.sleep(wait * (k + 1))
 
 
 def engram_pointer(weight_map: dict, shas: dict) -> dict:
@@ -145,25 +161,56 @@ def engram_pointer(weight_map: dict, shas: dict) -> dict:
                        "tensors": sorted(k for k, v in weight_map.items() if v == shard_name(i))} for i in ENGRAM_SHARDS]}
 
 
+def local_master_dir(tag: str) -> Path:
+    """The local master: on the Seagate (NVMe space belongs to s06/s07/the Engram rows). Never served from it: chain2's
+    GGUF convert reads it once, sequentially; s12 uploads it."""
+    if not orchestrate.SEAGATE.is_dir() or not os.path.ismount(orchestrate.SEAGATE):
+        raise SystemExit(f"s05: the Seagate is not mounted at {orchestrate.SEAGATE}; the local master needs ~152 GiB there")
+    need = 160 << 30
+    if orchestrate.disk_free(orchestrate.SEAGATE) < need + (40 << 30):
+        raise SystemExit("s05: not enough space on the Seagate for the local master (~152 GiB + 40 GiB margin)")
+    return orchestrate.SEAGATE / "v41_staging" / f"master_{tag}"
+
+
 def default_repo(n_keep: int) -> str:
     from huggingface_hub import HfApi
     return f"{HfApi().whoami()['name']}/DeepSeek-V4.1-Flash-1017-REAP{n_keep}-MXFP4"
 
 
+def check_arbitration(fp: str) -> None:
+    """s04 decide keeps only finite per-token kl32 and sorts a NaN mean first, so a numerically broken arm could win.
+    Refuse to cut a master from a keep-set unless every arbitrated arm was scored on the same, complete token set
+    with a finite mean, and the keep-set is arm A's winner."""
+    import math
+    arb = json.load(open(env.WORK / "s04" / "arbitration.json"))
+    n = {k: v["overall"]["kl32"].get("n_tokens") for k, v in arb["summaries"].items()}
+    bad = {k: v["overall"]["kl32"]["mean"] for k, v in arb["summaries"].items() if not math.isfinite(v["overall"]["kl32"]["mean"])}
+    if bad:
+        raise SystemExit(f"s04 arbitration has non-finite kl32 means {bad}: re-check the replay before cutting a master")
+    if len(set(n.values())) != 1 or arb.get("tokens") not in set(n.values()):
+        raise SystemExit(f"s04 arbitration arms were scored on different token counts {n} (total {arb.get('tokens')})")
+    if arb["winners"]["A"]["sha256"] != fp and arb["winners"].get("B", {}).get("sha256") != fp:
+        raise SystemExit("keep-set is not an s04 arbitration winner")
+
+
 def run(a):
     keep_all, fp = keepset.load(Path(a.keepset))
+    check_arbitration(fp)
     n_keep = len(keep_all["0"])
     tag = f"REAP{n_keep}"
     led = env.Ledger(env.LOGS / f"s05_{tag}_ledger.json")
     if led.get("keepset") and led.get("keepset")["sha256"] != fp:
         keepset.require(fp, led.get("keepset")["sha256"], where="s05 ledger (a different keep-set was already surgered)")
     led.mark("keepset", sha256=fp, path=str(a.keepset))
-    repo = a.repo or (None if a.no_upload else default_repo(n_keep))
-    up = Uploader(repo, not a.no_upload)
+    # The free HF account has a 100 GB PRIVATE quota and the master is ~163 GB, so by default nothing is uploaded here:
+    # the master is kept on the Seagate (write-once staging, never served from) and s12 uploads it straight to a PUBLIC
+    # repo only after its pre-registered gate passed. --upload restores the old private-repo flow (needs a PRO account).
+    repo = a.repo or default_repo(n_keep)
+    up = Uploader(repo, a.upload)
     shas = tree_sha()
     idx = json.load(open(env.SRC / "model.safetensors.index.json"))["weight_map"]
     stage = orchestrate.staging_dir(16 << 30, f"s05_{tag}", prefer=env.WORK)
-    out_dir = OUT / tag
+    out_dir = OUT / tag if up.enabled else local_master_dir(tag)
     out_dir.mkdir(parents=True, exist_ok=True)
     new_map = {}
     for i in range(1, N_SHARDS + 1):
@@ -205,6 +252,9 @@ def run(a):
             dst.unlink()
         else:
             shutil.move(str(dst), out_dir / name)
+            if sha256_file(out_dir / name) != dsha:          # USB/NTFS write: verify what landed, not what was sent
+                (out_dir / name).unlink()
+                raise SystemExit(f"{name}: sha256 of the copy on {out_dir} differs from the staged file")
         led.finish(u, sha256=dsha, bytes=size, weight_map=wm, uploaded=up.enabled, **info)
         new_map.update(wm)
         env.log(f"{name}: {size / 2**30:.2f} GiB sha {dsha[:16]} {'uploaded' if up.enabled else 'kept local'}", STAGE)
@@ -237,13 +287,13 @@ def finish_repo(a, led, up, keep_all, fp, n_keep, new_map, shas, stage, out_dir)
     if not up.enabled:
         shutil.copytree(small, out_dir, dirs_exist_ok=True)
     shutil.rmtree(small)
-    man = {"keepset_sha256": fp, "n_routed_experts": n_keep, "repo": up.repo, "private": True,
+    man = {"keepset_sha256": fp, "n_routed_experts": n_keep, "repo": up.repo, "private": True, "uploaded": up.enabled,
            "revision_base": env.REVISION, "healed": False,
            "files": {k[6:]: {"sha256": v["sha256"], "bytes": v["bytes"]} for k, v in led.data.items() if k.startswith("shard/")},
            "local_dir": None if up.enabled else str(out_dir), "ts": env.now()}
     env.atomic_json(OUT / f"manifest_REAP{n_keep}.json", man)
     led.finish("done", repo=up.repo)
-    env.log(f"master REAP{n_keep} complete: {len(man['files'])} shards, {total / 2**30:.1f} GiB, repo {up.repo} (private)", STAGE)
+    env.log(f"master REAP{n_keep} complete: {len(man['files'])} shards, {total / 2**30:.1f} GiB, {'uploaded to ' + up.repo + ' (private)' if up.enabled else 'kept at ' + str(out_dir) + ' for s12'}", STAGE)
 
 
 def main():
@@ -251,7 +301,8 @@ def main():
     ap.add_argument("cmd", choices=["run"])
     ap.add_argument("--keepset", default=str(env.WORK / "s04" / "keepset.json"))
     ap.add_argument("--repo")
-    ap.add_argument("--no-upload", action="store_true", help="keep the master locally under $V41_WORK/s05/REAP<n>")
+    ap.add_argument("--upload", action="store_true", help="upload to a PRIVATE repo as it goes (needs >163 GB private quota)")
+    ap.add_argument("--no-upload", action="store_true", help="default; kept for compatibility")
     ap.add_argument("--fetch-shards", action="store_true")
     a = ap.parse_args()
     run(a)

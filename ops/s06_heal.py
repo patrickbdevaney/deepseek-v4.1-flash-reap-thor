@@ -57,7 +57,7 @@ class Measure:
         self.keep = torch.as_tensor(sorted(keep), device="cuda")
         self.kpos = {int(e): j for j, e in enumerate(sorted(keep))}
         self.m = torch.as_tensor(m_norm, dtype=torch.float32, device="cuda")
-        z = lambda *s: torch.zeros(*s, dtype=torch.float64, device="cuda")
+        z = lambda *s: torch.zeros(s, dtype=torch.float64, device="cuda")   # z() -> 0-dim scalar (zeros(*()) raises)
         n = len(keep)
         self.acc = {"replay_ratio": z(), "direct_ratio": z(), "ls_num": z(), "ls_den": z(), "tokens": z(),
                     "mass_pre": z(), "mass_post": z(), "slots_hit": z(),
@@ -206,7 +206,8 @@ def main():
     ap.add_argument("--keepset", default=str(env.WORK / "s04" / "keepset.json"))
     ap.add_argument("--kernels", choices=["tilelang", "torch"], default="tilelang")
     ap.add_argument("--token-chunk", type=int, default=8192)
-    ap.add_argument("--tokens", type=int, default=131_072, help="calibration tokens (GLM's gain converged on one chunk)")
+    ap.add_argument("--tokens", type=int, default=262_144, help="calibration tokens: the gain converges on one chunk, but the "
+                    "post-prune bank feeds s07 input scales and the imatrix (131k left 6 kept experts at L39 under 32 tokens)")
     ap.add_argument("--min-avail-gib", type=float, default=100.0)
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)

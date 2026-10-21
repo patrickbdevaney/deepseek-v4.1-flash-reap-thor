@@ -239,6 +239,33 @@ def _run_file(m: dict) -> str:
     return names[0]
 
 
+def local_files(m: dict, kind: str) -> list[tuple[Path, str]]:
+    """Every file of a locally kept s05/s07 artifact (Seagate), as (path, path_in_repo). Each weight shard is re-hashed
+    against the manifest first: the copy crossed a USB disk and will be published. An artifact that was already
+    uploaded by the old private-repo flow (uploaded=True) has nothing local to send."""
+    if m.get("uploaded", True) and not m.get("local_dir"):
+        return []
+    root = Path(m["local_dir"])
+    if not root.is_dir():
+        raise SystemExit(f"{kind}: local artifact {root} is missing (Seagate not mounted?)")
+    import ops.s05_surgery as S5
+    for name, info in m["files"].items():
+        got = S5.sha256_file(root / name)
+        if got != info["sha256"]:
+            raise SystemExit(f"{kind}: {root / name} sha256 {got[:16]} != manifest {info['sha256'][:16]}")
+    out = [(p, str(p.relative_to(root))) for p in sorted(root.rglob("*")) if p.is_file() and p.name != "README.md"]
+    names = {dst for _, dst in out}
+    missing = sorted(set(m["files"]) - names)
+    if missing:
+        raise SystemExit(f"{kind}: local artifact lacks {missing[:3]}")
+    return out
+
+
+def retry(fn, what: str):
+    from ops.s05_surgery import retry as r
+    return r(fn, what)
+
+
 def api():
     os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
     os.environ["HF_XET_FIXED_UPLOAD_CONCURRENCY"] = "8"
@@ -262,15 +289,20 @@ def publish(a):
     h = None if a.dry_run else api()
     nA = len(keepset.load(env.WORK / "s04" / "keepset.json")[0]["0"])
     plan = []
+    fpA = keepset.load(env.WORK / "s04" / "keepset.json")[1]
     if "mxfp4" in only:
         m = json.load(open(env.WORK / "s05" / f"manifest_REAP{nA}.json"))
-        plan.append(("mxfp4", m["repo"], g["mxfp4_master"], {"name": m["repo"].split("/")[-1], "n_routed": nA}, []))
+        keepset.require(m["keepset_sha256"], fpA, where="s05 master manifest (s04 re-decided after s05?)")
+        plan.append(("mxfp4", m["repo"], g["mxfp4_master"], {"name": m["repo"].split("/")[-1], "n_routed": nA},
+                     local_files(m, "mxfp4")))
     if "nvfp4" in only:
         m = json.load(open(env.WORK / "s07" / f"manifest_nvfp4_REAP{nA}.json"))
         if m.get("skipped"):
             env.log(f"nvfp4: not built ({m['skipped']}); no NVFP4 repo", STAGE)
         else:
-            plan.append(("nvfp4", m["repo"], g["nvfp4"], {"name": m["repo"].split("/")[-1], "n_routed": nA}, []))
+            keepset.require(m["keepset_sha256"], fpA, where="s07 nvfp4 manifest")
+            plan.append(("nvfp4", m["repo"], g["nvfp4"], {"name": m["repo"].split("/")[-1], "n_routed": nA},
+                         local_files(m, "nvfp4")))
     if "gguf" in only:
         mf = env.WORK / "s09" / "manifest.json"
         if not mf.exists():
@@ -285,7 +317,7 @@ def publish(a):
             repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{m['n_routed_experts']}-GGUF"
             ctx["gguf"] = gguf_context(m, gg, heal=ctx["heal"])
             plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "repo": repo, "n_routed": m["n_routed_experts"]},
-                         [Path(f["path"]) for f in m["files"]]))
+                         [(Path(f["path"]), Path(f["path"]).name) for f in m["files"]]))
     if "thor" in only:
         tc = ctx.get("thor_build")
         if tc is None:
@@ -301,9 +333,10 @@ def publish(a):
             d = OUT / "thor"
             d.mkdir(parents=True, exist_ok=True)
             (d / "reap_keepset.json").write_bytes(kp.read_bytes())
-            files = [tb / f for f in sorted(tj["files"])] + [tb / "thor.json", d / "reap_keepset.json"]
+            files = [(p, p.name) for p in [tb / f for f in sorted(tj["files"])] + [tb / "thor.json", d / "reap_keepset.json"]]
             if os.environ.get("V41_PUBLISH_RUNTIME") == "1":
-                files.append(runtime_bundle(d))
+                rb = runtime_bundle(d)
+                files.append((rb, f"runtime/{rb.name}"))
             user = "<user>" if a.dry_run else h.whoami()["name"]
             repo = f"{user}/DeepSeek-V4.1-Flash-1017-REAP{tj['n_routed_experts']}-Thor"
             plan.append(("thor", repo, bool(g["thor"]) and tc["fits"],
@@ -317,24 +350,37 @@ def publish(a):
         env.log(f"{kind}: card rendered -> {d / 'README.md'} (gate {'PASS' if passed else 'FAIL'})", STAGE)
         if a.dry_run:
             continue
-        h.create_repo(repo, private=True, exist_ok=True, repo_type="model")
-        for f in files:
-            dst = f"runtime/{f.name}" if f.name.endswith(".tar.gz") else f.name
-            if not led.done(f"{kind}/file/{dst}"):
-                h.upload_file(path_or_fileobj=str(f), path_in_repo=dst, repo_id=repo, repo_type="model")
-                led.finish(f"{kind}/file/{dst}")
+        if not passed:
+            # The free account's 100 GB private quota cannot hold these artifacts, and a failed gate means they are not
+            # released: nothing is uploaded; the files and the rendered card stay local for the owner.
+            env.log(f"{kind}: gate FAILED - not uploaded; card at {d / 'README.md'}, files stay local "
+                    f"({len(files)} files)", STAGE, "WARN")
+            led.finish(kind, repo=repo, public=False, uploaded=False)
+            continue
+        # Gate passed: the repo is PUBLIC before the large files go up, so they never count against the private quota.
+        if not h.repo_exists(repo, repo_type="model"):
+            h.create_repo(repo, private=False, repo_type="model")
+        elif h.model_info(repo).private:
+            make_public(h, repo)
+        for f, dst in files:
+            st = f.stat()
+            sig = {"bytes": st.st_size, "mtime": int(st.st_mtime)}
+            prev = led.get(f"{kind}/file/{dst}") or {}
+            # a rebuilt file (new size or mtime) is uploaded again; a name alone does not prove the bytes are current
+            if not (led.done(f"{kind}/file/{dst}") and prev.get("bytes") == sig["bytes"] and prev.get("mtime") == sig["mtime"]):
+                retry(lambda: h.upload_file(path_or_fileobj=str(f), path_in_repo=dst, repo_id=repo, repo_type="model",
+                                            commit_message=f"s12: {dst}"), what=f"{kind}/{dst}")
+                led.finish(f"{kind}/file/{dst}", **sig)
         if kind == "gguf":
             env.atomic_json(d / "gguf_manifest.json", ctx["gguf"])
-            h.upload_file(path_or_fileobj=str(d / "gguf_manifest.json"), path_in_repo="gguf_manifest.json", repo_id=repo)
-            h.upload_file(path_or_fileobj=str(env.SRC / "LICENSE"), path_in_repo="LICENSE", repo_id=repo)
-        h.upload_file(path_or_fileobj=str(d / "README.md"), path_in_repo="README.md", repo_id=repo,
-                      commit_message="s12: model card generated from s10 results")
-        if passed:
-            make_public(h, repo)
-            env.log(f"{kind}: {repo} is now PUBLIC", STAGE)
-        else:
-            env.log(f"{kind}: gate failed, {repo} stays PRIVATE", STAGE, "WARN")
-        led.finish(kind, repo=repo, public=bool(passed))
+            retry(lambda: h.upload_file(path_or_fileobj=str(d / "gguf_manifest.json"), path_in_repo="gguf_manifest.json",
+                                        repo_id=repo), what="gguf_manifest.json")
+            retry(lambda: h.upload_file(path_or_fileobj=str(env.SRC / "LICENSE"), path_in_repo="LICENSE", repo_id=repo),
+                  what="LICENSE")
+        retry(lambda: h.upload_file(path_or_fileobj=str(d / "README.md"), path_in_repo="README.md", repo_id=repo,
+                                    commit_message="s12: model card generated from s10 results"), what="README.md")
+        env.log(f"{kind}: {repo} is PUBLIC ({len(files)} files)", STAGE)
+        led.finish(kind, repo=repo, public=True, uploaded=True)
 
 
 def main():

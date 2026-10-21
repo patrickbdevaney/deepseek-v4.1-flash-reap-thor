@@ -50,12 +50,19 @@ def keep_A():
     return keepset.load(S04 / "keepset.json")
 
 
-def thor_build(n: int, suffix: str, fp: str) -> Path:
+def thor_build(n: int, suffix: str, fp: str, dec: dict | None = None) -> Path:
     thor = env.WORK / "thor" / f"A{n}{suffix}"
     tj = json.load(open(thor / "thor.json"))
     if not tj.get("complete"):
         raise SystemExit(f"{thor} is not a complete Thor build")
     keepset.require(tj["keepset_sha256"], fp, where=str(thor))
+    if dec is not None:
+        # the gain folded into w2 at s07 build time must be the heal decision in force now (GLM stale-gain class)
+        want = {str(L): (float(dec["gains"][str(L)]) if dec["adopt"] else 1.0) for L in range(N_LAYERS)}
+        have = {str(k): float(v) for k, v in (tj.get("heal") or {}).get("gains", {}).items()}
+        if have != want:
+            raise SystemExit(f"{thor}: folded heal gains differ from s10/heal/decision.json (adopt={dec['adopt']}); "
+                             "rebuild s07 thor")
     return thor
 
 
@@ -69,11 +76,11 @@ def arms_for(panel: str) -> list[dict]:
     keepset.require(dec["keepset_sha256"], fA, where="s10/heal/decision.json")
     kB, fB = keepset.load(S04 / "keepset_128.json")
     n = len(kA["0"])
-    thor = thor_build(n, "", fA)
+    thor = thor_build(n, "", fA, dec)
     if panel == "trellis":
         base = {"name": "healed_A", "keep": kA, "gain": dec["gains"]} if dec["adopt"] else {"name": "mxfp4_A", "keep": kA}
         return [base, {"name": "thorA", "keep": kA, "thor": str(thor)},
-                {"name": "thorA_kt", "keep": kA, "thor": str(thor_build(n, "kt", fA))}, {"name": "b128", "keep": kB}]
+                {"name": "thorA_kt", "keep": kA, "thor": str(thor_build(n, "kt", fA, dec))}, {"name": "b128", "keep": kB}]
     arms = [{"name": "control", "keep": None}, {"name": "mxfp4_A", "keep": kA}]
     if dec["adopt"]:
         arms.append({"name": "healed_A", "keep": kA, "gain": dec["gains"]})
@@ -82,8 +89,9 @@ def arms_for(panel: str) -> list[dict]:
     if ov.exists():
         arms.append({"name": "thorA_overlay", "keep": kA, "thor": str(thor), "overlay": str(ov.parent)})
     rnd = S04 / "masks" / "random0.json"
-    if rnd.exists():
-        arms.append({"name": "random0", "keep": keepset.load(rnd)[0]})
+    if not rnd.exists():
+        raise SystemExit(f"{rnd} missing: the pre-registered must_beat_random_kl32 floor needs the random anchor")
+    arms.append({"name": "random0", "keep": keepset.load(rnd)[0]})
     return arms
 
 
@@ -229,6 +237,9 @@ def trellis_panel(a):
         upd.update({"thor_arm": ad["winner"], "thor": res["gates"]["thorA_kt"]["pass"] if ad["winner"] == "A" else b_pass})
     arm = upd.get("thor_arm", gj["thor_arm"])
     nB = len(keepset.load(S04 / "keepset_128.json")[0]["0"])
+    if arm == "B" and not (env.WORK / "thor" / f"B{nB}" / "thor.json").exists():
+        raise SystemExit(f"trellis re-decision picked arm B but thor/B{nB} was never built "
+                         "(run `s07_quant.py thor-b`, then re-run `s10_eval.py trellis`)")
     upd["thor_build_dir"] = str(env.WORK / "thor" / (f"A{n}{'kt' if upd['thor_a_build'] == 'kt' else ''}" if arm == "A" else f"B{nB}"))
     res["publish_update"] = upd
     env.atomic_json(OUT / "trellis" / "results.json", res)
