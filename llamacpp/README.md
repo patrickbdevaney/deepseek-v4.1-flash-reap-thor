@@ -9,14 +9,16 @@ The fork is upstream llama.cpp at the **head of PR #28696** (DeepSeek-V4.1), whi
 
 ```
 setup.sh      clone upstream, fetch pull/28696/head, check out 2076412598e9…, git am patches/  (branch v41-thor)
-build.sh      CUDA build for Thor (sm_110), -j4 by default; compile only
+build.sh      CUDA build, sm_110 (Thor) by default, CUDA_ARCH=<sm> for another GPU; -j4 by default; compile only
 patches/      0001 HC tensors F32 · 0002 reader layers reuse the index source's top-k · 0003 Engram O_DIRECT row store · 0004 REAP heal gain
 convert_v41_reap.py    REAP-aware converter (wraps the fork's convert_hf_to_gguf.py, no edits to it)
 ENGRAM_ROWFILE.md      the packed row-file format, shared with the CUDA server
 tools/v41-teacher-kld.cpp   paired top-32 KL / top-1 / NLL against the cached teacher
-CHAIN_STEPS.sh         every s09 step the chain runs (build, rowfile, backend_ops, convert, imatrix, quant, kld, smoke, manifest)
+CHAIN_STEPS.sh         every s09 step the chain runs (build, rowfile, backend_ops, convert, imatrix, quant, drop_source,
+                       stage, kld, smoke, unstage, manifest)
 MODEL_CARD_TEMPLATE.md rendered by ops/s09_card.py from artifacts only
-tests/test_s09.py      CPU tests: keep-set, converter checks, row file, planner, card
+tests/test_s09.py      CPU tests: keep-set, converter checks + Engram view + V4.1 template, row file, planner, imatrix
+                       keep-set, kld prep split, card (`.venv/bin/python llamacpp/tests/test_s09.py`, no pytest needed)
 ```
 
 The stage code lives in `ops/`:
@@ -63,6 +65,11 @@ All of these checks are fatal; none is a warning. `KeepsetMismatch` subclasses `
 
 The fingerprint, source expert count, kept ids and teacher revision go into `deepseek41.reap.*`.
 
+Two more things the wrapper does on top of the PR:
+
+- **Engram shards 47/48.** s05 does not rehost them, but the master's index still maps every `layers.{1,14}.engram.*` tensor to them, and the PR opens every shard the index names (`FileNotFoundError` otherwise). `--engram-src <base checkpoint>` builds a symlink view (CHAIN_STEPS: `$V41_WORK/s09/src/<NAME>`) of the master plus the shards it lacks. A borrowed shard must hold exactly the tensors the index maps to it, all `.engram.`. Nothing is written into the master. `embed` is then dropped; `wkv`, `q_weight` and `k_weight` are converted (the fork requires them).
+- **Chat template.** The PR picks the template from the directory *name*, so `master_REAP192` would get the V4 one, and V4.1 tool calls would come back as plain content. The wrapper always writes `models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja`, and `s09_gguf_ladder.py` refuses a source, level or split whose template is not exactly that file.
+
 `--heal-gains PATH` (JSON `{"0": g, ..., "39": g}`, or `{"keepset_sha256", "gains": {...}}`) writes `deepseek41.reap.routed_gain` only if some gain differs from 1.0 (patch 4 applies it). CHAIN_STEPS `convert` derives the file with `ops/s07_quant.py heal_decision()`, the same rule as the NVFP4/Thor builds, and fails if `s10/heal/decision.json` is missing; arm B ships unhealed, as `s07 thor-b` does. `quant` verifies that every level keeps the source's gain, and `manifest` records it as `routed_gain` for s12's card.
 
 ### Contracts with the other stages
@@ -81,7 +88,7 @@ Each level is one `llama-quantize` run from the same lossless source. No level i
 |---|---|---|---|
 | L0 | MXFP4, copied bit-exact | MXFP4 | ~145 GiB |
 | L1 | IQ3_XXS / IQ3_S mix, 3.40 bpw | MXFP4 | ~118 GiB |
-| L2 (flagship, 128 GB devices) | IQ2_S / IQ3_XXS mix, 2.85 bpw | IQ3_S | ~101 GiB |
+| L2 (flagship, 128 GB devices) | IQ2_XS..IQ3_S mix (uniform scores: mostly IQ2_S / IQ3_XXS), 2.85 bpw | IQ3_S | ~101 GiB |
 | L3 (fallback) | IQ2_XXS / IQ2_XS / IQ2_S, 2.46 bpw | IQ3_XXS | ~88 GiB |
 
 \* The expert part comes from config geometry: 40 × 192 × 3 × 5120 × 2304 = 271.8 B params. About 10 GiB of dense weights is added on top. `plan` prints the exact size from the source GGUF before anything is written.
@@ -101,7 +108,7 @@ Never Q4_K, Q5_K or IQ4 for experts. The source is FP4. A 4-bit non-FP4 grid spe
 
 Other details:
 
-- **imatrix:** our own, built from the s03 streamed per-expert x² bank and remapped through the manifest's keep order. It is written in the legacy `.dat` format and checked by `imatrix_verify.py` before use, which guards against the save-frequency truncation trap.
+- **imatrix:** our own, built from the s03 streamed per-expert x² bank and remapped through the manifest's keep order. It is written in the legacy `.dat` format and checked by `imatrix_verify.py` before use, which guards against the save-frequency truncation trap. Its dataset string records `keepset=<fingerprint>`; `quant` refuses an imatrix built for another keep-set than the source GGUF's, and the CHAIN_STEPS `imatrix` step rebuilds a stale one even if its done marker exists.
 - **Error feedback (optional, `--ef-hessians D`):** `s09_ef.py` quantizes each expert superblock by superblock. It pushes each block's rounding error onto the columns not yet quantized (block-OBS / GPTQ), using ggml's own codec through ctypes. That way the patched bytes have the identical type and size. It needs full input second moments per layer, and s03 banks only their diagonal, so it stays off until a pass produces `L<L>.npz`. Its `selftest` is CPU-only.
 - **Splits:** below 50 GB each (`--split-max-size 45G`).
 - **EOS:** `eos = eot = 1` (`<｜end▁of▁sentence｜>`), written by `--override-kv` and verified on split 1. This guards against the multi-EOS trap.
@@ -119,7 +126,7 @@ Other details:
 
 1. **`backend_ops`:** `test-backend-ops test -b CUDA0`, every op, then `MUL_MAT`, `MUL_MAT_ID` and `GET_ROWS` for each weight type the levels use: mxfp4, q8_0, q6_k, iq3_s, iq3_xxs, iq2_s, iq2_xs, iq2_xxs, bf16 and f32. Any FAIL stops the chain.
 2. **`kld LEVEL`:**
-   - Input: held-out, text-only s03 rows, each decoded as a fresh sequence at `-c 8192` with the row store.
+   - Input: the pre-registered **confirm** split (`s10_gates.json` `gguf.split`, computed by `ops/lib/rowsets.split_rows` exactly as s04/s10 compute theirs), text-only rows of at most `KLD_CTX` = 8192 tokens (longer rows are skipped and listed in `meta.json`), each decoded as a fresh sequence at `-c 8192` with the row store. On the current corpus that is 22 rows, 180,224 tokens. `s09_gate.py` fails a result that does not record the confirm split.
    - Measures: paired top-32 KL with a tail bucket, top-1 and ΔNLL against the cached teacher, with row-bootstrap CIs.
    - Output: the served identity (path, size, keep-set) is written into `teacher_kld.json`.
    - Levels that cannot fit with a 12 GiB reserve are skipped and logged (L0, and probably L1).
@@ -128,7 +135,11 @@ Other details:
    - Run one greedy chat turn. It must end with `finish_reason=stop`, must not contain `<｜User｜>`/`<｜Assistant｜>`, and must answer correctly.
    - The pid comes from an `exec`, so the server cannot be orphaned.
 
-GPU steps run only under `quiet` (no leafllm vLLM, no runner, no other model loader). `reclaim` (`drop_caches`, then a ≥100 GiB baseline check) runs after each one.
+GPU steps run only under `quiet` (no leafllm vLLM, no runner, no other model loader, matched by process name or python argv, never by a whole command line). `reclaim` (`drop_caches`, then a ≥100 GiB baseline check) runs after each one. kld and smoke refuse a level on `/media`: `stage LEVEL` copies it to NVMe first and `unstage LEVEL` brings `teacher_eval/` back.
+
+## Disk (NVMe), the order chain2 runs
+
+`quant` writes each level to `S09_QUANT_ROOT` (the Seagate staging), so NVMe holds at most: the source GGUF (~152 GiB, convert to `drop_source`), then the row files (~189 GiB, from `rowfile` on) plus one staged level (~101 GiB L2 / ~88 GiB L3, `stage` to `unstage`). The two big ones never coexist with the source GGUF in that order: convert -> imatrix -> quant L2 + L3 -> drop_source -> rowfile -> stage/kld/smoke/unstage.
 
 ## Known limits
 

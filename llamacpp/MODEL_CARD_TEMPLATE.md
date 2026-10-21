@@ -32,7 +32,7 @@ Every level was quantized once, directly from the lossless MXFP4 master. No leve
 
 ## Quality against the unpruned teacher
 
-The held-out text rows have {{kld.tokens}} tokens. Every statistic is paired per token against the teacher (FP8 + MXFP4), and the 95% CIs come from resampling rows.
+The pre-registered confirm split of the held-out text rows (never used for any tuning decision) has {{kld.tokens}} tokens. Every statistic is paired per token against the teacher (FP8 + MXFP4), and the 95% CIs come from resampling rows.
 
 | | mean | 95% CI |
 |---|---|---|

@@ -1,4 +1,6 @@
-"""CPU-only tests for the s09 GGUF path. Run: .venv/bin/python -m pytest -q llamacpp/tests/test_s09.py
+"""CPU-only tests for the s09 GGUF path.
+Run: .venv/bin/python llamacpp/tests/test_s09.py   (no pytest needed: a minimal runner below)
+ or: python3 -m pytest -q llamacpp/tests/test_s09.py   (if pytest is installed)
 
 No model weights and no GPU: synthetic shards, a fake master and a tiny fake GGUF stand in.
 The real config.json from the checkpoint provides the geometry and protected layers.
@@ -15,11 +17,48 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
+
+try:
+    import pytest
+except ImportError:                      # .venv has no pytest: a minimal stand-in, see run_without_pytest()
+    import contextlib
+    import re as _re
+    import types as _types
+
+    class _Skip(Exception):
+        pass
+
+    @contextlib.contextmanager
+    def _raises(exc, match=None):
+        try:
+            yield
+        except exc as e:
+            if match is not None and not _re.search(match, str(e)):
+                raise AssertionError(f"{type(e).__name__}({e!s:.300}) does not match {match!r}")
+        else:
+            raise AssertionError(f"did not raise {exc}")
+
+    def _importorskip(name):
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            raise _Skip(f"no {name}")
+
+    def _parametrize(arg, values):
+        def deco(f):
+            f._params = (arg, values)
+            return f
+        return deco
+
+    pytest = _types.SimpleNamespace(raises=_raises, importorskip=_importorskip, Skip=_Skip,
+                                    mark=_types.SimpleNamespace(parametrize=_parametrize))
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 sys.path.insert(1, str(REPO / "llamacpp" / "llama.cpp" / "gguf-py"))
+
+
+T41 = (REPO / "llamacpp/llama.cpp/models/templates/deepseek-ai-DeepSeek-V4.1-Flash.jinja").read_text(encoding="utf-8")
 
 
 def write_safetensors(path: Path, tensors: dict[str, tuple[str, list[int], bytes]]) -> None:
@@ -246,6 +285,7 @@ def test_manifest_matches_s12_contract(tmp_path, monkeypatch):
         w.add_string("deepseek41.reap.keep_set_sha256", "a" * 64)
         w.add_uint32("tokenizer.ggml.eos_token_id", 1)
         w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+        w.add_chat_template(T41)
         w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
         w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
     m = lad.write_manifest(["L1", "L2", "L3"], None)
@@ -325,6 +365,7 @@ def test_manifest_and_card_carry_routed_gain(tmp_path, monkeypatch):
         w.add_array(lad.GAIN_KEY, [float(v) for v in g])
         w.add_uint32("tokenizer.ggml.eos_token_id", 1)
         w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+        w.add_chat_template(T41)
         w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
         w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
     m = lad.write_manifest(["L2", "L3"], None)
@@ -346,7 +387,278 @@ def test_manifest_and_card_carry_routed_gain(tmp_path, monkeypatch):
     w.add_string("deepseek41.reap.keep_set_sha256", "a" * 64)
     w.add_uint32("tokenizer.ggml.eos_token_id", 1)
     w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+    w.add_chat_template(T41)
     w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
     w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
     with pytest.raises(SystemExit, match="disagree"):
         lad.write_manifest(["L2", "L3"], None)
+
+
+# ---------------------------------------------------------------- Engram shards 47/48: the converter's symlink view
+def _st_header(path: Path) -> dict:
+    with open(path, "rb") as fh:
+        return json.loads(fh.read(struct.unpack("<Q", fh.read(8))[0]))
+
+
+def _engram_fixture(tmp_path):
+    """A master whose index maps layers.1.engram.* to model-00047 (absent, as s05 leaves it) and a base dir
+    holding that shard."""
+    master, base = tmp_path / "master_REAP4", tmp_path / "base"
+    master.mkdir(); base.mkdir()
+    fp = fake_master(master)
+    idx = json.loads((master / "model.safetensors.index.json").read_text())
+    # the fork globs model*.safetensors and wants every index tensor present: one complete tiny shard
+    hdr = {k: v for k, v in _st_header(master / "s.safetensors").items() if k != "__metadata__"}
+    (master / "s.safetensors").unlink()
+    full = {n: (hdr[n]["dtype"], hdr[n]["shape"], bytes(4 * int(np.prod(hdr[n]["shape"])))) if n in hdr
+            else ("F32", [1], bytes(4)) for n in idx["weight_map"]}
+    write_safetensors(master / "model-00001-of-00048.safetensors", full)
+    idx["weight_map"] = {k: "model-00001-of-00048.safetensors" for k in idx["weight_map"]}
+    eng = {"layers.1.engram.wkv.weight": ("BF16", [2, 4], bytes(16)),
+           "layers.1.engram.embed.weight": ("F8_E4M3", [3, 4], bytes(12))}
+    for n in eng:
+        idx["weight_map"][n] = "model-00047-of-00048.safetensors"
+    (master / "model.safetensors.index.json").write_text(json.dumps(idx))
+    write_safetensors(base / "model-00047-of-00048.safetensors", eng)
+    return master, base, fp
+
+
+def _fork_index_tensors(model_dir: Path) -> dict:
+    """The fork's real ModelBase.index_tensors (what convert_hf_to_gguf runs), on a stub self."""
+    import types
+    sys.path.insert(0, str(REPO / "llamacpp" / "llama.cpp"))
+    from conversion.base import ModelBase
+    me = types.SimpleNamespace(is_mistral_format=False, dir_model=model_dir, lazy=True, filter_tensors=lambda it: it)
+    return ModelBase.index_tensors(me)
+
+
+def test_converter_view_supplies_engram_shards(tmp_path):
+    sys.path.insert(0, str(REPO / "llamacpp"))
+    conv = importlib.import_module("convert_v41_reap")
+    master, base, fp = _engram_fixture(tmp_path)
+    with pytest.raises(FileNotFoundError):                     # the audit's BLOCKER 1, reproduced
+        _fork_index_tensors(master)
+    with pytest.raises(SystemExit, match="engram-src"):
+        conv.require_index_shards(master)
+    view = tmp_path / "src" / "DeepSeek-V4.1-Flash-1017-REAP4"
+    assert conv.build_view(master, base, view) == ["model-00047-of-00048.safetensors"]
+    conv.require_index_shards(view)
+    names = set(_fork_index_tensors(view))
+    assert {"layers.1.engram.wkv.weight", "layers.1.engram.embed.weight"} <= names
+    assert conv.check_master(view, fp, 8)["fingerprint"] == fp
+    assert all(e.is_symlink() for e in view.iterdir())         # nothing written into the master
+    assert not (master / "model-00047-of-00048.safetensors").exists()
+    conv.build_view(master, base, view)                        # rebuild in place is fine
+    # a borrowed shard whose header differs from the index (wrong file), or a non-Engram tensor routed outside
+    write_safetensors(base / "model-00047-of-00048.safetensors", {"layers.1.engram.wkv.weight": ("BF16", [2, 4], bytes(16))})
+    with pytest.raises(SystemExit, match="wrong file"):
+        conv.build_view(master, base, view)
+    idx = json.loads((master / "model.safetensors.index.json").read_text())
+    idx["weight_map"]["layers.0.ffn.experts.0.w1.weight"] = "model-00047-of-00048.safetensors"
+    (master / "model.safetensors.index.json").write_text(json.dumps(idx))
+    with pytest.raises(SystemExit, match="non-Engram"):
+        conv.build_view(master, base, view)
+    with pytest.raises(SystemExit, match="neither"):
+        conv.build_view(master, tmp_path / "nowhere", view)
+
+
+# ---------------------------------------------------------------- chat template: always V4.1
+def test_converter_forces_v41_template():
+    import types
+    sys.path.insert(0, str(REPO / "llamacpp"))
+    conv = importlib.import_module("convert_v41_reap")
+    sys.path.insert(0, str(REPO / "llamacpp" / "llama.cpp"))
+    sys.path.insert(1, str(REPO / "llamacpp" / "llama.cpp" / "gguf-py"))
+    from conversion import deepseek as ds
+    cls = ds.DeepseekV41Model
+    saved = {k: cls.__dict__.get(k) for k in ("index_tensors", "tensor_force_quant", "set_gguf_parameters", "set_vocab")}
+    v4 = (REPO / "llamacpp/llama.cpp/models/templates/deepseek-ai-DeepSeek-V4.jinja").read_text(encoding="utf-8")
+    got = []
+    try:
+        # stands in for the PR's name-based default / a tokenizer_config template written during set_vocab
+        cls.set_vocab = lambda self: self.gguf_writer.add_chat_template(v4)
+        conv.patch_converter({"fingerprint": "a" * 64}, lossless=True)
+        me = types.SimpleNamespace(gguf_writer=types.SimpleNamespace(add_chat_template=got.append))
+        cls.set_vocab(me)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                if k in cls.__dict__:
+                    delattr(cls, k)
+            else:
+                setattr(cls, k, v)
+    assert got[0] == v4 and got[-1] == conv.v41_chat_template() and "' calls>" in got[-1]
+
+
+def _gguf_with_template(path: Path, template: str | None):
+    import gguf
+    w = gguf.GGUFWriter(str(path), "deepseek41")
+    w.add_string("deepseek41.reap.keep_set_sha256", "a" * 64)
+    w.add_uint32("tokenizer.ggml.eos_token_id", 1)
+    w.add_uint32("tokenizer.ggml.eot_token_id", 1)
+    if template is not None:
+        w.add_chat_template(template)
+    w.add_tensor("x.weight", np.zeros((1, 32), np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+
+
+def test_ladder_rejects_non_v41_template(tmp_path, monkeypatch):
+    from ops import s09_gguf_ladder as lad
+    t41 = lad.V41_TEMPLATE.read_text(encoding="utf-8")
+    t4 = (lad.V41_TEMPLATE.parent / "deepseek-ai-DeepSeek-V4.jinja").read_text(encoding="utf-8")
+    monkeypatch.setattr(lad, "OUT", tmp_path)
+    (tmp_path / "L2").mkdir()
+    f = tmp_path / "L2" / f"{lad.NAME}-L2-00001-of-00001.gguf"
+    for tpl, ok in ((t41, True), (t4, False), (None, False)):
+        _gguf_with_template(f, tpl)
+        kv = lad.gguf_kv(f)
+        assert (lad.template_problem(kv) is None) == ok
+        if ok:
+            lad.verify_splits("L2")
+        else:
+            with pytest.raises(SystemExit, match="chat_template"):
+                lad.verify_splits("L2")
+    assert "V4 template" in lad.template_problem({lad.TEMPLATE_KEY: t4})
+
+
+# ---------------------------------------------------------------- imatrix carries its keep-set
+def test_imatrix_records_and_checks_keepset(tmp_path):
+    from ops import s09_gguf_ladder as lad
+    from ops.lib import imatrix as im
+    f = tmp_path / "x.imatrix.dat"
+    e = {"blk.0.ffn_gate_exps.weight": (1, np.ones(8, np.float32))}
+    im.write_dat(f, e, dataset="v41-1017 s03 calibration (held-out excluded) keepset=" + "b" * 64, last_call=1)
+    assert lad.imatrix_keepset(f) == "b" * 64
+    lad.check_imatrix(f, "b" * 64)
+    with pytest.raises(SystemExit, match="another|built for"):
+        lad.check_imatrix(f, "c" * 64)
+    im.write_dat(f, e, dataset="v41-1017 s03 calibration (held-out excluded)", last_call=1)   # pre-fix .dat
+    assert lad.imatrix_keepset(f) is None
+    with pytest.raises(SystemExit, match="built for"):
+        lad.check_imatrix(f, "b" * 64)
+    with pytest.raises(SystemExit, match="missing"):
+        lad.check_imatrix(tmp_path / "none.dat", "b" * 64)
+
+
+# ---------------------------------------------------------------- kld prep: the confirm split, rows <= ctx
+def test_teacher_eval_prep_confirm_split_and_ctx(tmp_path, monkeypatch):
+    from ops import s09_teacher_eval as te
+    from ops import s09_gate
+    from ops.lib import rowsets
+    corpus, teacher, prep = tmp_path / "corpus", tmp_path / "teacher", tmp_path / "prep"
+    corpus.mkdir(); teacher.mkdir()
+    spec = "s" * 16
+    lens = [50, 60, 9000, 40, 70, 30, 80, 20, 45, 55, 65, 35, 25, 9500, 75, 15]
+    rows, off = [], 0
+    for i, n in enumerate(lens):
+        rows.append({"row": i, "offset": off, "length": n, "heldout": i % 4 != 0,
+                     "bucket": "longctx" if n > 8192 else "general"})
+        off += n
+    T = off
+    (corpus / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (corpus / "manifest.json").write_text(json.dumps({"spec_hash": spec}))
+    np.save(corpus / "tokens.npy", np.arange(T, dtype=np.int32))
+    types = np.full(T, -1, np.int8)
+    types[rows[5]["offset"]] = 0                                         # row 5 has a vision token
+    np.save(corpus / "types.npy", types)
+    np.save(corpus / "valid.npy", np.ones(T, bool))
+    np.save(teacher / "top32_logprob.npy", np.zeros((T, 32), np.float32))
+    np.save(teacher / "top32_ids.npy", np.zeros((T, 32), np.int32))
+    np.save(teacher / "nll_next.npy", np.zeros(T, np.float32))
+    for k, v in (("CORPUS", corpus), ("TEACHER", teacher), ("PREP", prep)):
+        monkeypatch.setattr(te, k, v)
+    assert te.gguf_split() == "confirm"
+    te.prep(None, ctx=8192)
+    meta = json.loads((prep / "meta.json").read_text())
+    confirm = {r["row"] for r in rowsets.split_rows(rows, spec, "confirm")}
+    screen = {r["row"] for r in rowsets.split_rows(rows, spec, "screen")}
+    assert confirm and screen
+    want = sorted(r for r in confirm if lens[r] <= 8192 and r != 5)
+    assert meta["split"] == "confirm" and meta["ctx"] == 8192 and meta["rows"] == want
+    assert not set(meta["rows"]) & screen and meta["max_row_tokens"] <= 8192
+    assert {x["row"] for x in meta["skipped_too_long"]} == {r for r in confirm if lens[r] > 8192}
+    got = np.fromfile(prep / "rows.i64", np.int64).reshape(-1, 2)
+    assert list(got[:, 1]) == [lens[r] for r in want] and got[:, 1].sum() == meta["tokens"]
+    mt = (prep / "meta.json").stat().st_mtime_ns
+    te.prep(None, ctx=8192)                                              # idempotent: nothing rewritten
+    assert (prep / "meta.json").stat().st_mtime_ns == mt
+    te.prep(None, ctx=60)                                                # another ctx: rewritten
+    assert json.loads((prep / "meta.json").read_text())["ctx"] == 60
+    # summarize refuses a prep made on another split
+    m = json.loads((prep / "meta.json").read_text()); m["split"] = "heldout"
+    (prep / "meta.json").write_text(json.dumps(m))
+    with pytest.raises(SystemExit, match="split"):
+        te.summarize("L2", tmp_path / "x.gguf", tmp_path)
+    # the gate fails a result measured on another split (or one that does not record its split)
+    g = json.loads((REPO / "ops" / "s10_gates.json").read_text())["gguf"]
+    k = lambda split: {"stats": {"kl_top32": {"mean": .1, "ci95": [.09, .11]}, "top1": {"mean": .9, "ci95": [.89, .91]},
+                                 "dnll": {"mean": .1, "ci95": [.09, .11]}}, "identity": {"keep_set_sha256": "f"},
+                       "split": split}
+    out = s09_gate.evaluate({"L2": k("confirm"), "L3": k("unrecorded")}, {"L2": True, "L3": True}, g)
+    assert out["passing"] == ["L2"] and any("split" in w for w in out["levels"]["L3"]["why"])
+
+
+# ---------------------------------------------------------------- the card's recipe
+def test_gguf_card_recipe():
+    t = (REPO / "ops" / "cards" / "gguf.md.tmpl").read_text()
+    dl = t[t.index("hf download {{ base.repo }}"):].split("\n\n")[0]
+    for f in ("config.json", "model.safetensors.index.json", "model-00047-of-00048.safetensors",
+              "model-00048-of-00048.safetensors"):
+        assert f in dl, f
+    assert "CUDA_ARCH" in t
+    b = (REPO / "llamacpp" / "build.sh").read_text()
+    assert "CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH:-110}" in b
+
+
+# ---------------------------------------------------------------- runner without pytest
+class _MonkeyPatch:
+    def __init__(self):
+        self._undo = []
+
+    def setattr(self, obj, name, value):
+        self._undo.append((obj, name, getattr(obj, name)))
+        setattr(obj, name, value)
+
+    def undo(self):
+        for obj, name, v in reversed(self._undo):
+            setattr(obj, name, v)
+
+
+def run_without_pytest() -> int:
+    import inspect
+    import shutil
+    import tempfile
+    import traceback
+    res = []
+    for name, f in list(globals().items()):
+        if not name.startswith("test_") or not callable(f):
+            continue
+        arg, values = getattr(f, "_params", (None, [None]))
+        for v in values:
+            label = name + (f"[{v}]" if arg else "")
+            td, mp = Path(tempfile.mkdtemp(prefix="s09t_")), _MonkeyPatch()
+            kw = {}
+            for prm in inspect.signature(f).parameters:
+                kw[prm] = {"tmp_path": td, "monkeypatch": mp}.get(prm, v)
+            try:
+                f(**kw)
+                res.append((label, "ok", ""))
+            except Exception as e:
+                if type(e).__name__ == "_Skip":
+                    res.append((label, "skip", str(e)))
+                else:
+                    res.append((label, "FAIL", traceback.format_exc(limit=4)))
+            except SystemExit as e:
+                res.append((label, "FAIL", f"SystemExit: {e}"))
+            finally:
+                mp.undo()
+                shutil.rmtree(td, ignore_errors=True)
+    for label, st, msg in res:
+        print(f"{st:4s}  {label}" + (f"\n{msg}" if st == "FAIL" else f"  {msg}" if msg else ""))
+    bad = sum(st == "FAIL" for _, st, _ in res)
+    print(f"\n{len(res) - bad}/{len(res)} passed ({sum(st == 'skip' for _, st, _ in res)} skipped)")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run_without_pytest())

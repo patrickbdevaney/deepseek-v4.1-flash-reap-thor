@@ -59,11 +59,12 @@ sha_ok() {  # sha_ok FILE OID
 
 # ------------------------------------------------------------------------------------------------ wait for chain 1
 log "chain2 start (waiting for chain.sh to finish)"
-until grep -q "chain reached the end of implemented stages" $C 2>/dev/null; do
+# done.s12 also counts: chain.sh marks it just before logging the end line, and a kill between the two must not wedge us
+until grep -q "chain reached the end of implemented stages" $C 2>/dev/null || [ -f $L/done.s12 ]; do
   [ -f $L/chain.STOP ] && { log "chain.STOP appeared while waiting: $(cat $L/chain.STOP)"; exit 1; }
   sleep 300
 done
-while pgrep -f 'bash ops/chain.sh' >/dev/null; do sleep 30; done
+while pgrep -f '^(/usr)?(/bin/)?bash ops/chain\.sh$' >/dev/null; do sleep 30; done
 mountpoint -q "$SEAROOT" || stop "the Seagate is not mounted at $SEAROOT"
 [ -f $L/done.s10final ] && [ -f $WORK/s10/final/results.json ] || stop "s10final has not passed; chain2 needs it"
 NKEEP=$($PY -c "import sys;sys.path.insert(0,'.');from ops.lib import keepset;print(len(keepset.load('$WORK/s04/keepset.json')[0]['0']))") \
@@ -76,6 +77,13 @@ mkdir -p "$SEAW"
 # ------------------------------------------------------------------------------------------------ phase 0: space
 if ! step_done stale_cache; then           # s00's killed first attempt; s00 verified every shard, these are dead partials
   find "$SRC/.cache/huggingface/download" -name '*.incomplete' -delete 2>/dev/null; mark stale_cache
+fi
+# Dead replay embeddings (s04, s10 heal, s10 final): their runs are finished and nothing re-reads them (~30 GiB on NVMe).
+if ! step_done drop_embeds; then
+  for d in $WORK/s04/replay/_embed $WORK/s10/heal/replay/_embed $WORK/s10/final/replay/_embed; do
+    [ -d $d ] && { rm -rf $d; log "dropped dead replay stream $d"; }
+  done
+  mark drop_embeds
 fi
 # A Thor build parked on the Seagate is staging only: it is copied back to NVMe before any GPU step loads it.
 verify_build() { $PY - "$1" <<'E2'
@@ -101,7 +109,8 @@ unpark_build() {  # unpark_build NAME: a parked build back on NVMe (verified) be
   rm -f $WORK/thor/$b && mv $WORK/thor/.$b.unpark $WORK/thor/$b; log "thor/$b back on NVMe (verified)"; }
 
 # ------------------------------------------------------------------------------------------------ phase A: source on NVMe
-step_done s09_build_ || { cpu s09 build; mark s09_build_; }
+# build markers may be left by an earlier QA run against an older tree: rebuild once here (incremental, minutes)
+step_done s09_build_ || { rm -f $L/done.s09_build $L/done.s08_build $L/done.s08_cpu_gates; cpu s09 build; mark s09_build_; }
 gpu s09 backend_ops
 CUDA_OK=1
 { soft s08_build s08 build && soft s08_cpu_gates s08 cpu_gates && soft s08_units s08 units && soft s08_gemv s08 gemv_bench; } || CUDA_OK=0
@@ -111,6 +120,7 @@ CUDA_OK=1
 # panel needs s08's gemv_bench.json (a missing bench means not adopted), so without a working CUDA build it is skipped.
 NA=$NKEEP; KQ=$WORK/thor/A$NA
 trellis() {
+  unpark_build A$NA                 # s07 thor-b parks A on the Seagate when B wins; the panel must not mmap it over USB
   [ -f $KQ/thor.json ] || { echo "no K-quant arm-A build at $KQ"; return 1; }
   if ! step_done s07trellis; then
     ktneed=$(( $(du -s -B1 -L $KQ | cut -f1) / GIB + 60 ))
@@ -163,7 +173,7 @@ if ! step_done move_backbone; then
 fi
 
 # ------------------------------------------------------------------------------------------------ phase B: rows + serving gates
-step_done s09_rowfile_ || { [ -f $L/done.s09_rowfile ] || need / 200 "s09 Engram row files (~189 GiB)"; cpu s09 rowfile; mark s09_rowfile_; }
+# (the Engram row files are built after the source GGUF is dropped: see phase C)
 
 # ------------------------------------------------------------------------------------------------ phase C: GGUF ladder
 MASTER="$SEAW/master_REAP$NKEEP"
@@ -172,7 +182,7 @@ if [ -n "$LOCAL" ] && [ -f "$LOCAL/reap_keepset.json" ]; then MASTER=$LOCAL; ste
 if ! step_done master; then        # s05 deleted the local master after its private upload; fetch it back (download: xet HP on)
   need "$SEAROOT" 170 "master download"
   REPO=$($PY -c "import json;print(json.load(open('$WORK/s05/manifest_REAP$NKEEP.json'))['repo'])") || stop "no s05 manifest"
-  HF_XET_HIGH_PERFORMANCE=1 setsid .venv/bin/hf download "$REPO" --local-dir "$MASTER" >> $L/c2_master.log 2>&1 \
+  setsid .venv/bin/hf download "$REPO" --local-dir "$MASTER" >> $L/c2_master.log 2>&1 \
     || stop "master download $REPO"
   $PY - "$MASTER" "$WORK/s05/manifest_REAP$NKEEP.json" <<'E' >> $L/c2_master.log 2>&1 || stop "master download does not verify against the s05 manifest"
 import hashlib, json, sys
@@ -195,41 +205,30 @@ E
   [ -f "$MASTER/reap_keepset.json" ] || stop "master has no reap_keepset.json"
   mark master
 fi
-export MASTER
-step_done s09_convert_ || { [ -f $L/done.s09_convert ] || need / 170 "s09 source GGUF (~152 GiB)"; gpu s09 convert; mark s09_convert_; }
-step_done s09_imatrix_ || { cpu s09 imatrix; mark s09_imatrix_; }
-# One GGUF: L2 (~2.85 bpw, the 128 GB level). L3 (~2.46 bpw) is built only if L2 fails its gate. L0/L1 (the MXFP4
-# reference and ~3.4 bpw) do not fit 128 GB and are not part of the release.
-ladder() {       # ladder LEVEL: quant -> kld + smoke (staged to NVMe) -> results back on the Seagate
-  local LV=$1
-  if ! [ -f $L/done.s09_quant_$LV ]; then
-    need "$SEAROOT" 320 "quant $LV"
-    mkdir -p "$SEAW/s09/$LV" $G
-    if [ -d $G/$LV ] && ! [ -L $G/$LV ]; then rmdir $G/$LV 2>/dev/null || stop "$G/$LV is a real non-empty directory (expected the Seagate symlink)"; fi
-    ln -sfn "$SEAW/s09/$LV" $G/$LV
-    cpu s09 quant $LV
-  fi
-  [ -f $L/done.s09_kld_$LV ] && [ -f $L/done.s09_smoke_$LV ] && return 0
-  local ST=$G/stage/$LV
-  if [ "$(readlink -f $G/$LV)" != "$(readlink -f $ST)" ]; then
-    local sz=$(du -s -B1 -L "$SEAW/s09/$LV" | cut -f1)
-    need / $(( sz / GIB + 25 )) "stage $LV to NVMe"
-    mkdir -p $ST; rsync -a --partial "$SEAW/s09/$LV/" $ST/ || stop "stage $LV"
-    ln -sfn $ST $G/$LV
-  fi
-  gpu s09 kld $LV
-  gpu s09 smoke $LV
-  rsync -a $ST/teacher_eval/ "$SEAW/s09/$LV/teacher_eval/" || stop "unstage $LV results"
-  ln -sfn "$SEAW/s09/$LV" $G/$LV && rm -rf $ST; }
-ladder L2
-PASS=$($PY ops/s09_gate.py --levels L2 2>>$L/c2_s09_gate.log | tail -1) || stop "s09 gate"
-if [ -z "$PASS" ]; then
-  log "GGUF L2 failed its gate; building the L3 fallback"
-  ladder L3
-  PASS=$($PY ops/s09_gate.py --levels L2 L3 2>>$L/c2_s09_gate.log | tail -1) || stop "s09 gate"
+# Disk order (ops/logs/audit/ops.md D1/D2): convert -> imatrix -> quant L2 and L3 onto the Seagate -> drop the source
+# GGUF (regenerable) -> Engram row files on NVMe -> stage one level to NVMe for kld + smoke -> unstage -> gate.
+# One GGUF is released: L2 (~2.85 bpw, the 128 GB level); L3 (~2.46 bpw) is evaluated only if L2 fails its gate.
+export MASTER S09_QUANT_ROOT="$SEAW/s09" S09_LEVELS="L2 L3"
+quants_done() { [ -f $L/done.s09_quant_L2 ] && [ -f $L/done.s09_quant_L3 ]; }
+if ! quants_done; then
+  [ -f $L/done.s09_convert ] || need / 170 "s09 source GGUF (~152 GiB)"; gpu s09 convert
+  cpu s09 imatrix
+  for LV in L2 L3; do [ -f $L/done.s09_quant_$LV ] || { need "$SEAROOT" 250 "quant $LV"; cpu s09 quant $LV; }; done
 fi
-if ! step_done drop_src_gguf; then    # regenerable (convert), and the largest thing on NVMe in this phase
-  rm -f $G/src/V4.1-1017-REAP$NKEEP-src.gguf; mark drop_src_gguf
+cpu s09 drop_source
+step_done s09_rowfile_ || { [ -f $L/done.s09_rowfile ] || need / 200 "s09 Engram row files (~189 GiB)"; cpu s09 rowfile; mark s09_rowfile_; }
+evaluate() { local LV=$1
+  if ! { [ -f $L/done.s09_kld_$LV ] && [ -f $L/done.s09_smoke_$LV ]; }; then
+    cpu s09 stage $LV; gpu s09 kld $LV; gpu s09 smoke $LV; fi
+  cpu s09 unstage $LV; }
+evaluate L2
+# the verdict is read from gates.json (stdout carries log lines): a crashed gate STOPs instead of reading as "L2 failed"
+gate() { rm -f $G/gates.json; $PY ops/s09_gate.py --levels "$@" >> $L/c2_s09_gate.log 2>&1 || stop "s09 gate crashed (see $L/c2_s09_gate.log)"
+  PASS=$($PY -c "import json;print(' '.join(json.load(open('$G/gates.json'))['passing']))") || stop "s09 gate wrote no $G/gates.json"; }
+gate L2
+if [ -z "$PASS" ]; then
+  log "GGUF L2 failed its gate; evaluating the L3 fallback"; evaluate L3
+  gate L2 L3
 fi
 log "s09 gate: passing levels [${PASS}]"
 if [ -n "$PASS" ]; then

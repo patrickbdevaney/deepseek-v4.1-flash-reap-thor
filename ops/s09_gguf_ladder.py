@@ -22,7 +22,9 @@ loses information; at 4.25 bpw the only right answer is MXFP4 copied as-is.
 Protected layers: 0-1, Engram 1/14, KV sources 2/8/14/20, DSpark taps 37-39 (from config).
 
   plan    LEVEL [--layer-scores J]   tensor-type file + exact predicted size (reads GGUF headers only)
-  imatrix                            legacy .dat from the s03 bank, remapped to the keep-set, then imatrix_verify
+  imatrix [--check]                  legacy .dat from the s03 bank, remapped to the keep-set, then imatrix_verify;
+                                     the keep-set fingerprint is recorded in the .dat's dataset string, and quant
+                                     refuses an imatrix built for another keep-set (--check: exit 3 if stale)
   quant   LEVEL                      llama-quantize (+ optional --ef error feedback) -> gguf-split (<50 GB) -> verify
   verify  LEVEL                      types, eos/eot, keep-set fingerprint and split sizes, from the written files
   manifest [--levels ..] [--repo R]  $V41_WORK/s09/manifest.json for ops/s12_publish.py:
@@ -75,6 +77,8 @@ LEVELS = {
     "L2": {"target": 2.85, "ladder": ["IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S"], "protected": "IQ3_S"},
     "L3": {"target": 2.46, "ladder": ["IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS"], "protected": "IQ3_XXS"},
 }
+V41_TEMPLATE = LCPP / "llama.cpp" / "models" / "templates" / "deepseek-ai-DeepSeek-V4.1-Flash.jinja"
+TEMPLATE_KEY = "tokenizer.chat_template"
 GAIN_KEY = "deepseek41.reap.routed_gain"   # per-layer heal gain on the routed sum (fork patch 0004); absent = 1.0
 EXPERT_RE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.weight$")
 
@@ -197,7 +201,7 @@ def build_imatrix(keepset_path: Path, bank: Path, out: Path) -> None:
     from ops.lib import imatrix as im
     from ops.lib import imatrix_verify
     from ops.lib import keepset
-    keep, _ = keepset.load(keepset_path)      # ascending ids = the master's new expert order (keepset.remap)
+    keep, fp = keepset.load(keepset_path)     # ascending ids = the master's new expert order (keepset.remap)
     n_layer = int(text_config()["num_hidden_layers"])
     entries, ncall = {}, 1
     for L in range(n_layer):
@@ -208,10 +212,36 @@ def build_imatrix(keepset_path: Path, bank: Path, out: Path) -> None:
         ncall = int(b.get("rows", 1)) or 1
         entries.update(im.layer_entries(L, b, np.asarray(keep[str(L)], dtype=np.int64), ncall))
     out.parent.mkdir(parents=True, exist_ok=True)
-    im.write_dat(out, entries, dataset="v41-1017 s03 calibration (held-out excluded)", last_call=ncall)
+    im.write_dat(out, entries, dataset=f"v41-1017 s03 calibration (held-out excluded) keepset={fp}", last_call=ncall)
     if imatrix_verify.main(str(out)) != 0:
         raise SystemExit(f"FATAL: imatrix_verify failed on {out}")
     log(f"imatrix: {len(entries)} entries -> {out}")
+
+
+def imatrix_keepset(path: Path) -> str | None:
+    """The keep-set fingerprint build_imatrix recorded in the .dat's dataset string (None: not recorded)."""
+    from ops.lib import imatrix as im
+    ds = im.read_dat(path)[2]
+    m = re.search(r"keepset=([0-9a-f]{64})", ds)
+    return m.group(1) if m else None
+
+
+def check_imatrix(path: Path, fp: str) -> None:
+    got = imatrix_keepset(path) if path.exists() else "missing"
+    if got != fp:
+        raise SystemExit(f"FATAL: {path} was built for keep-set {got}, the source GGUF is {fp}: rebuild the imatrix "
+                         f"(rm ops/logs/done.s09_imatrix)")
+
+
+def template_problem(kv: dict) -> str | None:
+    """None if the GGUF carries exactly the fork's V4.1 chat template."""
+    t = kv.get(TEMPLATE_KEY)
+    if t == V41_TEMPLATE.read_text(encoding="utf-8"):
+        return None
+    if not t:
+        return f"{TEMPLATE_KEY} missing"
+    kind = "the V4 template ('tool_calls>' DSML tags)" if "tool_calls>" in t else "not the V4.1 template"
+    return f"{TEMPLATE_KEY} is {kind}: V4.1 tool calls would come back as content (llamacpp/convert_v41_reap.py forces it)"
 
 
 def gguf_kv(path: Path) -> dict:
@@ -220,6 +250,7 @@ def gguf_kv(path: Path) -> dict:
     out = {}
     for k, f in r.fields.items():
         if k.startswith(("tokenizer.ggml.eos", "tokenizer.ggml.eot", "tokenizer.ggml.eom", "general.file_type")) \
+                or k == TEMPLATE_KEY \
                 or ".reap." in k:
             try:
                 out[k] = f.contents()
@@ -237,6 +268,14 @@ def quant(level: str, p: dict, ef_hessians: Path | None, threads: int) -> Path:
     whole = d / f"{NAME}-{level}.gguf"
     kv = env.Ledger(d / "ledger.json")
     if not kv.done("quantize"):
+        if not SRC_GGUF.exists():
+            raise SystemExit(f"FATAL: source GGUF {SRC_GGUF} is missing (dropped after the quants?): re-run "
+                             f"`llamacpp/CHAIN_STEPS.sh convert` first")
+        src_kv = gguf_kv(SRC_GGUF)
+        if level != "L0":
+            check_imatrix(IMATRIX, src_kv.get("deepseek41.reap.keep_set_sha256"))
+        if template_problem(src_kv):
+            raise SystemExit(f"FATAL: source GGUF: {template_problem(src_kv)}; re-convert")
         cmd = [str(BIN / "llama-quantize"), "--allow-requantize", "--tensor-type-file", str(rules),
                "--token-embedding-type", "q6_k", "--output-tensor-type", "q6_k",
                "--override-kv", f"tokenizer.ggml.eos_token_id=int:{EOS_ID}",
@@ -290,6 +329,8 @@ def verify_whole(level: str, path: Path, p: dict) -> None:
     fp_key = "deepseek41.reap.keep_set_sha256"
     if not kv.get(fp_key) or kv.get(fp_key) != src.get(fp_key):
         bad.append(f"keep-set fingerprint {kv.get(fp_key)} != source {src.get(fp_key)}")
+    if template_problem(kv):
+        bad.append(template_problem(kv))
     if kv.get(GAIN_KEY) != src.get(GAIN_KEY):
         bad.append(f"{GAIN_KEY} {kv.get(GAIN_KEY)} != source {src.get(GAIN_KEY)} (the heal gain must survive quantize)")
     if bad:
@@ -308,7 +349,9 @@ def verify_splits(level: str) -> None:
             raise SystemExit(f"FATAL: {f.name} is {f.stat().st_size / 1e9:.1f} GB (HF limit 50 GB)")
     kv = gguf_kv(parts[0])
     if kv.get("tokenizer.ggml.eos_token_id") != EOS_ID or kv.get("tokenizer.ggml.eot_token_id") != EOS_ID:
-        raise SystemExit(f"FATAL: split 1 lost the eos/eot override: {kv}")
+        raise SystemExit(f"FATAL: split 1 lost the eos/eot override: { {k: v for k, v in kv.items() if k != TEMPLATE_KEY} }")
+    if template_problem(kv):
+        raise SystemExit(f"FATAL: {parts[0].name}: {template_problem(kv)}")
     log(f"splits {level}: {len(parts)} files, max {max(f.stat().st_size for f in parts) / 1e9:.1f} GB")
 
 
@@ -387,6 +430,7 @@ def main() -> int:
     ap.add_argument("--repo", help="HF repo id for s12 (default: s12 derives it)")
     ap.add_argument("--bank", type=Path, default=env.WORK / "s03" / "bank")
     ap.add_argument("--ef-hessians", type=Path, help="enable GPTQ-style error feedback (s09_ef.py)")
+    ap.add_argument("--check", action="store_true", help="imatrix: exit 0 if the existing .dat matches --keepset, 3 if not")
     ap.add_argument("--threads", type=int, default=int(os.environ.get("S09_THREADS", 4)))
     a = ap.parse_args()
     scores = None
@@ -395,6 +439,12 @@ def main() -> int:
     if a.cmd == "imatrix":
         if not a.keepset:
             ap.error("imatrix needs --keepset")
+        if a.check:
+            from ops.lib import keepset
+            fp = keepset.load(a.keepset)[1]
+            got = imatrix_keepset(IMATRIX) if IMATRIX.exists() else None
+            log(f"imatrix check: {IMATRIX} keep-set {got}, master {fp}: {'OK' if got == fp else 'STALE'}")
+            return 0 if got == fp else 3
         build_imatrix(a.keepset, a.bank, IMATRIX)
         return 0
     if a.cmd == "manifest":
@@ -402,6 +452,9 @@ def main() -> int:
         return 0
     if not a.level:
         ap.error("level required")
+    if not a.src.exists():
+        raise SystemExit(f"FATAL: source GGUF {a.src} is missing (CHAIN_STEPS drop_source removes it once the quants "
+                         f"are done): re-run `llamacpp/CHAIN_STEPS.sh convert` first")
     p = plan(a.level, scores, a.src)
     if a.cmd == "plan":
         p2 = dict(p)

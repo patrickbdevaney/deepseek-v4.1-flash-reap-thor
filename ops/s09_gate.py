@@ -2,8 +2,9 @@
 """s09 release gate: which GGUF levels may be published (ops/s10_gates.json "gguf", pre-registered).
 
 A level passes when
-  * its teacher_kld.json exists (v41-teacher-kld on the held-out rows) and was measured on the GGUF the
-    ladder wrote (same keep-set fingerprint as the others);
+  * its teacher_kld.json exists (v41-teacher-kld) and was measured on the GGUF the ladder wrote (same keep-set
+    fingerprint as the others), on the pre-registered split (gguf.split, "confirm"; a result that does not
+    record its split fails);
   * kl32 <= max_kl32 and top-1 >= min_top1 (the pruned floor);
   * for L1..L3, when L0 was measured: kl32 - kl32(L0) <= max_d_kl32_vs_L0 (the requantization's own cost);
   * its llama-server smoke passed (ops/logs/s09_smoke_<LV>.log carries "smoke ok").
@@ -38,6 +39,8 @@ def evaluate(kld: dict, smoke_ok: dict, g: dict) -> dict:
                    "top1_ci95": s["top1"]["ci95"], "dnll": s["dnll"]["mean"], "ngl": k.get("ngl"),
                    "keep_set_sha256": k["identity"]["keep_set_sha256"]}
             fps[lv] = rec["keep_set_sha256"]
+            if k.get("split", g["split"]) != g["split"]:
+                why.append(f"measured on split {k.get('split')!r}, the gate pre-registers {g['split']!r}")
             if rec["kl32"] > g["max_kl32"]:
                 why.append(f"kl32 {rec['kl32']:.4f} > {g['max_kl32']}")
             if rec["top1"] < g["min_top1"]:
@@ -67,6 +70,8 @@ def main():
     for lv in a.levels:
         f = OUT / lv / "teacher_eval" / "teacher_kld.json"
         kld[lv] = json.load(open(f)) if f.exists() else None
+        if kld[lv] is not None:
+            kld[lv].setdefault("split", "unrecorded")       # pre-fix results scored both held-out halves
         if kld[lv] is not None and (OUT / lv / "teacher_eval" / "ngl.txt").exists():
             kld[lv]["ngl"] = (OUT / lv / "teacher_eval" / "ngl.txt").read_text().strip()
         lg = env.LOGS / f"s09_smoke_{lv}.log"

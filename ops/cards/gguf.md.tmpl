@@ -12,24 +12,26 @@ tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
 
 DeepSeek-V4.1-Flash has two Engram tables (n-gram embeddings, about 101 GB each). A token reads only 24 rows of each, and the row ids depend only on the token ids. So the tables stay on NVMe and are read with `O_DIRECT` while the GPU runs; only the pruned experts and the dense path ({{ gguf.run_gib }} for `{{ gguf.run_level }}`) are loaded into memory. Upstream llama.cpp cannot do this yet: use the fork below (upstream PR #28696 plus four patches, one of which is the NVMe row store).
 
-You need 128 GB of RAM or unified memory, a CUDA GPU (measured on a Jetson AGX Thor), and about 210 GB free on a local NVMe drive for the row files (not USB, not a network share).
+You need 128 GB of RAM or unified memory, an NVIDIA GPU with CUDA (measured only on a Jetson AGX Thor, sm_110; `build.sh` targets it by default, set `CUDA_ARCH` for another GPU), and about 210 GB free on a local NVMe drive for the row files (not USB, not a network share). Building the row files also needs the base model's two Engram files once (about 200 GB more, on any disk; delete them afterwards).
 
 ```bash
 # 1. the fork (pinned upstream PR head + patches) and the row-file builder
 git clone https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor && cd deepseek-v4.1-flash-reap-thor
-llamacpp/setup.sh && llamacpp/build.sh
+llamacpp/setup.sh
+llamacpp/build.sh                     # Jetson AGX Thor (sm_110); any other NVIDIA GPU: CUDA_ARCH=<sm, e.g. 89> llamacpp/build.sh
 python3 -m venv .venv && .venv/bin/pip install numpy huggingface_hub
 
 # 2. this GGUF ({{ gguf.run_level }})
 .venv/bin/hf download {{ artifact.repo }} --include "*-{{ gguf.run_level }}-*.gguf" --local-dir gguf
 
-# 3. the two Engram files of the base model, plus its index (see "Engram" below for sizes and sha256)
-.venv/bin/hf download {{ base.repo }} model.safetensors.index.json model-00047-of-00048.safetensors \
+# 3. the two Engram files of the base model, plus its config and index (see "Engram" below for sizes and sha256)
+.venv/bin/hf download {{ base.repo }} config.json model.safetensors.index.json model-00047-of-00048.safetensors \
     model-00048-of-00048.safetensors --revision {{ base.revision }} --local-dir base
 
 # 4. build and verify the row files on NVMe (a 200 GB sequential copy; the base files can be deleted afterwards)
-V41_SRC=$PWD/base .venv/bin/python ops/s09_engram_rowfile.py build  --dst /nvme/v41rows
-V41_SRC=$PWD/base .venv/bin/python ops/s09_engram_rowfile.py verify --dst /nvme/v41rows
+export V41_SRC=$PWD/base V41_WORK=$PWD/work
+.venv/bin/python ops/s09_engram_rowfile.py build  --dst /nvme/v41rows
+.venv/bin/python ops/s09_engram_rowfile.py verify --dst /nvme/v41rows
 
 # 5. serve (OpenAI-compatible)
 LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llamacpp/llama.cpp/build-thor/bin/llama-server \
@@ -42,7 +44,7 @@ Conversion: from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha2
 
 ## Levels
 
-Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on held-out documents ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals. Only levels that passed the pre-registered GGUF gate are in this repository.
+Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on the pre-registered confirm split of the held-out documents, which no pruning, healing or quantization decision ever looked at ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals. Only levels that passed the pre-registered GGUF gate are in this repository.
 
 {{ gguf.levels_table }}
 
