@@ -58,7 +58,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["protect", "check"])
     ap.add_argument("--keep", type=Path, help="mask json for `check`")
-    ap.add_argument("--rows", choices=["all", "calib", "heldout"], default="all")
+    # calib by default for BOTH commands: held-out rows must not shape selection, and protect/check
+    # must see the same rows or near-threshold experts flip and `check` BLOCKs masks that honoured
+    # every protect list (2026-10-20: 85 experts over 37 layers)
+    ap.add_argument("--rows", choices=["all", "calib", "heldout"], default="calib")
     ap.add_argument("--draws", type=int, default=2000)
     ap.add_argument("--out", type=Path)
     a = ap.parse_args()

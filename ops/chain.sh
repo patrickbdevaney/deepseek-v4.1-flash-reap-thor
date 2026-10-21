@@ -70,7 +70,7 @@ if ! step_done s03; then
   quiet; setsid $PY ops/s03_saliency.py run --kernels $(cat $L/kernels 2>/dev/null || echo tilelang) --engram-dir "$SEA" > $L/s03.log 2>&1 \
     || stop "s03 failed (resumable: fix, rm chain.STOP, relaunch)"
   mark s03; reclaim s03
-  $PY ops/drift_guard.py protect > $L/drift_protect.log 2>&1 || stop "drift_guard protect failed"
+  $PY ops/drift_guard.py protect --rows calib > $L/drift_protect.log 2>&1 || stop "drift_guard protect failed"
 fi
 
 # ---------------------------------------------------------------------------------------------- s04 -> s12

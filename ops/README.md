@@ -76,7 +76,7 @@ setsid nohup python3 ops/s03_saliency.py run --engram-dir /path/to/shards47-48 >
 python3 ops/s03_saliency.py status
 
 # guard (CPU): protect lists before s04 selection, verdict on each candidate mask after
-python3 ops/drift_guard.py protect
+python3 ops/drift_guard.py protect --rows calib
 python3 ops/drift_guard.py check --keep ~/models/v41-work/s04/mask_hope.json
 ```
 
