@@ -63,8 +63,11 @@ backend_ops)
   done_ backend_ops && exit 0; quiet
   # every op the V4.1 graph uses, all types; then the matmul paths for exactly the weight types the levels carry
   $BIN/test-backend-ops test -b CUDA0 > $L/s09_backend_ops_all.log 2>&1; rc=$?
-  for t in mxfp4 q8_0 q6_k iq3_s iq3_xxs iq2_s iq2_xs iq2_xxs bf16 f32; do
-    $BIN/test-backend-ops test -b CUDA0 -o MUL_MAT,MUL_MAT_ID,GET_ROWS -p "type_a=$t" >> $L/s09_backend_ops_types.log 2>&1 || rc=1
+  # ggml type names are case-sensitive (q6_K, not q6_k): a misspelt filter matches nothing and prints "0/0 tests passed"
+  for t in mxfp4 q8_0 q6_K iq3_s iq3_xxs iq2_s iq2_xs iq2_xxs bf16 f32; do
+    out=$($BIN/test-backend-ops test -b CUDA0 -o MUL_MAT,MUL_MAT_ID,GET_ROWS -p "type_a=$t" 2>&1) || rc=1
+    echo "$out" >> $L/s09_backend_ops_types.log
+    echo "$out" | grep -qE '^ +[1-9][0-9]*/[0-9]+ tests passed' || { log "backend_ops: no tests ran for type_a=$t"; rc=1; }
   done
   grep -h 'FAIL' $L/s09_backend_ops_*.log | head -20 >> $C
   [ $rc = 0 ] && ! grep -q '\bFAIL\b' $L/s09_backend_ops_*.log || die "test-backend-ops failures on sm_110 (see $L/s09_backend_ops_*.log)"
