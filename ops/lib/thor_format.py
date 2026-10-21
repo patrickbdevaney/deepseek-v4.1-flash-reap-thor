@@ -42,9 +42,19 @@ class Build:
                 if k in ("keepset_sha256", "n_routed_experts") and self.m.get(k) != v:
                     from .keepset import KeepsetMismatch
                     raise KeepsetMismatch(f"{self.root}: built for {k}={self.m.get(k)}, asked for {v}")
+            if create:
+                # A resumed build must be resumed with the SAME recipe: layers already written used the
+                # old alloc / heal gains, so silently keeping the old manifest fields (or mixing) is wrong.
+                stale = [k for k, v in meta.items()
+                         if k in self.m and json.loads(json.dumps(v)) != self.m[k]]
+                if stale:
+                    raise SystemExit(f"{self.root}: existing partial build was made with different {stale} "
+                                     f"(e.g. {stale[0]}: {json.dumps(self.m[stale[0]])[:200]}); delete the "
+                                     f"build directory to rebuild with the new recipe")
         elif create:
             self.root.mkdir(parents=True, exist_ok=True)
             self.m = {"format": FORMAT, **meta, "files": {}, "tensors": {}, "complete": False}
+            self.save()               # layer units open the manifest from their own processes
         else:
             raise FileNotFoundError(self.mpath)
 
@@ -74,9 +84,16 @@ class Build:
     def reader(self, fname: str) -> st_io.Reader:
         return st_io.Reader(self.root / fname)
 
+    def stored_bytes(self) -> int:
+        """bytes of the files the manifest lists (what is already on disk for this build)."""
+        return sum(int(f["bytes"]) for f in self.m["files"].values())
+
     def expert_bytes(self) -> int:
-        return sum(np.prod(t["stored_shape"]) * np.dtype(st_io.DT[t["dtype"]]).itemsize
-                   for n, t in self.m["tensors"].items() if ".ffn.experts." in n)
+        """Routed experts of the decoder layers only (`layers.*`): the MTP/DSpark layers' 128 experts
+        (`mtp.*`, copied unchanged into mtp-*.safetensors) are NOT counted. This is the number the
+        bit budget, `expert_bpw`, the trellis matched-bytes gate and the cards all mean."""
+        return int(sum(int(np.prod(t["stored_shape"])) * np.dtype(st_io.DT[t["dtype"]]).itemsize
+                       for n, t in self.m["tensors"].items() if n.startswith("layers.") and ".ffn.experts." in n))
 
     def verify(self) -> list[str]:
         """sha256 of every file against the manifest -> list of bad files."""

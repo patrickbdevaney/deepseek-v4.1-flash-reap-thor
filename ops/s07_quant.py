@@ -6,7 +6,8 @@ low-bit intermediate nearly doubled KL).
            (packed E2M1 bytes unchanged, E8M0 -> e4m3 block scales, per-tensor FP32 global scale
            carrying the adopted heal gain on w2), input scales from the s06 post-prune amax,
            dense FP8 untouched. Every tensor is checked lossless (zero underflowing blocks and an
-           exact dequant comparison on sampled rows). Uploaded to a PRIVATE repo, local copy deleted.
+           exact dequant comparison on sampled rows). w1/w3 of an expert share one global scale (fused
+           w13 loaders keep one). Kept on the Seagate; --upload streams to a PRIVATE repo instead.
   plan     CPU. Per-layer bit allocation for the Thor build: RTN-imatrix error of Q2_K/Q3_K/Q4_K on
            sampled experts of every layer, weighted by the layer's kept routed mass, greedy upgrades
            under a byte budget equal to arm B's experts (128 x MXFP4 = 2.833 bpw at 192). Protected
@@ -17,7 +18,7 @@ low-bit intermediate nearly doubled KL).
            every expert is GPTQ-rounded into ggml K-quant blocks (lib/gptq.py), heal gain folded
            into w2 before rounding. Then the layer runs with its quantized experts and the stream
            advances. Dense tensors pass through bit-exact. Output: the Thor build directory
-           (ops/lib/thor_format.md), consumed by the s08 CUDA server and the s09 GGUF writer.
+           (ops/lib/thor_format.md), consumed by the s08 CUDA server (s09 converts from the master).
   thor-b   CPU. Arm B's Thor build: 128 kept experts copied bit-exact as MXFP4_SRC, dense the same.
   thor-trellis  (b') pre-registered sub-arm of A (s10 `trellis` panel decides): the same keep-set,
            heal and two-phase GPU units as `thor`, but experts in the KT2/KT3 bitshift-trellis format
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -102,10 +104,20 @@ def input_scales(L: int, keep: list[int]) -> dict[str, np.ndarray]:
     return {"w1": a_in / 2688.0, "w3": a_in / 2688.0, "w2": a_w2 / 2688.0}
 
 
+def w13_emax(rd: st_io.Reader, L: int, e: int) -> int | None:
+    """One exponent for w1 AND w3 of an expert: vLLM's ModelOpt NVFP4 MoE fuses them into w13 and keeps
+    only w1's weight_scale_2 (modelopt.py, "w1_weight_scale_2 must match w3_weight_scale_2"), so both
+    global scales must be equal. The shared value is the larger emax, which keeps the repack exact."""
+    em = [G.mxfp4_emax(*expert_src(rd, L, e, q)) for q in ("w1", "w3")]
+    em = [x for x in em if x is not None]
+    return max(em) if em else None
+
+
 def nvfp4_layer(rd: st_io.Reader, L: int, keep: list[int], gain: float) -> list:
     out = []
     remap = keepset.remap(keep)
     isc = input_scales(L, keep)
+    lossy, e13 = [], {}
     for n in sorted(rd.names(), key=rd.offset):
         m = EXPERT.match(n)
         if m:
@@ -113,9 +125,12 @@ def nvfp4_layer(rd: st_io.Reader, L: int, keep: list[int], gain: float) -> list:
             if e not in remap or part == "scale":
                 continue
             w, s = expert_src(rd, L, e, p)
-            r = G.mxfp4_to_nvfp4(w, s, gain if p == "w2" else 1.0)
+            if p in ("w1", "w3") and e not in e13:
+                e13[e] = w13_emax(rd, L, e)
+            r = G.mxfp4_to_nvfp4(w, s, gain if p == "w2" else 1.0, emax=e13[e] if p in ("w1", "w3") else None)
             if r["lossy_blocks"]:
-                raise SystemExit(f"L{L} e{e} {p}: {r['lossy_blocks']} blocks not representable in NVFP4 (refusing a lossy repack)")
+                lossy.append({"expert": e, "proj": p, "lossy_blocks": r["lossy_blocks"]})   # report the whole layer
+                continue
             rows = slice(0, 8)
             if not np.array_equal(G.nvfp4_dequant(r["weight"][rows], r["weight_scale"][rows], r["weight_scale_2"]),
                                   G.src_dequant(w[rows], s[rows]) * np.float32(gain if p == "w2" else 1.0)):
@@ -129,6 +144,12 @@ def nvfp4_layer(rd: st_io.Reader, L: int, keep: list[int], gain: float) -> list:
             out.append((n, rd.dtype(n), np.ascontiguousarray(rd.get(n)[keep])))
         else:
             out.append((n, rd.dtype(n), rd.get(n)))
+    if lossy:
+        rp = OUT / f"nvfp4_lossy_L{L}.json"
+        env.atomic_json(rp, {"layer": L, "tensors": lossy, "rule": "nonzero 32-block > 17 octaves below the "
+                              "(w1|w3 shared) emax", "ts": env.now()})
+        raise SystemExit(f"L{L}: {len(lossy)} expert tensors have blocks not representable in NVFP4 "
+                         f"(refusing a lossy repack); full list in {rp}")
     return out
 
 
@@ -149,10 +170,11 @@ def cmd_nvfp4(a):
         keepset.require(fp, led.get("keepset")["sha256"], where="s07 nvfp4 ledger")
     led.mark("keepset", sha256=fp)
     from huggingface_hub import HfApi
-    repo = a.repo or (None if a.no_upload else f"{HfApi().whoami()['name']}/DeepSeek-V4.1-Flash-1017-REAP{n_keep}-NVFP4")
-    up = S5.Uploader(repo, not a.no_upload)
+    # same quota rule as s05: kept on the Seagate, uploaded by s12 to a PUBLIC repo only if the nvfp4 gate passed
+    repo = a.repo or f"{HfApi().whoami()['name']}/DeepSeek-V4.1-Flash-1017-REAP{n_keep}-NVFP4"
+    up = S5.Uploader(repo, a.upload)
     stage = orchestrate.staging_dir(16 << 30, f"s07_nvfp4_REAP{n_keep}", prefer=env.WORK)
-    out_dir = OUT / f"nvfp4_REAP{n_keep}"
+    out_dir = OUT / f"nvfp4_REAP{n_keep}" if up.enabled else S5.local_master_dir(f"nvfp4_REAP{n_keep}")
     out_dir.mkdir(parents=True, exist_ok=True)
     idx = json.load(open(env.SRC / "model.safetensors.index.json"))["weight_map"]
     new_map, quantized = {}, []
@@ -185,6 +207,9 @@ def cmd_nvfp4(a):
             dst.unlink()
         else:
             shutil.move(str(dst), out_dir / name)
+            if S5.sha256_file(out_dir / name) != sha:
+                (out_dir / name).unlink()
+                raise SystemExit(f"{name}: sha256 of the copy on {out_dir} differs from the staged file")
         led.finish(u, sha256=sha, bytes=size, weight_map=wm, quantized=q)
         new_map.update(wm)
         quantized += q
@@ -203,8 +228,12 @@ def cmd_nvfp4(a):
     env.atomic_json(small / "hf_quant_config.json", {
         "producer": {"name": "deepseek-v4.1-flash-reap-thor/ops/s07_quant.py nvfp4"},
         "note": "routed experts NVFP4 (ModelOpt tensor layout: weight U8 [out,in/2] even element in the low nibble, "
-                "weight_scale e4m3 [out,in/16], weight_scale_2 FP32 global, input_scale FP32); every other linear keeps "
-                "the source FP8 block-32 format of config.json quantization_config. Loader compatibility is UNVERIFIED "
+                "weight_scale e4m3 [out,in/16], weight_scale_2 FP32 global (equal for w1 and w3 of an expert), "
+                "input_scale FP32); every other linear keeps the source FP8 block-32 ue8m0 format of config.json "
+                "quantization_config, and the MTP layers' experts stay MXFP4 (not listed here). NO LOADER IS VERIFIED: "
+                "vLLM reads config.json quantization_config first and only falls back to this file when it is absent, "
+                "and its ModelOpt MIXED_PRECISION path (quant_method=modelopt) can express per-layer NVFP4 but not the "
+                "block-32 ue8m0 FP8 dense layers, so config.json is deliberately left as the source fp8 config "
                 "(this artifact does not fit Thor); see the model card.",
         "quantization": {"quant_algo": "MIXED_PRECISION", "kv_cache_quant_algo": None,
                          "quantized_layers": {n: {"quant_algo": "NVFP4", "group_size": 16} for n in quantized}}})
@@ -212,14 +241,19 @@ def cmd_nvfp4(a):
     keepset.save(small / "reap_keepset.json", keep, heal_gains=gains)
     for p in sorted(x for x in small.rglob("*") if x.is_file()):
         rel = str(p.relative_to(small))
-        if not led.done(f"small/{rel}"):
+        sha = S5.sha256_file(p)
+        if not led.done(f"small/{rel}") or led.get(f"small/{rel}").get("sha256") != sha:   # changed -> re-put
             up.put(p, rel)
-            led.finish(f"small/{rel}")
+            led.finish(f"small/{rel}", sha256=sha)
     if not up.enabled:
         shutil.copytree(small, out_dir, dirs_exist_ok=True)
     shutil.rmtree(small)
     env.atomic_json(OUT / f"manifest_nvfp4_REAP{n_keep}.json", {
-        "keepset_sha256": fp, "repo": up.repo, "private": True, "heal_gains": gains, "quantized_tensors": len(quantized),
+        "keepset_sha256": fp, "repo": up.repo, "private": True, "uploaded": up.enabled,
+        # no loader has loaded these bytes (config.json still declares the source fp8/ue8m0 config; the s10
+        # nvfp4 gate measures the in-memory function): publishing must keep the repo private while False
+        "loader_verified": False,
+        "local_dir": None if up.enabled else str(out_dir), "heal_gains": gains, "quantized_tensors": len(quantized),
         "files": {k[6:]: {"sha256": v["sha256"], "bytes": v["bytes"]} for k, v in led.data.items() if k.startswith("shard/")},
         "ts": env.now()})
     led.finish("done", repo=up.repo)
@@ -368,11 +402,16 @@ def plan_kt(a, keep: dict, fp: str, n_keep: int) -> dict:
     if a.budget_bytes:
         budget, rule = a.budget_bytes, "--budget-bytes"
     else:
-        tj = json.load(open(build_dir(n_keep, "A") / "thor.json"))
-        if not tj.get("complete"):
+        kq = TF.Build(build_dir(n_keep, "A"), keepset_sha256=fp, n_routed_experts=n_keep)
+        if not kq.m.get("complete"):
             raise SystemExit("thor-trellis matches the K-quant build's bytes: run `s07 thor` first")
-        keepset.require(tj["keepset_sha256"], fp, where="thor/A thor.json")
-        budget, rule = int(tj["expert_bytes"]), f"<= the K-quant Thor build's expert bytes ({tj['expert_bpw']:.4f} bpw)"
+        # recomputed from the tensor list (decoder-layer routed experts only), not the stored field
+        budget = kq.expert_bytes()
+        bpw = budget * 8 / (n_keep * 3 * DIM * INTER * N_LAYERS)
+        if kq.m.get("expert_bytes") not in (None, budget):
+            env.log(f"thor/A thor.json expert_bytes {kq.m['expert_bytes']} != recomputed {budget} (MTP experts "
+                    f"were counted by an older Build.expert_bytes); using {budget}", STAGE)
+        budget, rule = int(budget), f"<= the K-quant Thor build's expert bytes ({bpw:.4f} bpw)"
     led = env.Ledger(env.LOGS / "s07_plan_kt_ledger.json")
     errs = {}
     for L in range(N_LAYERS):
@@ -411,6 +450,8 @@ def engram_items(L: int) -> list[dict]:
     if L not in CFG["engram_layer_ids"]:
         return []
     shard = env.SRC / s05().shard_name(47 + CFG["engram_layer_ids"].index(L))
+    if not shard.exists():   # shards 47/48 may be symlinks onto the Seagate
+        raise SystemExit(f"Engram shard {shard} is not readable (-> {shard.resolve()}): is the Seagate mounted?")
     rd = st_io.Reader(shard)
     return [{"name": n, "dtype": rd.dtype(n), "data": np.asarray(rd.get(n))} for n in rd.names() if ".engram.embed." not in n]
 
@@ -446,6 +487,123 @@ def finish_build(b: TF.Build, n_keep: int) -> None:
     bad = b.verify()
     if bad:
         raise SystemExit(f"sha256 mismatch in {bad}")
+
+
+# ----------------------------------------------------------------------------- disk: preflight + parking
+GIB = 1 << 30
+# Everything in a Thor build except the routed experts, from the source headers (audit s07 RISK-2): 40 decoder
+# layers' dense tensors (~170.3 MB each, 6.3 GiB) + globals/vision/mtp (~10.7 GiB) + Engram small tensors (0.3 GiB).
+NONEXPERT_BYTES = 18 * GIB
+# Replay peak per calibration token: `_embed/h.npy` + the arm stream + the per-layer cache (x_mid + ffn_in), each
+# [T, 4, DIM] bf16 -> 1 + 1 + 1.25 streams (10 + 10 + 12.5 GiB at T = 262,144).
+REPLAY_STREAMS = 3.25
+THOR_MARGIN = 20 * GIB          # thor / thor-trellis: on top of the remaining build + replay
+THOR_B_MARGIN = 40 * GIB        # thor-b: free minus 40 GiB must hold the rest of the build
+PARK_MARGIN = 20 * GIB
+# chain2.sh park_build/unpark_build convention: $SEAW/thor/<name>, NVMe thor/<name> replaced by a symlink to it
+PARK_ROOT = orchestrate.SEAGATE / "v41_staging" / "thor"
+
+
+def _du(p: Path) -> int:
+    """bytes of the regular files under p, not following symlinks (0 if p is missing or a symlink)."""
+    p = Path(p)
+    if not p.exists() or p.is_symlink():
+        return 0
+    if p.is_file():
+        return p.stat().st_size
+    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+
+
+def kq_build_estimate(alloc_map: dict, n_keep: int) -> int:
+    """final size of a K-quant / KT Thor build from its allocation (expert bytes are exact)."""
+    return sum(expert_bytes(v["w13"], "w13", n_keep) + expert_bytes(v["w2"], "w2", n_keep)
+               for v in alloc_map.values()) + NONEXPERT_BYTES
+
+
+def mxfp4_build_estimate(n_keep: int) -> int:
+    """arm B: n_keep experts bit-exact MXFP4 (in/2 code bytes + in/32 E8M0 bytes = 17/32 B per weight)."""
+    return n_keep * 3 * DIM * INTER * 17 // 32 * N_LAYERS + NONEXPERT_BYTES
+
+
+def replay_peak(tokens: int) -> int:
+    return int(tokens * 4 * DIM * 2 * REPLAY_STREAMS)
+
+
+def _nvme_builds() -> str:
+    if not THOR.exists():
+        return "none"
+    xs = [f"thor/{d.name} {_du(d) / GIB:.0f} GiB" for d in sorted(THOR.iterdir()) if d.is_dir() and not d.is_symlink()]
+    return ", ".join(xs) or "none"
+
+
+def disk_preflight(what: str, need: int, margin: int, path: Path | None = None) -> None:
+    """Fail fast, before any GPU-hour, if `path` (env.WORK) cannot take `need` more bytes plus `margin`."""
+    path = Path(path or env.WORK)
+    free = orchestrate.disk_free(path)
+    if free - need < margin:
+        raise SystemExit(
+            f"s07 {what}: disk preflight failed on {path}: {free / GIB:.0f} GiB free, needs {need / GIB:.0f} GiB more "
+            f"+ {margin / GIB:.0f} GiB margin. Thor builds on NVMe: {_nvme_builds()}. Free space by parking a "
+            f"finished losing build (chain2.sh park_build: verified copy to {PARK_ROOT}/<name>, NVMe dir -> symlink) "
+            f"or deleting dead replay streams (s04/s07 *_replay), then re-run (it resumes). Never move a build a "
+            f"GPU step will load next.")
+    env.log(f"df ok for {what}: {free / GIB:.0f} GiB free on {path}, need {need / GIB:.0f} + {margin / GIB:.0f} GiB", STAGE)
+
+
+def _copy_fsync(src: Path, dst: Path) -> None:
+    tmp = dst.with_name(dst.name + ".part")
+    with open(src, "rb") as fi, open(tmp, "wb") as fo:
+        shutil.copyfileobj(fi, fo, 64 << 20)
+        fo.flush()
+        os.fsync(fo.fileno())
+    os.replace(tmp, dst)
+
+
+def park_build(name: str, *, park_root: Path | None = None, seagate: Path | None = None) -> bool:
+    """Move a FINISHED build thor/<name> off the NVMe, exactly as chain2.sh park_build leaves it (so its
+    unpark_build / move_thor_* steps find it): copy to <park_root>/<name>, sha256 of every file checked
+    against thor.json, marker thor/<name>.parked.json, then the NVMe dir is replaced by a symlink to the copy
+    and deleted. Readers of thor.json keep working through the symlink; a GPU step that loads the experts
+    must unpark first (the Seagate is NTFS over FUSE: mmap faults crawl). Returns True if it moved bytes."""
+    park_root = Path(park_root or PARK_ROOT)
+    seagate = Path(seagate or orchestrate.SEAGATE)
+    src, dst = THOR / name, park_root / name
+    gone, marker = THOR / f".{name}.parking", THOR / f"{name}.parked.json"
+    if gone.exists():                                       # crashed between the rename and the rmtree
+        if not src.exists() and not src.is_symlink() and marker.exists():
+            os.symlink(json.load(open(marker))["location"], src)
+        if src.is_symlink():
+            shutil.rmtree(gone)
+    if src.is_symlink() or not (src / "thor.json").exists():
+        return False
+    b = TF.Build(src)
+    if not b.m.get("complete"):
+        raise SystemExit(f"refusing to park thor/{name}: build is not complete (it would be resumed, not parked)")
+    if not os.path.ismount(seagate):
+        raise SystemExit(f"cannot park thor/{name}: the Seagate is not mounted at {seagate}")
+    size = _du(src)
+    if orchestrate.disk_free(seagate) - max(size - _du(dst), 0) < PARK_MARGIN:
+        raise SystemExit(f"cannot park thor/{name}: {orchestrate.disk_free(seagate) / GIB:.0f} GiB free on the Seagate, "
+                         f"needs {size / GIB:.0f} GiB + {PARK_MARGIN / GIB:.0f} GiB margin")
+    dst.mkdir(parents=True, exist_ok=True)
+    files = sorted(b.m["files"])
+    for f in files:
+        if not ((dst / f).exists() and (dst / f).stat().st_size == (src / f).stat().st_size):
+            _copy_fsync(src / f, dst / f)
+    _copy_fsync(src / "thor.json", dst / "thor.json")
+    bad = TF.Build(dst).verify()
+    if bad:
+        for f in bad:
+            (dst / f).unlink(missing_ok=True)
+        raise SystemExit(f"parking thor/{name}: the Seagate copy of {bad} does not match thor.json sha256 (removed; re-run)")
+    env.atomic_json(marker, {"name": name, "location": str(dst), "from": str(src), "bytes": size, "files": len(files),
+                             "verified": "sha256 of every file against thor.json", "convention": "chain2.sh park_build",
+                             "ts": env.now()})
+    src.rename(gone)
+    os.symlink(dst, src)
+    shutil.rmtree(gone)
+    env.log(f"thor/{name} parked on {dst} (verified, {size / GIB:.1f} GiB)", STAGE)
+    return True
 
 
 # ----------------------------------------------------------------------------- (b) Thor A
@@ -614,6 +772,10 @@ def cmd_thor(a, trellis: bool = False):
     b = TF.Build(build_dir(n_keep, "A" + V["suffix"]), create=True, keepset_sha256=fp, n_routed_experts=n_keep, arm="A",
                  source_revision=env.REVISION, heal={"gains": gains, "folded_into": V["folded"]},
                  alloc=alloc["alloc"], protected=PROTECTED, **extra)
+    if not b.m.get("complete"):
+        need = max(kq_build_estimate(alloc["alloc"], n_keep) - b.stored_bytes(), 0) + \
+            max(replay_peak(a.tokens) - _du(V["replay"]), 0)
+        disk_preflight("thor-trellis" if trellis else "thor", need, THOR_MARGIN)
     rows, man = rowsets.load_rows(CORPUS)
     ids = rowsets.subset(rowsets.split_rows(rows, man["spec_hash"], "calib"), a.tokens, spec.TOKEN_TARGET)
     run = replay.prepare(V["replay"], ids, [{"name": V["stream"], "keep": keep}], man["spec_hash"])
@@ -628,6 +790,9 @@ def cmd_thor(a, trellis: bool = False):
         if not replay.Run(V["replay"]).led.done(f"{V['stream']}/L{L}"):
             orchestrate.run_unit(me, ["unit", "layer", "--layer", str(L), *common], stage=STAGE, gpu=True,
                                  min_avail_gib=a.min_avail_gib)
+    # the layer units rewrote thor.json from their own processes: re-open it, or the parent's stale copy would
+    # erase every layer entry on the next save (and finish_build would never see the layers)
+    b = TF.Build(build_dir(n_keep, "A" + V["suffix"]), keepset_sha256=fp, n_routed_experts=n_keep)
     write_globals(b)
     finish_build(b, n_keep)
     run = replay.Run(V["replay"])
@@ -665,6 +830,8 @@ def cmd_thor_b(a):
     b = TF.Build(build_dir(n_keep, "B"), create=True, keepset_sha256=fp, n_routed_experts=n_keep, arm="B",
                  source_revision=env.REVISION, heal={"gains": None, "note": "arm B ships unhealed (s06 measured arm A's keep-set)"},
                  alloc={str(L): {"w13": "MXFP4_SRC", "w2": "MXFP4_SRC"} for L in range(N_LAYERS)})
+    if not b.m.get("complete"):
+        make_room_for_b(max(mxfp4_build_estimate(n_keep) - b.stored_bytes(), 0))
     for L in range(N_LAYERS):
         fname = TF.layer_file(L)
         if b.has(fname):
@@ -681,6 +848,21 @@ def cmd_thor_b(a):
         env.log(f"thor B L{L} written", STAGE)
     write_globals(b)
     finish_build(b, n_keep)
+
+
+def make_room_for_b(need: int) -> None:
+    """thor-b runs (chain.sh) right after s10 picked arm B, with the losing arm-A build(s) still on NVMe and
+    not enough room for B. Park the losers on the Seagate (chain2 convention, verified) until B fits;
+    B itself is always built on NVMe (it is served and GPU-loaded)."""
+    nA = len(keepset.load(env.WORK / "s04" / "keepset.json")[0]["0"])
+    for name in (f"A{nA}", f"A{nA}kt"):
+        if orchestrate.disk_free(env.WORK) - need >= THOR_B_MARGIN:
+            break
+        if (THOR / name / "thor.json").exists() and not (THOR / name).is_symlink():
+            env.log(f"thor-b: {orchestrate.disk_free(env.WORK) / GIB:.0f} GiB free, B needs {need / GIB:.0f} + "
+                    f"{THOR_B_MARGIN / GIB:.0f}: parking the losing build thor/{name}", STAGE)
+            park_build(name)
+    disk_preflight("thor-b", need, THOR_B_MARGIN)
 
 
 def cmd_overlay(a):
@@ -718,7 +900,8 @@ def main():
     ap.add_argument("--layer", type=int)
     ap.add_argument("--keepset", default=str(env.WORK / "s04" / "keepset.json"))
     ap.add_argument("--repo")
-    ap.add_argument("--no-upload", action="store_true")
+    ap.add_argument("--upload", action="store_true", help="nvfp4: upload to a PRIVATE repo as it goes (needs PRO quota)")
+    ap.add_argument("--no-upload", action="store_true", help="default; kept for compatibility")
     ap.add_argument("--kernels", choices=["tilelang", "torch"], default="tilelang")
     ap.add_argument("--token-chunk", type=int, default=8192)
     ap.add_argument("--tokens", type=int, default=262_144, help="calibration tokens for the GPTQ Hessians")

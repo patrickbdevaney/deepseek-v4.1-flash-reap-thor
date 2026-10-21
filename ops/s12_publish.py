@@ -299,6 +299,13 @@ def publish(a):
         m = json.load(open(env.WORK / "s07" / f"manifest_nvfp4_REAP{nA}.json"))
         if m.get("skipped"):
             env.log(f"nvfp4: not built ({m['skipped']}); no NVFP4 repo", STAGE)
+        elif not m.get("loader_verified", False):
+            # no known loader reads ModelOpt NVFP4 experts beside block-32 ue8m0 FP8 dense layers (s07 RISK-1): an
+            # unloadable 150 GB repo is not a release. It stays on the Seagate; the owner decides.
+            env.log(f"nvfp4: loader_verified is false; not published (kept at {m.get('local_dir')})", STAGE, "WARN")
+            with open(env.LOGS / "OWNER_FOLLOWUP", "a") as f:
+                f.write(f"[{env.now()}] s12: NVFP4 REAP{nA} built at {m.get('local_dir')} but not published: no verified "
+                        "loader for NVFP4 experts + FP8 block-32 dense (see ops/logs/audit/s07.md RISK-1)\n")
         else:
             keepset.require(m["keepset_sha256"], fpA, where="s07 nvfp4 manifest")
             plan.append(("nvfp4", m["repo"], g["nvfp4"], {"name": m["repo"].split("/")[-1], "n_routed": nA},

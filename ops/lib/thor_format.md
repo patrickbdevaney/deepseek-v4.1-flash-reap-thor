@@ -1,9 +1,8 @@
 # Thor build format (`thor-v1`)
 
-The s07 Thor build is the single on-disk handoff from the quantization stage to both runtimes:
+The s07 Thor build is the on-disk handoff from the quantization stage to the s08 CUDA server, which mmaps the files directly.
 
-- the s08 CUDA server, which mmaps the files directly;
-- the s09 GGUF writer, which copies the expert bytes into GGUF tensors without re-quantizing.
+The GGUF ladder does **not** read a Thor build: s09 and `llamacpp/convert_v41_reap.py` convert from the MXFP4 master (chain2). The K-quant blocks below are nevertheless byte-identical to ggml's, so a future writer could copy them verbatim.
 
 The format is written by `ops/s07_quant.py` (`thor` for arm A, `thor-b` for arm B) through `ops/lib/thor_format.py`, and read by `ops/lib/replay.py` for the s10 evaluation.
 
@@ -72,7 +71,7 @@ Each layer and projection is **stacked** into one tensor.
 | Q3_K | 11 | 256 | 110 | 3.4375 | `hmask[32]` · `qs[64]` · `scales[12]` (6-bit, −32 offset) · `d` f16 |
 | Q4_K | 12 | 256 | 144 | 4.5 | `d` f16 · `dmin` f16 · `scales[12]` (6-bit scale + min) · `qs[128]` |
 
-The layouts are verified against llama.cpp's `gguf-py` `dequantize_blocks` in `ops/tests/test_post.py`. The CUDA server can port llama.cpp's MIT `dequantize_q*_K` / `vec_dot_q*_K` for exactly these bytes. **The s09 GGUF writer copies them verbatim:** a GGUF `ffn_{gate,up,down}_exps` tensor with ne = `[in, out, n]` has the same byte order as `[n, out, row_bytes]`.
+The layouts are verified against llama.cpp's `gguf-py` `dequantize_blocks` in `ops/tests/test_post.py`. The CUDA server can port llama.cpp's MIT `dequantize_q*_K` / `vec_dot_q*_K` for exactly these bytes. A GGUF `ffn_{gate,up,down}_exps` tensor with ne = `[in, out, n]` has the same byte order as `[n, out, row_bytes]`, so the bytes could be copied verbatim (the current s09 does not; it quantizes from the master).
 
 Q5_K, Q6_K and the IQ types are reserved. s07 v1 does not produce them, and a reader must refuse an unknown qtype. The trellis types KT2 / KT3 are defined below; only the `thor-trellis` sub-arm produces them.
 
@@ -83,7 +82,7 @@ Q5_K, Q6_K and the IQ types are reserved. s07 v1 does not produce them, and a re
 | `layers.L.ffn.experts.wX.weight` | U8 | `[n, out, in/2]`. Byte k holds element 2k in the **low** nibble and 2k+1 in the high nibble. Nibble = E2M1 code: bit 3 = sign, values `0, .5, 1, 1.5, 2, 3, 4, 6`. |
 | `layers.L.ffn.experts.wX.scale` | F8_E8M0 | `[n, out, in/32]`, value 2^(e−127) |
 
-This is the source checkpoint's own layout, so the CUDA server's existing hardware FP4 GEMV consumes it unchanged. ggml's `block_mxfp4` stores the same codes and exponent byte in a different nibble order: element i is the low nibble and element i+16 the high nibble of byte i, within each 32-block, with the `e` byte first. The s09 writer reorders losslessly with `ggml_quants.src_to_ggml_mxfp4`. The low-nibble-first assumption about the source is checked by s01 against the TileLang kernel.
+This is the source checkpoint's own layout, so the CUDA server's existing hardware FP4 GEMV consumes it unchanged. ggml's `block_mxfp4` stores the same codes and exponent byte in a different nibble order: element i is the low nibble and element i+16 the high nibble of byte i, within each 32-block, with the `e` byte first. `ggml_quants.src_to_ggml_mxfp4` reorders losslessly. The low-nibble-first assumption about the source is checked by s01 against the TileLang kernel.
 
 ### Trellis experts (KT2 / KT3, arm A sub-arm `A<n>kt`)
 
@@ -148,6 +147,10 @@ The heal gain is one scalar per layer on the routed-expert sum (s06, adopted onl
 }
 ```
 
+`expert_bytes` counts the stored bytes of the **decoder layers'** routed-expert tensors only (names starting `layers.` and containing `.ffn.experts.`, including KT `kt_scale` / `rht_sign`). The MTP/DSpark layers' 128 experts (`mtp.*`, copied unchanged into `mtp-*.safetensors`) are excluded. `expert_bpw = expert_bytes · 8 / (n · 3 · 5120 · 2304 · 40)`. This is the number the s07 budgets, the s10 `trellis` matched-bytes rule and the cards use.
+
+`thor.json` is written as soon as the build directory is created, and rewritten after every file. The layer units of `s07 thor` write their own entries from separate processes, so any process that holds a `Build` across them must re-open it before writing. Re-creating an existing partial build with a different `alloc`, `heal` or other recorded recipe field is refused.
+
 The numbers in this example illustrate the schema only. They are not results.
 
 ### Consumer obligations
@@ -169,4 +172,14 @@ The numbers in this example illustrate the schema only. They are not results.
 
 `<module>` is the path inside the block, for example `attn.wq_a` or `ffn.shared_experts.w1`. The dequantized value is `E2M1 × weight_scale × weight_scale_2`.
 
-Consumers use the overlay **only** if `s10/gates.json["overlay_adopted"]` is true.
+Consumers use the overlay **only** if `s10/gates.json["overlay_adopted"]` is true. (As of 2026-10-21 no V4.1 runtime loads the overlay: `cuda/src/v41_*` has no overlay path and s12 does not ship it, so adopting it changes only the s10 replay arm.)
+
+## Disk placement and parking
+
+A build that a GPU step loads (s10 replay arms, the s08 CUDA server, golden gates) must be on NVMe (`$V41_WORK/thor/<name>`). A finished build that loses may be **parked**, the same way `ops/chain2.sh park_build` and `s07_quant.park_build` do it:
+
+- verified copy at `<Seagate>/v41_staging/thor/<name>` (every file's sha256 against `thor.json`);
+- the NVMe directory is replaced by a symlink to the copy, so readers of `thor.json` keep working;
+- `s07_quant.park_build` also writes `$V41_WORK/thor/<name>.parked.json` (location, bytes, verification).
+
+`chain2.sh unpark_build` copies a parked build back (verified) before it is served. `s07 thor-b` parks the losing `A<n>` (then `A<n>kt`) when NVMe free space minus 40 GiB cannot hold arm B. `s07 thor`, `thor-trellis` and `thor-b` refuse to start (SystemExit) when the remaining build plus, for the GPU builds, the replay peak (about 3.25 × T × 40 KiB) does not fit.

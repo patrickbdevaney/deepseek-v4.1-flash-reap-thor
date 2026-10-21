@@ -317,7 +317,14 @@ def e4m3_decode(b: np.ndarray) -> np.ndarray:
     return (s * v).astype(np.float32)
 
 
-def mxfp4_to_nvfp4(wbytes: np.ndarray, scale: np.ndarray, gain: float = 1.0) -> dict:
+def mxfp4_emax(wbytes: np.ndarray, scale: np.ndarray) -> int | None:
+    """Largest E8M0 exponent over the 32-blocks with a nonzero code (None if the tensor is all zero)."""
+    e = np.asarray(scale).view(np.uint8).astype(np.int32)
+    nz = (src_codes(np.asarray(wbytes).view(np.uint8)).reshape(e.shape[0], e.shape[1], 32) & 7).any(-1)
+    return int(e[nz].max()) if nz.any() else None
+
+
+def mxfp4_to_nvfp4(wbytes: np.ndarray, scale: np.ndarray, gain: float = 1.0, emax: int | None = None) -> dict:
     """Lossless repack of one MXFP4 tensor to NVFP4 (ModelOpt layout): the packed E2M1 bytes are
     unchanged, each 32-block's E8M0 2^e becomes two 16-block float8_e4m3fn scales 2^(e - emax + 8),
     and the per-tensor FP32 global scale 2^(emax - 135) * gain carries the rest - including the
@@ -325,13 +332,22 @@ def mxfp4_to_nvfp4(wbytes: np.ndarray, scale: np.ndarray, gain: float = 1.0) -> 
 
     A block whose codes are all zero is lossless at any scale and gets byte 0. A nonzero block more
     than 17 octaves below the tensor's largest scale cannot be represented: reported in
-    `lossy_blocks`, and the caller refuses the tensor (nvidia reports zero such blocks in 1017)."""
+    `lossy_blocks`, and the caller refuses the tensor (nvidia reports zero such blocks in 1017).
+
+    `emax` overrides the tensor's own largest exponent. Fused-w13 loaders (vLLM ModelOpt NVFP4 MoE)
+    keep ONE weight_scale_2 per expert, so the caller passes max(emax(w1), emax(w3)) to both: the
+    global scales are then equal and the repack stays exact while every nonzero block of either
+    tensor lies within 17 octaves of the shared emax (else `lossy_blocks` > 0)."""
     wb = np.asarray(wbytes).view(np.uint8)
     e = np.asarray(scale).view(np.uint8).astype(np.int32)
     R, nb32 = e.shape
     c = src_codes(wb).reshape(R, nb32, 32)
     nz = (c & 7).any(-1)                                   # any nonzero magnitude in the block
-    emax = int(e[nz].max()) if nz.any() else 127
+    own = int(e[nz].max()) if nz.any() else 127
+    if emax is None:
+        emax = own
+    elif nz.any() and emax < own:
+        raise ValueError(f"emax {emax} below the tensor's own largest exponent {own}: block scales would overflow e4m3")
     k = e - emax + 8
     lossy = int((nz & (k < -9)).sum())
     k = np.clip(k, -9, 8)
