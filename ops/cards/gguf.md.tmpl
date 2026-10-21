@@ -6,7 +6,39 @@ tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
 
 # {{ artifact.name }}
 
-GGUF builds of {{ base.repo }} with {{ gguf.n_routed_experts | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer, for the llama.cpp fork named in `{{ gguf.manifest_name }}`. They are converted from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha256 }}`), then requantized per level.
+{{ base.repo }} with {{ gguf.n_routed_experts | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer, as a GGUF for a llama.cpp fork, built to run on one machine with 128 GB of memory and an NVMe drive.
+
+## Run it in 128 GB: weights in memory, Engram on NVMe
+
+DeepSeek-V4.1-Flash has two Engram tables (n-gram embeddings, about 101 GB each). A token reads only 24 rows of each, and the row ids depend only on the token ids. So the tables stay on NVMe and are read with `O_DIRECT` while the GPU runs; only the pruned experts and the dense path ({{ gguf.run_gib }} for `{{ gguf.run_level }}`) are loaded into memory. Upstream llama.cpp cannot do this yet: use the fork below (upstream PR #28696 plus four patches, one of which is the NVMe row store).
+
+You need 128 GB of RAM or unified memory, a CUDA GPU (measured on a Jetson AGX Thor), and about 210 GB free on a local NVMe drive for the row files (not USB, not a network share).
+
+```bash
+# 1. the fork (pinned upstream PR head + patches) and the row-file builder
+git clone https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor && cd deepseek-v4.1-flash-reap-thor
+llamacpp/setup.sh && llamacpp/build.sh
+python3 -m venv .venv && .venv/bin/pip install numpy huggingface_hub
+
+# 2. this GGUF ({{ gguf.run_level }})
+.venv/bin/hf download {{ artifact.repo }} --include "*-{{ gguf.run_level }}-*.gguf" --local-dir gguf
+
+# 3. the two Engram files of the base model, plus its index (see "Engram" below for sizes and sha256)
+.venv/bin/hf download {{ base.repo }} model.safetensors.index.json model-00047-of-00048.safetensors \
+    model-00048-of-00048.safetensors --revision {{ base.revision }} --local-dir base
+
+# 4. build and verify the row files on NVMe (a 200 GB sequential copy; the base files can be deleted afterwards)
+V41_SRC=$PWD/base .venv/bin/python ops/s09_engram_rowfile.py build  --dst /nvme/v41rows
+V41_SRC=$PWD/base .venv/bin/python ops/s09_engram_rowfile.py verify --dst /nvme/v41rows
+
+# 5. serve (OpenAI-compatible)
+LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llamacpp/llama.cpp/build-thor/bin/llama-server \
+    -m gguf/{{ gguf.run_file }} -ngl 999 -c 8192 --jinja --port 8080
+```
+
+`-c 8192` is the context the release gate served it at. On a machine whose GPU memory is separate from system RAM, lower `-ngl` until the GPU part fits; the rest runs on the CPU.
+
+Conversion: from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha256 }}`), then requantized; details below.
 
 ## Levels
 

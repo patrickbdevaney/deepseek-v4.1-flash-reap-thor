@@ -223,6 +223,10 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | Non
     return {"manifest_name": "gguf_manifest.json", **m, "levels_table": "\n".join(rows), "offload_note": note,
             "dense_table": "\n".join(dense), "eval_tokens": tokens.pop(), "engram_doc": m.get("engram", ""),
             "heal_sentence": gguf_heal_sentence(m, heal),
+            # the level the 128 GB recipe runs: the lowest-numbered passing level (L2 unless only the L3 fallback passed)
+            "run_level": min(m["levels"]),
+            "run_file": sorted(Path(f["path"]).name for f in m["files"] if f"-{min(m['levels'])}-" in Path(f["path"]).name)[0],
+            "run_gib": cards.fmt(m["levels"][min(m["levels"])]["bytes"], "gib"),
             "gate_status": "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
 
 
@@ -271,7 +275,7 @@ def publish(a):
             user = "<user>" if a.dry_run else h.whoami()["name"]
             repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{m['n_routed_experts']}-GGUF"
             ctx["gguf"] = gguf_context(m, gg, heal=ctx["heal"])
-            plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "n_routed": m["n_routed_experts"]},
+            plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "repo": repo, "n_routed": m["n_routed_experts"]},
                          [Path(f["path"]) for f in m["files"]]))
     if "thor" in only:
         tc = ctx.get("thor_build")

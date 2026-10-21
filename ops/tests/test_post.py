@@ -507,6 +507,36 @@ def thor_card_context_and_render():
     assert "{{" not in text and "fits" in text and "reap_keepset.json" in text
 
 
+
+@test
+def gguf_card_recipe_render():
+    """The GGUF card leads with the 128 GB recipe; its level/file/size come from the s09 manifest."""
+    import ops.s12_publish as S12
+    root = TMP / "s09card"
+    (root / "L2" / "teacher_eval").mkdir(parents=True, exist_ok=True)
+    json.dump({"tokens": 1234}, open(root / "L2" / "teacher_eval" / "teacher_kld.json", "w"))
+    ci = lambda v: {"mean": v, "ci95": [v - 0.01, v + 0.01]}
+    m = {"n_routed_experts": 192, "keepset_sha256": "a" * 64, "dense_precision": {"attn": "Q8_0"},
+         "levels": {"L2": {"kld": {"kl_top32": ci(0.12), "top1": ci(0.9), "dnll": ci(0.05)}, "expert_bpw": 2.85,
+                           "bytes": 101 * 2**30}},
+         "files": [{"path": f"/x/L2/R-L2-0000{i}-of-00003.gguf"} for i in (2, 1, 3)]}
+    gate = {"levels": {"L2": {"ngl": None}}, "passing": ["L2"]}
+    g = S12.gguf_context(m, gate, root)
+    assert g["run_level"] == "L2" and g["run_file"] == "R-L2-00001-of-00003.gguf", g["run_file"]
+    parts = {q.name[: -len(".md.part")]: q.read_text() for q in (REPO / "ops" / "cards").glob("*.md.part")}
+    ctx = {"base": {"repo": "deepseek-ai/x", "revision": "r"}, "gguf": g, "engram": {"list": "- shards"},
+           "artifact": {"name": "n", "repo": "u/n-GGUF", "n_routed": 192, "n_routed_base": 384},
+           "spec": {"summary": "s"}}
+    c = lambda v: {"mean": v, "lo": v - 0.01, "hi": v + 0.01, "n_tokens": 100}
+    sm = lambda v: {"overall": {"kl32": c(v), "top1": c(1 - v), "dnll": c(v / 2), "confident_flip_rate": v / 10},
+                    "by_bucket": {"general": {"kl32": c(v), "top1": c(1 - v), "dnll": c(v / 2), "under_sampled": False}}}
+    ctx["s10"] = {"tokens": 1000, "rows": 10, "gates_sha256": "f" * 64,
+                  "summaries": {k: sm(0.1) for k in ("control", "mxfp4_A", "thorA", "b128")}}
+    text = cards.render((REPO / "ops" / "cards" / "gguf.md.tmpl").read_text(), ctx, parts)
+    assert "{{" not in text and "LLAMA_ENGRAM_ROWFILE_DIR" in text and "gguf/R-L2-00001-of-00003.gguf" in text
+    assert "u/n-GGUF" in text and text.index("Run it in 128 GB") < text.index("## Levels")
+
+
 if __name__ == "__main__":
     w = max(len(n) for n, _, _ in RESULTS)
     for n, st, msg in RESULTS:

@@ -53,8 +53,18 @@ def locate(layer: int) -> tuple[Path, str, str]:
 
 
 def shard_sha(shard: Path) -> bytes:
-    """The pinned sha256 of a shard, from the s00 tree listing (never recomputed from a USB copy)."""
-    tree = json.loads((env.SRC.parent / "v41_1017_tree.json").read_text())
+    """The pinned sha256 of a shard, from the s00 tree listing (never recomputed from a USB copy). Outside this
+    pipeline (a user following the GGUF card with only the base repo's files) there is no tree listing: the
+    shard is hashed once, which is a full sequential read of it."""
+    tp = env.SRC.parent / "v41_1017_tree.json"
+    if not tp.exists():
+        log(f"no {tp.name}: hashing {shard.name} (one sequential read)")
+        h = hashlib.sha256()
+        with open(shard, "rb") as f:
+            while b := f.read(64 << 20):
+                h.update(b)
+        return h.digest()
+    tree = json.loads(tp.read_text())
     for x in tree:
         if x["path"] == shard.name:
             return bytes.fromhex(x["lfs"]["oid"])
