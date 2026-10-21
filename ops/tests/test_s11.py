@@ -356,7 +356,8 @@ def gguf_gate_and_card():
     m = {"levels": {"L0": {"expert_bpw": 4.25, "bytes": 140 << 30, "kld": kld["L0"]["stats"]},
                     "L1": {"expert_bpw": 3.4, "bytes": 115 << 30, "kld": kld["L1"]["stats"]}},
          "dense_precision": {"attention": "Q8_0", "shared expert": "Q6_K"}, "n_routed_experts": 192,
-         "keepset_sha256": "ab" * 32, "engram": "llamacpp/ENGRAM_ROWFILE.md", "files": []}
+         "keepset_sha256": "ab" * 32, "engram": "llamacpp/ENGRAM_ROWFILE.md",
+         "files": [{"path": "L0/DeepSeek-V4.1-Flash-1017-REAP192-L0-00001-of-00003.gguf", "sha256": "0" * 64}]}
     out["levels"]["L0"]["ngl"] = "40"
     import tempfile
     with tempfile.TemporaryDirectory() as td:
@@ -374,7 +375,7 @@ def gguf_gate_and_card():
     parts = {p.name[: -len(".md.part")]: p.read_text() for p in (REPO / "ops" / "cards").glob("*.md.part")}
     o = {"kl32": {"mean": .1, "lo": .09, "hi": .11}, "top1": {"mean": .9, "lo": .89, "hi": .91},
          "dnll": {"mean": .1, "lo": .09, "hi": .11}, "confident_flip_rate": .01}
-    full = {"base": {"repo": "x/y", "revision": "r"}, "gguf": ctx, "artifact": {"name": "n", "n_routed_base": 384},
+    full = {"base": {"repo": "x/y", "revision": "r"}, "gguf": ctx, "artifact": {"name": "n", "repo": "u/n", "n_routed_base": 384},
             "s10": {"tokens": 5, "rows": 2, "gates_sha256": "s" * 64,
                     "summaries": {a: {"overall": o} for a in ("control", "mxfp4_A", "thorA", "b128")}},
             "engram": {"list": "- e"}, "spec": P.spec_context(Path("/nonexistent"))}

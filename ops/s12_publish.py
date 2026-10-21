@@ -225,9 +225,18 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | Non
             "heal_sentence": gguf_heal_sentence(m, heal),
             # the level the 128 GB recipe runs: the lowest-numbered passing level (L2 unless only the L3 fallback passed)
             "run_level": min(m["levels"]),
-            "run_file": sorted(Path(f["path"]).name for f in m["files"] if f"-{min(m['levels'])}-" in Path(f["path"]).name)[0],
+            "run_file": _run_file(m),
             "run_gib": cards.fmt(m["levels"][min(m["levels"])]["bytes"], "gib"),
             "gate_status": "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
+
+
+def _run_file(m: dict) -> str:
+    """The first split of the run level (the lowest-numbered passing level): the file the 128 GB recipe points at."""
+    lv = min(m["levels"])
+    names = sorted(Path(f["path"]).name for f in m["files"] if f"-{lv}-" in Path(f["path"]).name)
+    if not names:
+        raise SystemExit(f"gguf: manifest lists no split file for run level {lv}")
+    return names[0]
 
 
 def api():
