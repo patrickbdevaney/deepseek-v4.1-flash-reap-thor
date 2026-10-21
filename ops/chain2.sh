@@ -27,10 +27,12 @@ step_done() { [ -f $L/done.c2_$1 ]; }; mark() { touch $L/done.c2_$1; log "done $
 reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
   a=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo); log "reclaim after $1: MemAvailable ${a} GiB"
   [ "$a" -ge 100 ] || stop "memory did not return to baseline after $1 (${a} GiB < 100)"; }
-quiet() { docker ps --format '{{.Names}}' | grep -q -E '^(leaf-teacher|vllm)' && stop "a vLLM server is up"
-  pgrep -f pipeline/runner.sh >/dev/null && ! [ -f ~/leafllm/run/runner.stop ] && stop "leafllm runner active"
-  pgrep -f 'llama-server|v41-teacher-kld|v41_server|v41_decode|gate_v41|ref_dump|s11_tapdump|s11_spec|s03_saliency|s10_eval' >/dev/null \
-    && stop "another model-loading process is up"; true; }
+source ops/lib/quiet.sh       # gpu_busy / leaf_runner_up: match program names, never whole command lines (audit W5)
+quiet() { local b
+  b=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(leaf-teacher|vllm)' | head -1)
+  [ -n "$b" ] && stop "a vLLM server is up (docker $b)"
+  leaf_runner_up && ! [ -f ~/leafllm/run/runner.stop ] && stop "leafllm runner active"
+  b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; true; }
 free_gib() { echo $(( $(df -B1 --output=avail "$1" | tail -1) / GIB )); }
 need() { local f; f=$(free_gib "$1"); [ "$f" -ge "$2" ] || stop "disk: $3 needs ${2} GiB free on $1, only ${f} GiB"; log "df ok for $3: ${f} GiB free on $1 (need $2)"; }
 gpu() { quiet; "$@" || stop "$*"; reclaim "$*"; }        # a model-loading step

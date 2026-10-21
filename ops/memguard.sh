@@ -59,8 +59,53 @@ mkdir -p "$(dirname "$LOG")"
 say(){ echo "[memguard $(date -Is)] $*" >> "$LOG"; }
 
 # Spawn-free wait: sleep is not a builtin, and one fork per poll is noise on the thing we watch.
-_FIFO=$(mktemp -u); mkfifo "$_FIFO" 2>/dev/null && exec 8<>"$_FIFO" && rm -f "$_FIFO"
-napp(){ if [ -e /proc/self/fd/8 ]; then read -t "$POLL_S" -u 8 _x 2>/dev/null; else sleep "$POLL_S"; fi; return 0; }
+# fd 7, NOT 8: fd 8 is the singleton lock above, and re-using it closed the lock (audit O4, 2026-10-21: the running
+# guard's fd 8 pointed at the deleted FIFO and nothing held /tmp/dsv41-memguard.lock).
+_FIFO=$(mktemp -u); mkfifo "$_FIFO" 2>/dev/null && exec 7<>"$_FIFO" && rm -f "$_FIFO"
+napp(){ if [ -e /proc/self/fd/7 ]; then read -t "$POLL_S" -u 7 _x 2>/dev/null; else sleep "$POLL_S"; fi; return 0; }
+
+# ---- tier-2 victim selection (rewritten 2026-09-26, licence widened 2026-10-21) -----------------------------------
+# MEASURED 2026-09-26: at 21:20:51 this guard logged "killing stage s03_saliency pid 2197" while the actual runaway was
+# exp_seqlen_saliency.py, which was not on the licence at all. The pipeline stage had been running stably for 47
+# minutes; the experiment had started minutes earlier. The guard killed the healthy long-running job, left the
+# runaway alive, and the box wedged anyway -- twice. Two rules follow:
+#   1. The licence must cover every heavy job this project can start, not just the ones that existed when it was
+#      written. A job outside the licence is not merely unkillable, it is a job whose presence makes the guard kill
+#      something else instead. AUDIT O1 (2026-10-21): the CUDA binaries (v41_decode/v41_server load the whole
+#      ~107 GiB build), the gates, the GGUF kld and test-backend-ops, and the non-ops/ scripts were all missing, so a
+#      runaway v41_decode under s11 would have cost the s11_spec.py parent (which frees nothing) instead.
+#   2. Among licensed candidates, prefer the one that STARTED MOST RECENTLY. The newcomer is what changed a working
+#      situation into a failing one. RSS is deliberately NOT used to rank -- it is the number proven not to track
+#      Tegra unified allocations, which is why the kernel OOM killer picks wrong on this box.
+# Match on the script/binary BASENAME, never on " scripts/<name>" (an absolute-path launch was once missed). Because a
+# pattern also matches any shell, pager or editor whose command line merely MENTIONS a licensed name (a Claude Code
+# `bash -c "... ops/s10_eval.py ..."` wrapper is always the newest), candidates whose comm is a shell/pager/editor/
+# agent are never selected (audit O1). V4.1: only this project's own stage processes are kill candidates.
+LICENCE=("ops/s[0-9][0-9][a-z]?_[a-z_]*\.py"
+         "v41_decode|v41_server|gate_v41_|gemv_format_bench|v41-teacher-kld|test-backend-ops"
+         "ref_dump\.py|v41_unit_ref\.py|convert_v41_reap\.py"
+         "llama-(quantize|imatrix|cli|server|perplexity|completion)"
+         "hf upload|huggingface_hub")
+NEVER_COMM=" bash sh dash zsh fish claude node less more vi vim nvim view nano emacs tail head cat grep egrep pgrep watch "
+licensed_cands(){ local pat q c cands=""
+  for pat in "${LICENCE[@]}"; do
+    for q in $(pgrep -f "$pat" 2>/dev/null); do
+      case " $cands " in *" $q "*) continue ;; esac
+      c=""; { read -r c < "/proc/$q/comm"; } 2>/dev/null || continue
+      case "$NEVER_COMM" in *" $c "*) continue ;; esac
+      cands="$cands $q"
+    done
+  done
+  echo "$cands"; }
+# NEVER select ourselves (CLAUDE.md §7: a pattern that matches your own command line is a self-kill waiting to happen).
+pick_victim(){ local q st pid="" newest=0
+  for q in $(licensed_cands); do
+    [ "$q" = "$$" ] && continue
+    st=$(awk '{print $22}' "/proc/$q/stat" 2>/dev/null)
+    [ -z "$st" ] && continue
+    if [ "$st" -ge "$newest" ]; then newest=$st; pid=$q; fi
+  done
+  echo "$pid"; }
 
 say "started: cache_drop<${CACHE_MB}MB kill<${FLOOR_MB}MB slope>${RATE_MB_S}MB/s below ${DANGER_MB}MB poll=${POLL_S}s"
 
@@ -120,48 +165,10 @@ while true; do
   [ "$bad" -ge "$BREACHES" ] && trip="MemAvailable ${avail}MB < floor ${FLOOR_MB}MB x${bad}"
 
   if [ -n "$trip" ]; then
-    # VICTIM SELECTION. Rewritten 2026-09-26 after this guard killed the wrong process.
-    #
-    # MEASURED: at 21:20:51 it logged "killing stage s03_saliency pid 2197" while the actual
-    # runaway was exp_seqlen_saliency.py, which was not on the licence at all. The pipeline stage
-    # had been running stably for 47 minutes; the experiment had started minutes earlier. The
-    # guard killed the healthy long-running job, left the runaway alive, and the box wedged
-    # anyway -- twice.
-    #
-    # Two changes follow from that:
-    #   1. The licence must cover every heavy job this project can start, not just the ones that
-    #      existed when it was written. A job outside the licence is not merely unkillable, it is
-    #      a job whose presence makes the guard kill something else instead.
-    #   2. Among licensed candidates, prefer the one that STARTED MOST RECENTLY. The newcomer is
-    #      what changed a working situation into a failing one. Preferring run_stage.py was
-    #      exactly backwards: it is usually the oldest and the most expensive to lose.
-    #      RSS is deliberately NOT used to rank -- it is the number proven not to track Tegra
-    #      unified allocations, which is why the kernel OOM killer picks wrong on this box.
-    cands=""
-    # Match on the script BASENAME, never on " scripts/<name>". MEASURED 2026-09-26: the
-    # path-anchored form missed an absolute-path launch of the very script that caused the
-    # incident, which is the same class of miss that let the runaway go unlicensed in the first
-    # place. A basename is what stays true however the job is invoked.
-    # V4.1 (copied from glm-5.3-reap 2026-10-19): only this project's own stage processes are kill candidates
-    for pat in "ops/s[0-9][0-9][a-z]?_[a-z_]*\.py" \
-               "llama-(completion|perplexity|quantize|imatrix|server)" \
-               "hf upload|huggingface_hub"; do
-      for q in $(pgrep -f "$pat" 2>/dev/null); do
-        case " $cands " in *" $q "*) ;; *) cands="$cands $q" ;; esac
-      done
-    done
-    # NEVER select ourselves or our own process group (CLAUDE.md §7: a pattern that matches your
-    # own command line is a self-kill waiting to happen).
-    pid=""
-    newest=0
-    for q in $cands; do
-      [ "$q" = "$$" ] && continue
-      st=$(awk '{print $22}' "/proc/$q/stat" 2>/dev/null)
-      [ -z "$st" ] && continue
-      if [ "$st" -ge "$newest" ]; then newest=$st; pid=$q; fi
-    done
+    # VICTIM SELECTION: the newest licensed, non-shell process (pick_victim above; never RSS).
+    pid=$(pick_victim)
     if [ -n "$pid" ]; then
-      stg=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | awk '{print $3}')
+      stg=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-160)
       say "!!! $trip — killing stage ${stg:-?} pid $pid (orchestrator will retry)"
       kill -9 "$pid" 2>/dev/null
       sync; sudo -n sh -c 'echo 1 > /proc/sys/vm/drop_caches' 2>/dev/null

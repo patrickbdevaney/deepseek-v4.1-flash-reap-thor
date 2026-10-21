@@ -46,10 +46,51 @@ B=cuda/build
 log() { echo "[$(date -Is)] s08 $*" | tee -a $C; }
 die() { log "FAIL: $*"; exit 1; }
 done_() { [ -f $L/done.s08_$1 ]; }; mark() { touch $L/done.s08_$1; log "done $1"; }
-quiet() { docker ps --format '{{.Names}}' 2>/dev/null | grep -q leaf-teacher && die "a leafllm vLLM server is up"
-  pgrep -f pipeline/runner.sh >/dev/null && ! [ -f ~/leafllm/run/runner.stop ] && die "leafllm runner active"
-  pgrep -f 'llama-server|v41-teacher-kld|s03_saliency|s01_layer_probe|v41_server|v41_decode|gate_v41|ref_dump|s11_spec.py (bank|accept|refit|traces)' >/dev/null \
-    && die "another model-loading process is up"; true; }
+# quiet(): refuse a GPU step beside any other model-loading process. Matched on the process's EXECUTABLE (argv[0]
+# basename) or, for python, its SCRIPT/-m module -- never on the whole command line, so an editor, a pager, a
+# `tail -f` or a Claude Code `bash -c "... v41_decode ..."` wrapper is not a conflict (audit W5). Shells, pagers,
+# editors and this step's own ancestors (chain2.sh, s11_spec.py e2e -> spec_bench) are skipped.
+QUIET_SKIP_COMM=" bash sh dash zsh fish claude node less more vi vim nvim view nano emacs tail head cat grep egrep rg pgrep ps top htop watch sed awk tmux screen ssh sshd sudo timeout journalctl "
+gpu_busy() { local anc=" " p=$$ d pid comm a0 a s m prev hits=""
+  while [ -n "$p" ] && [ "$p" -gt 1 ]; do anc+="$p "; p=$(awk '/^PPid:/{print $2}' /proc/$p/status 2>/dev/null); done
+  for d in /proc/[0-9]*; do pid=${d#/proc/}
+    case "$anc" in *" $pid "*) continue ;; esac
+    [ "$pid" = "$BASHPID" ] && continue
+    { read -r comm < $d/comm; } 2>/dev/null || continue
+    case "$QUIET_SKIP_COMM" in *" $comm "*) continue ;; esac
+    local -a argv=(); { mapfile -d '' -t argv < $d/cmdline; } 2>/dev/null || continue
+    [ ${#argv[@]} -gt 0 ] || continue
+    a0=${argv[0]##*/}; m=""
+    case "$a0" in
+      v41_decode|v41_server|gate_v41_*|gemv_format_bench|v41-teacher-kld|test-backend-ops|vllm|\
+      llama-server|llama-cli|llama-perplexity|llama-completion|llama-imatrix) m=$a0 ;;
+      python|python3|python3.*)
+        prev=""
+        for a in "${argv[@]:1}"; do
+          if [ "$prev" = -m ]; then case "$a" in vllm|vllm.*|sglang|sglang.*) m="$a0 -m $a" ;; esac; break; fi
+          [ "$prev" = -c ] && break
+          case "$prev" in -X|-W) prev=""; continue ;; esac      # the value of -X opt / -W opt
+          case "$a" in -*) prev=$a; continue ;; esac
+          s=${a##*/}
+          case "$s" in
+            s0[1-9]_*.py|s0[1-9][a-z]_*.py|s1[0-2]_*.py|s1[0-2][a-z]_*.py|ref_dump.py|v41_unit_ref.py) m="$a0 $s" ;;
+          esac
+          break
+        done ;;
+    esac
+    [ -n "$m" ] && hits+="${hits:+, }pid $pid ($m)"
+  done
+  echo "$hits"; }
+leaf_runner_up() { local d; local -a argv
+  for d in /proc/[0-9]*; do argv=(); { mapfile -d '' -t argv < $d/cmdline; } 2>/dev/null || continue
+    [ ${#argv[@]} -ge 2 ] || continue
+    case "${argv[0]##*/}" in bash|sh) case "${argv[1]:-}" in *pipeline/runner.sh) return 0 ;; esac ;; esac
+  done; return 1; }
+quiet() { local b
+  b=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(leaf-teacher|vllm)' | head -1)
+  [ -n "$b" ] && die "a vLLM server is up (docker $b)"
+  leaf_runner_up && ! [ -f ~/leafllm/run/runner.stop ] && die "leafllm runner active"
+  b=$(gpu_busy); [ -n "$b" ] && die "another model-loading process is up: $b"; true; }
 reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
   a=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo); log "reclaim after $1: MemAvailable ${a} GiB"
   [ "$a" -ge 100 ] || die "memory did not return to baseline after $1 (${a} GiB)"; }
@@ -160,12 +201,12 @@ server)
   PORT=18108
   setsid $B/v41_server --ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS --port $PORT --host 127.0.0.1 \
       > $L/s08_server_$ARM.log 2>&1 < /dev/null & SP=$!
-  for i in $(seq 1 180); do curl -sf localhost:$PORT/health >/dev/null && break; kill -0 $SP 2>/dev/null || break; sleep 10; done
+  for i in $(seq 1 180); do curl -sf --max-time 10 localhost:$PORT/health >/dev/null && break; kill -0 $SP 2>/dev/null || break; sleep 10; done
   ok=1
-  r=$(curl -sf localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' \
+  r=$(curl -sf --max-time 600 localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' \
       -d '{"messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":64,"temperature":0,"thinking_mode":"chat"}') || ok=0
   echo "$r" | $PY -c "import json,sys;d=json.load(sys.stdin);c=d['choices'][0];sys.exit(not(c['finish_reason']=='stop' and c['message']['content'].strip()))" || ok=0
-  t=$(curl -sf localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"What is the weather in Paris? Use the tool."}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":256,"temperature":0,"thinking_mode":"chat"}') || ok=0
+  t=$(curl -sf --max-time 600 localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"What is the weather in Paris? Use the tool."}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":256,"temperature":0,"thinking_mode":"chat"}') || ok=0
   echo "$t" >> $L/s08_server_$ARM.log
   echo "$t" | $PY -c "import json,sys;d=json.load(sys.stdin);tc=d['choices'][0]['message'].get('tool_calls') or [];sys.exit(not(tc and tc[0]['function']['name']=='get_weather'))" || ok=0
   kill $SP; wait $SP 2>/dev/null
