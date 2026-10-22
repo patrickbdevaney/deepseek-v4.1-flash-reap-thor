@@ -55,6 +55,9 @@ def load_arm(run_root: Path, arm: str, rows: list[int], C: dict, T: dict) -> dic
         f = row_frame(C, T, r)
         m = np.load(Path(run_root) / arm / "metrics" / f"r{r:05d}.npz")
         s = f["scored"]
+        for k in ("kl32", "nll"):
+            if not np.isfinite(m[k][s]).all():
+                raise ValueError(f"{arm} r{r}: {int((~np.isfinite(m[k][s])).sum())} non-finite scored {k} values")
         cols["kl32"].append(m["kl32"][s].astype(np.float64))
         cols["agree"].append(m["top1"][s] == f["t_top1"][s])
         cols["s_nll"].append(m["nll"][s].astype(np.float64))

@@ -35,7 +35,10 @@ def disk_free(path: Path) -> int:
 
 def batches(names: list[str], per_item: int, free: int, margin: int, cap: int | None = None) -> list[list[str]]:
     """Split arms into consecutive batches whose streams fit the free disk minus a margin."""
-    k = max(1, (free - margin) // max(per_item, 1))
+    k = (free - margin) // max(per_item, 1)
+    if k < 1:
+        raise SystemExit(f"disk: {free / 2**30:.0f} GiB free cannot hold one {per_item / 2**30:.1f} GiB "
+                         f"stream plus the {margin / 2**30:.0f} GiB margin")
     if cap:
         k = min(k, cap)
     return [names[i:i + k] for i in range(0, len(names), k)]

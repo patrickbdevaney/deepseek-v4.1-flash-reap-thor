@@ -54,15 +54,15 @@ def heal(cmp_healed_vs_unhealed: dict, g: dict) -> dict:
 def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift_verdict: str | None = None) -> dict:
     f = g["release"]["pruned_floor"]
     o, why = summary["overall"], []
-    if o["kl32"]["mean"] > f["max_kl32"]:
+    if not o["kl32"]["mean"] <= f["max_kl32"]:
         why.append(f"kl32 {o['kl32']['mean']:.4f} > {f['max_kl32']}")
-    if o["top1"]["mean"] < f["min_top1"]:
+    if not o["top1"]["mean"] >= f["min_top1"]:
         why.append(f"top1 {o['top1']['mean']:.4f} < {f['min_top1']}")
     for b, s in summary["by_bucket"].items():
-        if not s["under_sampled"] and s["top1"]["mean"] < f["min_bucket_top1"]:
+        if not s["under_sampled"] and not s["top1"]["mean"] >= f["min_bucket_top1"]:
             why.append(f"bucket {b} top1 {s['top1']['mean']:.4f} < {f['min_bucket_top1']}")
     cap = summary["caption"]
-    if cap["tokens"] and cap["ppl_ratio"] > f["max_caption_ppl_ratio"]:
+    if cap["tokens"] and not cap["ppl_ratio"] <= f["max_caption_ppl_ratio"]:
         why.append(f"caption ppl ratio {cap['ppl_ratio']:.3f} > {f['max_caption_ppl_ratio']}")
     pb = summary["by_pos_bin"]
     ref = pb.get(f["ref_bin"])
@@ -74,12 +74,14 @@ def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift
             continue
         drop = ref["top1"]["mean"] - s["top1"]["mean"]
         long_checked.append(name)
-        if drop > f["max_long_bin_top1_drop"]:
+        if not drop <= f["max_long_bin_top1_drop"]:
             why.append(f"bin {name} top1 {s['top1']['mean']:.4f} is {drop:.4f} below {f['ref_bin']}")
     if f.get("must_beat_random_kl32") and vs_random is not None and not vs_random["d_kl32"]["hi"] < 0:
         why.append(f"does not beat the best random anchor (d_kl32 CI hi {vs_random['d_kl32']['hi']:+.4f})")
     if drift_verdict is not None and drift_verdict in f["drift_verdict_not"]:
         why.append(f"drift verdict {drift_verdict}")
+    if not long_checked and f.get("long_bins_required", True):
+        why.append("no adequately sampled bin past 8k and long_bins_required: long-context retention untested")
     notes = [] if long_checked else ["no adequately sampled bin past 8k: long-context retention UNTESTED"]
     return {"pass": not why, "why": why, "notes": notes, "long_bins_checked": long_checked}
 

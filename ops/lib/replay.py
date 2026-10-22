@@ -528,7 +528,9 @@ def unit_embed(run: Run, kernels: str) -> None:
 def arm_layer_for(M, args, run: Run, arm: dict, L: int, observer=None):
     E = args.n_routed_experts
     keep = None if arm.get("keep") is None else arm["keep"][str(L)]
-    gain = 1.0 if not arm.get("gain") else float(arm["gain"].get(str(L), 1.0))
+    if arm.get("gain") and str(L) not in arm["gain"]:
+        raise KeyError(f"heal gain for layer {L} missing from arm {arm.get('name', '?')}")
+    gain = 1.0 if not arm.get("gain") else float(arm["gain"][str(L)])
     experts = None
     if arm.get("thor"):
         experts = thor_experts(M, args, Path(arm["thor"]), L, keep, arm["keep_sha256"])
