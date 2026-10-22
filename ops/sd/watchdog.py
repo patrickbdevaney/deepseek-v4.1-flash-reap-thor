@@ -69,7 +69,7 @@ CONFLICT_START = re.compile(r"^(memory did not return|another model-loading proc
 NEVER = re.compile(r"\bgates?\b|gate (failed|FAIL)|verdict|\bsha(256)?\b|mismatch|verify|has not passed|BLOCKED|"
                    r"no K-quant|not readable|no s0\d|non-empty|disk:|needs .* GiB|no GGUF|\bpaus(e|ed)\b",
                    re.I)
-CONFLICT = re.compile(r"vLLM server is up|leafllm runner active|another model-loading process|"
+CONFLICT = re.compile(r"vLLM server is up|leafllm runner active|another model-loading process|a model server is running|"
                       r"memory did not return|reclaim left|not mounted")
 TRANSIENT = re.compile(r"upload|publish|download|copy|stage .* to NVMe|^(un)?stage\b|master download", re.I)
 # 3. context (FAIL line, stage-log tail) of a STOP the line above left undecided
@@ -525,9 +525,12 @@ def selftest() -> None:
         got = classify(r, False)
         assert got == want, (r, got, want)
     assert classify("s06 heal failed (resumable)", True) == "memguard"
+    # env.assert_no_gpu_server refusals land in the stage log only: wait for the server, never escalate
+    assert classify("s06 heal failed (resumable)", False,
+                    log_tail="[s06] REFUSING: a model server is running (863227 llama-server -m q.gguf).") == "conflict"
     assert classify("s07 nvfp4 failed (resumable)", False, stall_killed=True) == "stall"
     assert classify("chain2: s09 gate", True) == "never"
-    print(f"selftest ok ({len(cases) + 3} cases)")
+    print(f"selftest ok ({len(cases) + 4} cases)")
 
 
 if __name__ == "__main__":
