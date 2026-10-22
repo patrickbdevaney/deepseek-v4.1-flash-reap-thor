@@ -209,7 +209,8 @@ E
 fi
 # Disk order (ops/logs/audit/ops.md D1/D2): convert -> imatrix -> quant L2 and L3 onto the Seagate -> drop the source
 # GGUF (regenerable) -> Engram row files on NVMe -> stage one level to NVMe for kld + smoke -> unstage -> gate.
-# One GGUF is released: L2 (~2.85 bpw, the 128 GB level); L3 (~2.46 bpw) is evaluated only if L2 fails its gate.
+# L2 (~2.85 bpw, the 128 GB level) is the release; L3 (~2.46 bpw) is its fallback if L2 fails its gate, and
+# otherwise a soft add-on published next to L2 once the release is out (owner decision 2026-10-22).
 export MASTER S09_QUANT_ROOT="$SEAW/s09" S09_LEVELS="L2 L3"
 quants_done() { [ -f $L/done.s09_quant_L2 ] && [ -f $L/done.s09_quant_L3 ]; }
 if ! quants_done; then
@@ -227,7 +228,9 @@ evaluate L2
 # the verdict is read from gates.json (stdout carries log lines): a crashed gate STOPs instead of reading as "L2 failed"
 gate() { rm -f $G/gates.json; $PY ops/s09_gate.py --levels "$@" >> $L/c2_s09_gate.log 2>&1 || stop "s09 gate crashed (see $L/c2_s09_gate.log)"
   PASS=$($PY -c "import json;print(' '.join(json.load(open('$G/gates.json'))['passing']))") || stop "s09 gate wrote no $G/gates.json"; }
-gate L2
+# once the L3 add-on has measured L3, every re-run gates both, so gates.json never drops a published L3
+L3M=$( [ -f $L/done.s09_kld_L3 ] && [ -f $L/done.s09_smoke_L3 ] && echo L3)
+gate L2 $L3M
 if [ -z "$PASS" ]; then
   log "GGUF L2 failed its gate; evaluating the L3 fallback"; evaluate L3
   gate L2 L3
@@ -249,6 +252,21 @@ if ! step_done s12_release; then
   mark s12_release
 fi
 log "RELEASE DONE: REAP + GGUF published per their gates; CUDA server and s11 follow (soft)"
+
+# ------------------------------------------------------------------------------------------------ GGUF L3 add-on (soft)
+# Only when L2 passed (a failed L2 already evaluated L3 as its fallback above). L3 goes through the same s09 gate; a
+# pass re-writes the manifest with both levels and s12 uploads only the new files (its ledger skips L2's) + the card.
+gguf_l3() {
+  if ! { [ -f $L/done.s09_kld_L3 ] && [ -f $L/done.s09_smoke_L3 ]; }; then
+    { s09 stage L3 && s09 kld L3 && reclaim "kld L3" && quiet && s09 smoke L3; } || { s09 unstage L3; return 1; }
+  fi
+  s09 unstage L3 || return 1
+  rm -f $G/gates.json; $PY ops/s09_gate.py --levels L2 L3 >> $L/c2_s09_gate.log 2>&1 || return 1
+  PASS=$($PY -c "import json;print(' '.join(json.load(open('$G/gates.json'))['passing']))") || return 1
+  [ "$PASS" = "L2 L3" ] || { log "GGUF L3 did not pass its gate (passing: [$PASS]); L2 stays the only level"; return 1; }
+  $PY ops/s09_gguf_ladder.py manifest --levels L2 L3 > $L/s09_manifest_l3.log 2>&1 || return 1
+  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only gguf > $L/s12_gguf_l3.log 2>&1; }
+if [ "$PASS" = L2 ]; then soft gguf_l3 gguf_l3; fi
 
 # ------------------------------------------------------------------------------------------------ CUDA serving gates (soft)
 if [ $CUDA_OK = 1 ]; then
