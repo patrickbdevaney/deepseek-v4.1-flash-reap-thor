@@ -17,6 +17,13 @@ Candidates (pre-registered arms, README "s04"):
   arm A (192): hope_sum@knee, hope_cond@knee, hope_sum@pf0 (does pool protection earn its place?),
                reap_sum, mass, freq, random x3 (anchors, never eligible)
   arm B (128): hope_sum@knee128, reap_sum
+  round 2 (owner decision 2026-10-22, after round 1 lost multilingual on screen: winner bucket top1
+  0.52 < the 0.65 release floor, random0 0.57; the winner kept 54% of the top-96 multilingual
+  experts by gate mass, random keeps 50%): hope_sum@pf0 + the top-k multilingual experts per layer
+  by gate mass protected, k in ML_LADDER. Ranked by gate mass, not REAP sum: the sum pools are
+  dominated by guarded super-experts (one expert held 96% of a pool's mass at L20).
+Winner rule (round 2, declared before any round-2 arm was scored): among eligible candidates, the
+lowest screen kl32 of those passing gates.pruned_floor on screen; arm A with none passing stops.
 Every candidate, random included, keeps the guard set. The shared expert, ViT and aligner are not
 routed experts and are never in a keep-set. Allocation stays uniform per layer (one scalar
 n_routed_experts for vLLM, GGUF and the CUDA server).
@@ -47,6 +54,7 @@ CORPUS = env.WORK / "corpus"
 CFG = json.load(open(env.INFERENCE / "config.json"))
 N_LAYERS, E = CFG["n_layers"], CFG["n_routed_experts"]
 ARMS = {"A": 192, "B": 128}
+ML_LADDER = (48, 96, 144)
 
 
 # ----------------------------------------------------------------------------- select
@@ -59,21 +67,24 @@ def _layer_inputs(L: int, img_mask: np.ndarray, protect: dict, superc: np.ndarra
     names, P = SEL.pools(bank, img)
     live = P.sum(1) > 0
     guard = np.union1d(np.asarray(protect.get(str(L), []), int), np.flatnonzero(superc[L]))
-    return {"L": L, "pools": names, "P": P, "live": live, "guard": guard.astype(int),
+    ml = [str(b) for b in bank["buckets"]].index("multilingual")
+    return {"L": L, "pools": names, "P": P, "live": live, "guard": guard.astype(int), "gat_ml": bank["gat"][ml],
             "F_sum": SEL.hope_F(bank, "sum"), "F_cond": SEL.hope_F(bank, "cond"), "crit": SEL.criteria(bank)}
 
 
 def _solve(job):
-    d, mode, n_keep, pf, form, seed = job
+    d, mode, n_keep, pf, form, seed, ml_k = job
     prot = d["guard"] if pf is None else np.union1d(d["guard"], SEL.pool_protect(d["P"], pf, d["live"]))
+    if ml_k:
+        prot = np.union1d(prot, np.argsort(-d["gat_ml"], kind="stable")[:ml_k])
     F = d["F_sum"] if form == "sum" else d["F_cond"]
     pr = SEL.prune_set(mode, n_keep=n_keep, protect=prot, crit=d["crit"], F=F if mode == "hope" else None,
                        seed=seed, E=E)
     return d["L"], pr, SEL.retention(d["P"], pr), SEL.icost(d["F_sum"], pr)
 
 
-def _mask(pool, layers, mode, n_keep, pf=None, form="sum", seed=0):
-    out = pool.map(_solve, [(d, mode, n_keep, pf, form, seed + d["L"]) for d in layers])
+def _mask(pool, layers, mode, n_keep, pf=None, form="sum", seed=0, ml_k=0):
+    out = pool.map(_solve, [(d, mode, n_keep, pf, form, seed + d["L"], ml_k) for d in layers])
     keep = {str(L): SEL.keep_from_pruned(pr, E) for L, pr, _, _ in out}
     R = np.stack([r for _, _, r, _ in out]).mean(0)
     return keep, R, float(np.mean([c for _, _, _, c in out]))
@@ -161,22 +172,63 @@ def select(a):
                           "worst_retention": float(R[layers[0]["live"]].min())})
             env.log(f"{name}: sha {fp[:16]} worst retention {cands[-1]['worst_retention']:.4f} icost {ic:.5f}", STAGE)
     for c in cands:
-        m = OUT / "masks" / f"{c['name']}.json"
-        flat = m.with_suffix(".keep.json")
-        env.atomic_json(flat, keepset.load(m)[0])
-        rc = subprocess.run([sys.executable, str(env.OPS / "drift_guard.py"), "check", "--keep", str(flat),
-                             "--rows", "calib", "--out", str(m.with_suffix(".drift.json"))]).returncode
-        if rc not in (0, 2, 3):
-            raise SystemExit(f"drift check failed for {c['name']} rc={rc}")
-        c["drift_verdict"] = json.load(open(m.with_suffix(".drift.json")))["verdict"]["verdict"]
-        g, _ = gates.load()
-        if c["drift_verdict"] in g["arbitration"]["ineligible_drift_verdicts"]:
-            c["eligible"] = False
-            c["ineligible_why"] = f"drift {c['drift_verdict']}"
+        _drift_check(c)
     env.atomic_json(OUT / "candidates.json", {"knees": knees, "candidates": cands,
                                               "guards": {"protect_file": str(prot_f), "super_expert_candidates":
                                                          {str(L): np.flatnonzero(superc[L]).tolist() for L in range(N_LAYERS)}}})
     led.finish("select", n=len(cands))
+
+
+def _drift_check(c: dict) -> None:
+    m = OUT / "masks" / f"{c['name']}.json"
+    flat = m.with_suffix(".keep.json")
+    env.atomic_json(flat, keepset.load(m)[0])
+    rc = subprocess.run([sys.executable, str(env.OPS / "drift_guard.py"), "check", "--keep", str(flat),
+                         "--rows", "calib", "--out", str(m.with_suffix(".drift.json"))]).returncode
+    if rc not in (0, 2, 3):
+        raise SystemExit(f"drift check failed for {c['name']} rc={rc}")
+    c["drift_verdict"] = json.load(open(m.with_suffix(".drift.json")))["verdict"]["verdict"]
+    g, _ = gates.load()
+    if c["drift_verdict"] in g["arbitration"]["ineligible_drift_verdicts"]:
+        c["eligible"] = False
+        c["ineligible_why"] = f"drift {c['drift_verdict']}"
+
+
+def select_ml(a):
+    """Round 2: hope_sum@pf0 with the top-k multilingual experts (gate mass) protected, k in ML_LADDER."""
+    led = env.Ledger(env.LOGS / "s04_ledger.json")
+    if led.done("select_ml"):
+        return
+    if not led.done("select"):
+        raise SystemExit("select_ml needs round 1 (`select`) first")
+    cj = json.load(open(OUT / "candidates.json"))
+    g = cj["guards"]
+    protect = json.load(open(g["protect_file"]))["protect"]
+    superc = np.zeros((N_LAYERS, E), bool)
+    for L, ids in g["super_expert_candidates"].items():
+        superc[int(L), ids] = True
+    layers = [_layer_inputs(L, np.zeros(1, bool), protect, superc) for L in range(N_LAYERS)]
+    have = {c["name"] for c in cj["candidates"]}
+    with mp.Pool(a.procs) as pool:
+        for k in ML_LADDER:
+            name = f"hope_sum_ml{k}"
+            if name in have:
+                continue
+            keep, R, ic = _mask(pool, layers, "hope", ARMS["A"], pf=None, form="sum", ml_k=k)
+            for L in range(N_LAYERS):
+                assert set(layers[L]["guard"].tolist()) <= set(keep[str(L)]), (name, L)
+            fp = keepset.save(OUT / "masks" / f"{name}.json", keep, arm="A", criterion="hope", pf=None, form="sum",
+                              seed=0, eligible=True, ml_k=k, retention=dict(zip(layers[0]["pools"], R.tolist())),
+                              icost=ic)
+            c = {"name": name, "arm": "A", "n_keep": ARMS["A"], "criterion": "hope", "pf": None, "form": "sum",
+                 "ml_k": k, "round": 2, "eligible": True, "sha256": fp, "icost": ic,
+                 "worst_retention": float(R[layers[0]["live"]].min())}
+            _drift_check(c)
+            cj["candidates"].append(c)
+            env.atomic_json(OUT / "candidates.json", cj)
+            env.log(f"{name}: sha {fp[:16]} ml retention {R[layers[0]['pools'].index('multilingual')]:.4f} "
+                    f"icost {ic:.5f} drift {c['drift_verdict']}", STAGE)
+    led.finish("select_ml", n=len(ML_LADDER))
 
 
 # ----------------------------------------------------------------------------- arbitrate
@@ -267,14 +319,27 @@ def decide(a):
         if not el:
             raise SystemExit(f"arm {arm}: no eligible candidate")
         order = sorted(el, key=lambda n: summ[n]["overall"]["kl32"]["mean"])
+        rnd = [n for n, c in cands.items() if c["arm"] == arm and c["criterion"] == "random"]
+        best_r = min(rnd, key=lambda n: summ[n]["overall"]["kl32"]["mean"]) if rnd else None
+        floor = {n: gates.pruned_floor(summ[n], g, drift_verdict=cands[n].get("drift_verdict"),
+                                       vs_random=metrics.compare(data[n], data[best_r], n_draws=a.draws)
+                                       if best_r else None) for n in order}
+        passing = [n for n in order if floor[n]["pass"]]
+        res.setdefault("screen_floor", {}).update(floor)
+        if passing:
+            order = passing + [n for n in order if n not in passing]
+        elif arm == "A":
+            env.atomic_json(OUT / "arbitration.json", res)
+            raise SystemExit("arm A: no eligible candidate passes the release floor gate on screen: " +
+                             "; ".join(f"{n}: {floor[n]['why']}" for n in order))
         win = order[0]
-        w = {"name": win, "sha256": cands[win]["sha256"], "kl32": summ[win]["overall"]["kl32"],
+        w = {"name": win, "rule": "lowest screen kl32 among eligible candidates passing pruned_floor on screen"
+                               + ("" if passing else " (none passed: lowest kl32, arm B only)"),
+             "sha256": cands[win]["sha256"], "kl32": summ[win]["overall"]["kl32"],
              "top1": summ[win]["overall"]["top1"], "ranking": [(n, summ[n]["overall"]["kl32"]["mean"]) for n in order]}
         if len(order) > 1:
             w["vs_runner_up"] = metrics.compare(data[win], data[order[1]], n_draws=a.draws)
-        rnd = [n for n, c in cands.items() if c["arm"] == arm and c["criterion"] == "random"]
         if rnd:
-            best_r = min(rnd, key=lambda n: summ[n]["overall"]["kl32"]["mean"])
             w["vs_best_random"] = {"arm": best_r, **metrics.compare(data[win], data[best_r], n_draws=a.draws)}
         if "hope_sum_pf0" in cands and arm == "A" and win != "hope_sum_pf0":
             w["vs_pf0"] = metrics.compare(data[win], data["hope_sum_pf0"], n_draws=a.draws)
@@ -293,7 +358,7 @@ def decide(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["select", "arbitrate", "decide", "run", "unit"])
+    ap.add_argument("cmd", choices=["select", "select_ml", "arbitrate", "decide", "run", "unit"])
     ap.add_argument("unit", nargs="?", choices=["embed", "layer", "head"])
     ap.add_argument("--layer", type=int)
     ap.add_argument("--arms")
@@ -312,6 +377,8 @@ def main():
         return unit(a)
     if a.cmd in ("select", "run"):
         select(a)
+    if a.cmd in ("select_ml", "run"):
+        select_ml(a)
     if a.cmd in ("arbitrate", "run"):
         env.assert_no_gpu_server(STAGE)
         arbitrate(a)
