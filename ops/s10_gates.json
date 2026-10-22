@@ -29,6 +29,13 @@
       "max_kl32": 0.8,
       "min_top1": 0.78,
       "min_bucket_top1": 0.65,
+      "bucket_overrides": {
+        "multilingual": {
+          "min_top1": 0.4,
+          "amended": "2026-10-22, owner decision, before any s10 result",
+          "why": "At 192/384 experts every selection lost multilingual on screen (round 1 winner hope_sum_pf0 0.523, random anchors 0.56-0.57). Round 2 protected the top-k multilingual experts per layer: only k=144 reached 0.657, at the cost of general/finance/science (0.792/0.771/0.764 -> 0.703/0.710/0.708), and it did not beat random significantly on kl32. The owner chose to ship hope_sum_pf0 with multilingual as a documented weakness. This bucket keeps a collapse guard (0.40) instead of min_bucket_top1; every other floor is unchanged and the cards state the limitation with the measured number."
+        }
+      },
       "max_caption_ppl_ratio": 1.3,
       "max_long_bin_top1_drop": 0.05,
       "long_bins_from": "[8k,16k)",

@@ -82,6 +82,7 @@ def context() -> dict:
         "gates": {"mxfp4_master": pf(g["mxfp4_master"]), "nvfp4": pf(g["nvfp4"]), "thor": pf(g["thor"]),
                   "thor_arm": g["thor_arm"]},
         "engram": {"list": elist},
+        "limitations": {"text": limitations_text(res, W)},
         "spec": spec_context(W),
     }
     m5 = W / "s05" / f"manifest_REAP{len(kA['0'])}.json"
@@ -112,6 +113,30 @@ def context() -> dict:
                        "arm_name": ("thorA_kt" if tj.get("kt") else "thorA") if arm == "A" else "b128"}
         ctx["thor_build"] = thor_context(W, tb, tj, ctx["thor"]["arm_name"], g)
     return ctx
+
+
+def limitations_text(res: dict, W: Path) -> str:
+    """Known weaknesses, from the gates file's per-bucket overrides and the measured confirm-split numbers
+    (plus the s04 screen numbers that motivated the override). Empty when there is no override."""
+    f = GT.load()[0]["release"]["pruned_floor"]
+    S, out = res["summaries"], []
+    arb = W / "s04" / "arbitration.json"
+    scr = json.load(open(arb))["summaries"] if arb.exists() else {}
+    for b, ov in f.get("bucket_overrides", {}).items():
+        meas = ", ".join(f"{a} {S[a]['by_bucket'][b]['top1']['mean']:.4f}" for a in ("mxfp4_A", "thorA", "thorA_kt", "b128")
+                         if a in S and b in S[a].get("by_bucket", {}))
+        rnd = [scr[r]["by_bucket"][b]["top1"]["mean"] for r in scr if r.startswith("random") and b in scr[r]["by_bucket"]]
+        line = (f"**Known limitation: {b}.** Top-1 agreement with the unpruned model on the held-out {b} documents is "
+                f"lower than in every other domain (confirmation split: {meas or 'not measured'}). The release floor "
+                f"for every other domain is {f['min_bucket_top1']}; for {b} it was lowered to a collapse guard of "
+                f"{ov['min_top1']} ({ov['amended']}). ")
+        if "hope_sum_pf0" in scr and rnd:
+            line += (f"During expert selection, the shipped keep-set scored {scr['hope_sum_pf0']['by_bucket'][b]['top1']['mean']:.4f} "
+                     f"on the screen split against {min(rnd):.4f}-{max(rnd):.4f} for random keep-sets of the same size. "
+                     f"Keep-sets that protected more {b} experts recovered {b} only by losing general, finance and science "
+                     f"text, so the better all-round keep-set ships. For {b} use, prefer the unpruned model.")
+        out.append(line)
+    return "\n\n".join(out)
 
 
 def thor_context(W: Path, tb: Path, tj: dict, arm_name: str, g: dict) -> dict:

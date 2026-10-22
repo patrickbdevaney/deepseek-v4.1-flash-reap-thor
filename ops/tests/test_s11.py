@@ -378,7 +378,7 @@ def gguf_gate_and_card():
     full = {"base": {"repo": "x/y", "revision": "r"}, "gguf": ctx, "artifact": {"name": "n", "repo": "u/n", "n_routed_base": 384},
             "s10": {"tokens": 5, "rows": 2, "gates_sha256": "s" * 64,
                     "summaries": {a: {"overall": o} for a in ("control", "mxfp4_A", "thorA", "b128")}},
-            "engram": {"list": "- e"}, "spec": P.spec_context(Path("/nonexistent"))}
+            "engram": {"list": "- e"}, "spec": P.spec_context(Path("/nonexistent")), "limitations": {"text": ""}}
     text = cards.render((REPO / "ops" / "cards" / "gguf.md.tmpl").read_text(), full, parts)
     assert "Not measured yet" in text and "| L1 | 3.40 |" in text and "not requantized" not in text
 

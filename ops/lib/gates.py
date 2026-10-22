@@ -58,9 +58,15 @@ def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift
         why.append(f"kl32 {o['kl32']['mean']:.4f} > {f['max_kl32']}")
     if not o["top1"]["mean"] >= f["min_top1"]:
         why.append(f"top1 {o['top1']['mean']:.4f} < {f['min_top1']}")
+    notes = []
     for b, s in summary["by_bucket"].items():
-        if not s["under_sampled"] and not s["top1"]["mean"] >= f["min_bucket_top1"]:
-            why.append(f"bucket {b} top1 {s['top1']['mean']:.4f} < {f['min_bucket_top1']}")
+        ov = f.get("bucket_overrides", {}).get(b)
+        lo = ov["min_top1"] if ov else f["min_bucket_top1"]
+        if not s["under_sampled"] and not s["top1"]["mean"] >= lo:
+            why.append(f"bucket {b} top1 {s['top1']['mean']:.4f} < {lo}")
+        elif ov and not s["top1"]["mean"] >= f["min_bucket_top1"]:
+            notes.append(f"bucket {b} top1 {s['top1']['mean']:.4f} is below min_bucket_top1 {f['min_bucket_top1']}: "
+                         f"passes only under its override floor {lo} (known limitation)")
     cap = summary["caption"]
     if cap["tokens"] and not cap["ppl_ratio"] <= f["max_caption_ppl_ratio"]:
         why.append(f"caption ppl ratio {cap['ppl_ratio']:.3f} > {f['max_caption_ppl_ratio']}")
@@ -82,7 +88,8 @@ def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift
         why.append(f"drift verdict {drift_verdict}")
     if not long_checked and f.get("long_bins_required", True):
         why.append("no adequately sampled bin past 8k and long_bins_required: long-context retention untested")
-    notes = [] if long_checked else ["no adequately sampled bin past 8k: long-context retention UNTESTED"]
+    if not long_checked:
+        notes.append("no adequately sampled bin past 8k: long-context retention UNTESTED")
     return {"pass": not why, "why": why, "notes": notes, "long_bins_checked": long_checked}
 
 

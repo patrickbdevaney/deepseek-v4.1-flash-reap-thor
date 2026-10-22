@@ -24,6 +24,11 @@ Candidates (pre-registered arms, README "s04"):
   dominated by guarded super-experts (one expert held 96% of a pool's mass at L20).
 Winner rule (round 2, declared before any round-2 arm was scored): among eligible candidates, the
 lowest screen kl32 of those passing gates.pruned_floor on screen; arm A with none passing stops.
+Round 2 outcome: ml144 alone reached the multilingual floor (0.657) but lost general/finance/science
+and did not beat random on kl32; ml48/ml96 stayed under the floor. The owner then chose (2026-10-22)
+to ship the all-round keep-set: s10_gates.json pruned_floor.bucket_overrides gives multilingual a
+0.40 collapse guard (every other floor unchanged; the cards state the limitation), and the same
+winner rule re-run picks hope_sum_pf0.
 Every candidate, random included, keeps the guard set. The shared expert, ViT and aligner are not
 routed experts and are never in a keep-set. Allocation stays uniform per layer (one scalar
 n_routed_experts for vLLM, GGUF and the CUDA server).

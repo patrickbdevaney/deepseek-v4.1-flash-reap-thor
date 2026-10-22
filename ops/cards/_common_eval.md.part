@@ -10,4 +10,6 @@ The pass/fail thresholds were pre-registered before any result existed (`ops/s10
 
 {{ table_arms:control,mxfp4_A,thorA,b128 }}
 
+{{ limitations.text }}
+
 `control` keeps all experts and is re-run through the same evaluation machinery as the others. It measures that machinery, not the model.

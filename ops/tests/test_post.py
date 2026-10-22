@@ -419,6 +419,18 @@ def metrics_gates_end_to_end():
     assert r["pass"], r
     assert not gates.pruned_floor(S["random0"], g)["pass"]
     assert not gates.pruned_floor(S["good"], g, drift_verdict="BLOCK")["pass"]
+    # per-bucket override: a bucket under min_bucket_top1 but over its override passes with a note;
+    # under the override it fails; a bucket without an override is unaffected
+    import copy
+    ov = copy.deepcopy(S["good"]); b0 = next(iter(ov["by_bucket"]))
+    g2 = copy.deepcopy(g); f2 = g2["release"]["pruned_floor"]; f2["bucket_overrides"] = {b0: {"min_top1": 0.40}}
+    ov["by_bucket"][b0]["top1"]["mean"] = 0.50
+    r2 = gates.pruned_floor(ov, g2, drift_verdict="FLAT")
+    assert r2["pass"] and any("override" in n for n in r2["notes"]), r2
+    assert not gates.pruned_floor(ov, {**g, "release": {**g["release"], "pruned_floor": {**f2, "bucket_overrides": {}}}},
+                                  drift_verdict="FLAT")["pass"]
+    ov["by_bucket"][b0]["top1"]["mean"] = 0.30
+    assert not gates.pruned_floor(ov, g2, drift_verdict="FLAT")["pass"]
     dec = gates.arm_decision(metrics.compare(data["good"], data["random0"], n_draws=200), g)
     assert dec["winner"] == "A"
     h = gates.heal(metrics.compare(data["good"], data["random0"], n_draws=200), g)
@@ -501,10 +513,10 @@ def thor_card_context_and_render():
     ctx = {"base": {"repo": "deepseek-ai/x", "revision": "r"}, "artifact": {"name": "n", "n_routed": 192, "n_routed_base": 384},
            "thor": {"keepset_sha256": "a" * 64, "description": "d", "expert_bpw": 2.83, "expert_bytes": 95 * 2**30},
            "thor_build": c, "gates": {"thor": "PASS"}, "engram": {"list": "- shards"}, "spec": {"summary": "s"},
-           "s10": {"tokens": 1000, "rows": 10, "gates_sha256": "f" * 64,
+           "limitations": {"text": "KNOWN-LIMIT"}, "s10": {"tokens": 1000, "rows": 10, "gates_sha256": "f" * 64,
                    "summaries": {k: summ(0.1) for k in ("control", "mxfp4_A", "thorA", "b128")}}}
     text = cards.render((REPO / "ops" / "cards" / "thor.md.tmpl").read_text(), ctx, parts)
-    assert "{{" not in text and "fits" in text and "reap_keepset.json" in text
+    assert "{{" not in text and "fits" in text and "reap_keepset.json" in text and "KNOWN-LIMIT" in text
 
 
 
@@ -526,7 +538,7 @@ def gguf_card_recipe_render():
     parts = {q.name[: -len(".md.part")]: q.read_text() for q in (REPO / "ops" / "cards").glob("*.md.part")}
     ctx = {"base": {"repo": "deepseek-ai/x", "revision": "r"}, "gguf": g, "engram": {"list": "- shards"},
            "artifact": {"name": "n", "repo": "u/n-GGUF", "n_routed": 192, "n_routed_base": 384},
-           "spec": {"summary": "s"}}
+           "spec": {"summary": "s"}, "limitations": {"text": ""}}
     c = lambda v: {"mean": v, "lo": v - 0.01, "hi": v + 0.01, "n_tokens": 100}
     sm = lambda v: {"overall": {"kl32": c(v), "top1": c(1 - v), "dnll": c(v / 2), "confident_flip_rate": v / 10},
                     "by_bucket": {"general": {"kl32": c(v), "top1": c(1 - v), "dnll": c(v / 2), "under_sampled": False}}}
