@@ -1,0 +1,42 @@
+From 92031e6a4add77f9d8b09702296b64ea484a2132 Mon Sep 17 00:00:00 2001
+From: s09 <s09@localhost>
+Date: Thu, 22 Oct 2026 16:42:47 -0400
+Subject: [PATCH] deepseek41 : clamp n_ctx_seq to 16384 until the
+ candidate-block mask is implemented
+
+The reference restricts layers after candidate_source_layer 20 to its top 2048 blocks of 8
+compressed rows. This tree does not, so past 16384 tokens it attends to every row and the
+output diverges from the model with no error. Clamp per-sequence context there, with a
+warning; LLAMA_DSV41_UNSAFE_LONG_CTX=1 lifts it for testing a port of the mask.
+---
+ src/llama-context.cpp | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 5186d306d..1b27524ab 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -304,6 +304,20 @@ llama_context::llama_context(
+         }
+     }
+ 
++    // DeepSeek-V4.1: this tree has no two-level candidate mask (deepseek41.cpp). Past candidate_topk_blocks x
++    // candidate_block_size = 2048 x 8 compressed rows of the ratio-1 source the reference restricts layers 21-39 to
++    // the picked blocks and this graph does not, so output silently diverges. Clamp until the mask is implemented;
++    // LLAMA_DSV41_UNSAFE_LONG_CTX=1 lifts the clamp (only for testing a port of the mask).
++    if (model.arch == LLM_ARCH_DEEPSEEK41 && !getenv("LLAMA_DSV41_UNSAFE_LONG_CTX")) {
++        const uint32_t cap = 2048u * 8u;
++        if (cparams.n_ctx_seq > cap) {
++            LLAMA_LOG_WARN("%s: DeepSeek-V4.1: n_ctx_seq %u clamped to %u: the candidate-block mask is not implemented "
++                           "in this build, and longer contexts diverge from the model\n", __func__, cparams.n_ctx_seq, cap);
++            cparams.n_ctx_seq = cap;
++            cparams.n_ctx     = cparams.kv_unified ? cap : cap * cparams.n_seq_max;
++        }
++    }
++
+     LLAMA_LOG_INFO("%s: n_seq_max             = %u\n",   __func__, cparams.n_seq_max);
+     LLAMA_LOG_INFO("%s: n_ctx                 = %u\n",   __func__, cparams.n_ctx);
+     LLAMA_LOG_INFO("%s: n_ctx_seq             = %u\n",   __func__, cparams.n_ctx_seq);
+-- 
+2.43.0
+

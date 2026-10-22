@@ -249,6 +249,12 @@ def dspark_section(g: dict | None, file: str, repo: str) -> str:
         "diverged at a near-tie, where batched verification on CUDA can pick the other token.")
 
 
+def ctx_cap() -> int:
+    """The fork's per-sequence context clamp (llamacpp patch 0006): V4.1's candidate-block span, from the config."""
+    c = json.load(open(env.INFERENCE / "config.json"))
+    return int(c["candidate_topk_blocks"]) * int(c["candidate_block_size"])
+
+
 def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | None = None) -> dict:
     """The GGUF card's values: one row per published level from its own teacher_kld.json stats (carried
     in the s09 manifest) and the s09 gate; the dense precision the writer used."""
@@ -278,6 +284,7 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | Non
             "dense_table": "\n".join(dense), "eval_tokens": tokens.pop(), "engram_doc": m.get("engram", ""),
             "heal_sentence": gguf_heal_sentence(m, heal),
             "dspark_section": "",          # filled by main() from s09_dspark gate.json, once the repo name is known
+            "ctx_cap": f"{ctx_cap():,}",
             # the level the 128 GB recipe runs: the lowest-numbered passing level (L2 unless only the L3 fallback passed)
             "run_level": min(m["levels"]),
             "run_file": _run_file(m),

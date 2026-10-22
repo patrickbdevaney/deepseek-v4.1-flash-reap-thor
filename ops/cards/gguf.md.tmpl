@@ -10,7 +10,7 @@ tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
 
 ## Run it in 128 GB: weights in memory, Engram on NVMe
 
-DeepSeek-V4.1-Flash has two Engram tables (n-gram embeddings, about 101 GB each). A token reads only 24 rows of each, and the row ids depend only on the token ids. So the tables stay on NVMe and are read with `O_DIRECT` while the GPU runs; only the pruned experts and the dense path ({{ gguf.run_gib }} for `{{ gguf.run_level }}`) are loaded into memory. Upstream llama.cpp cannot do this yet: use the fork below (upstream PR #28696 plus five patches, one of which is the NVMe row store).
+DeepSeek-V4.1-Flash has two Engram tables (n-gram embeddings, about 101 GB each). A token reads only 24 rows of each, and the row ids depend only on the token ids. So the tables stay on NVMe and are read with `O_DIRECT` while the GPU runs; only the pruned experts and the dense path ({{ gguf.run_gib }} for `{{ gguf.run_level }}`) are loaded into memory. Upstream llama.cpp cannot do this yet: use the fork below (upstream PR #28696 plus six patches, one of which is the NVMe row store).
 
 You need 128 GB of RAM or unified memory, an NVIDIA GPU with CUDA (measured only on a Jetson AGX Thor, sm_110; `build.sh` targets it by default, set `CUDA_ARCH` for another GPU), and about 210 GB free on a local NVMe drive for the row files (not USB, not a network share). Building the row files also needs the base model's two Engram files once (about 200 GB more, on any disk; delete them afterwards).
 
@@ -38,7 +38,7 @@ LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llamacpp/llama.cpp/build-thor/bin/llama-s
     -m gguf/{{ gguf.run_file }} -ngl 999 -c 8192 --jinja --port 8080
 ```
 
-`-c 8192` is the context the release gate served it at. On a machine whose GPU memory is separate from system RAM, lower `-ngl` until the GPU part fits; the rest runs on the CPU.
+`-c 8192` is the context the release gate served it at. **Context limit of this build: {{ gguf.ctx_cap }} tokens per sequence.** Past that, DeepSeek-V4.1 restricts its later layers to a set of candidate blocks that this fork does not implement yet, so the output would drift from the model without any error; the fork clamps the context there instead (patch 0006). The native CUDA runner implements the candidate blocks and is not limited this way. On a machine whose GPU memory is separate from system RAM, lower `-ngl` until the GPU part fits; the rest runs on the CPU.
 
 {{ gguf.dspark_section }}
 
