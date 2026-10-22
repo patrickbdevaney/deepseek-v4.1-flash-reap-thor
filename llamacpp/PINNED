@@ -3,4 +3,4 @@ pr                  28696  "model : add DeepSeek V4.1 (DeepseekV41ForCausalLM)" 
 pr_head_repo        vcruz305/llama.cpp  branch feat/deepseek-v41-convert
 pr_head_sha         2076412598e99127ea2554467b2b7530856895d3   <- pinned base of the fork
 pr_base_sha         4ceb1719101f32637b841206c172f3f058ffc182   (master was 624 commits ahead on 2026-10-19)
-patches             patches/0001..0004 (git am on top of pr_head_sha), branch v41-thor
+patches             patches/0001..0005 (git am on top of pr_head_sha), branch v41-thor
