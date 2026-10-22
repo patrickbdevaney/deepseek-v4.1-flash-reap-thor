@@ -13,6 +13,7 @@ Conventions (from ~/glm-5.3-reap and the Thor memory notes):
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -118,10 +119,36 @@ def assert_no_gpu_server(stage: str) -> None:
     except Exception:
         out = ""
     busy = [n for n in out.split() if n.startswith(("leaf-teacher", "vllm"))]
-    ps = subprocess.run(["pgrep", "-fa", "llama-server|vllm serve"], capture_output=True, text=True).stdout
-    if busy or ps.strip():
-        raise SystemExit(f"[{stage}] REFUSING: a model server is running ({busy or ps.strip()[:120]}). "
+    ps = server_processes()
+    if busy or ps:
+        raise SystemExit(f"[{stage}] REFUSING: a model server is running ({busy or ps[0][:120]}). "
                          "Never co-run beside a vLLM/llama server on Thor.")
+
+
+# argv[0] of processes that only ever MENTION a server (a `bash -c "find ... llama-server"`, a grep, an ssh
+# command line): matching their text made a filesystem scan from another session stop s04 (2026-10-22)
+_NOT_SERVERS = {"bash", "sh", "dash", "zsh", "grep", "pgrep", "find", "ssh", "sshd", "timeout", "nohup", "setsid",
+                "less", "tail", "cat", "vi", "vim", "nano"}
+_SERVER_RE = re.compile(r"(^|/)llama-server(\s|$)|\bvllm(\s+|\.entrypoints\.\S*\s*)serve\b|vllm\.entrypoints\.openai")
+
+
+def server_processes() -> list[str]:
+    """Command lines of running vLLM / llama-server processes, judged by what the process executes."""
+    found = []
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit() or int(d.name) == os.getpid():
+            continue
+        try:
+            argv = (d / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        argv = [a.decode(errors="replace") for a in argv if a]
+        if not argv or Path(argv[0]).name in _NOT_SERVERS:
+            continue
+        line = " ".join(argv)
+        if _SERVER_RE.search(line):
+            found.append(f"{d.name} {line}")
+    return found
 
 
 def import_reference(kernels: str = "tilelang"):
