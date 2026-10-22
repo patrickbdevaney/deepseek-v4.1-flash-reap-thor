@@ -268,6 +268,26 @@ gguf_l3() {
   env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only gguf > $L/s12_gguf_l3.log 2>&1; }
 if [ "$PASS" = L2 ]; then soft gguf_l3 gguf_l3; fi
 
+# ------------------------------------------------------------------------------------------------ DSpark sidecar (soft)
+# The checkpoint's own drafter as an opt-in dspark-*.gguf at the GGUF repo root (ops/s09_dspark.py, gate dspark_gguf):
+# convert (patch 0005) -> verify every tensor against the pinned reference drafter -> bench beside the largest passing
+# level it fits next to (L2 + 7.4 GiB is at the 128 GB edge) -> gate -> s12 uploads it (pass) and the card says so.
+dspark() { local lv rc
+  $PY ops/s09_dspark.py convert >> $L/s09_dspark.log 2>&1 || return 1
+  $PY ops/s09_dspark.py verify  >> $L/s09_dspark.log 2>&1 || return 1
+  if [ ! -f $G/dspark/bench.json ]; then
+    lv=$($PY ops/s09_dspark.py pick --passing $PASS 2>> $L/s09_dspark.log | tail -1)
+    if [ -n "$lv" ]; then
+      s09 stage $lv || return 1
+      quiet; $PY ops/s09_dspark.py bench $lv >> $L/s09_dspark.log 2>&1; rc=$?
+      s09 unstage $lv; reclaim "dspark bench $lv"
+      [ $rc = 0 ] || return 1
+    else log "DSpark: no passing level [$PASS] fits beside the drafter; not benched"; fi
+  fi
+  $PY ops/s09_dspark.py gate >> $L/s09_dspark.log 2>&1 || return 1
+  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only gguf > $L/s12_gguf_dspark.log 2>&1; }
+if [ -n "$PASS" ]; then soft dspark dspark; fi
+
 # ------------------------------------------------------------------------------------------------ CUDA serving gates (soft)
 if [ $CUDA_OK = 1 ]; then
   { soft golden_store s08 golden_store $ARM && soft decode s08 decode $ARM && soft ctx1m s08 ctx1m $ARM \

@@ -220,6 +220,35 @@ def gguf_heal_sentence(m: dict, heal: dict | None = None) -> str:
             "routed-expert sum by it before the shared expert is added, the same gain the NVFP4 build folds into `w2`.")
 
 
+def dspark_section(g: dict | None, file: str, repo: str) -> str:
+    """The GGUF card's speculative-decoding section, from s09_dspark gate.json (pass or fail); empty before it ran."""
+    if g is None:
+        return ""
+    if not g["pass"]:
+        return ("## Speculative decoding\n\nNo DSpark drafter is published with this release. Its pre-registered gate "
+                "(`dspark_gguf`) did not pass: " + "; ".join(g["why"]) + ".")
+    faster = g["speedup"] >= 1.0
+    return (
+        "## Speculative decoding (optional)\n\n"
+        f"`{file}` in this repository is the base checkpoint's own DSpark drafter (`mtp.0`-`mtp.2`, not pruned), "
+        "converted with the fork's patch 0005. Every tensor was checked against an independent conversion of the same "
+        "drafter. It is loaded only when you ask for it:\n\n"
+        "```bash\n"
+        f"llamacpp/llama.cpp/build-thor/bin/llama-server -m gguf/<first split of the level> -md gguf/{file} -ngld 999 \\\n"
+        f"    --spec-type draft-dspark --spec-draft-n-max {g['draft_n_max']} -ngl 999 -c {g['ctx']} --jinja --port 8080\n"
+        "```\n\n"
+        f"With `-hf {repo}` and `--spec-type draft-dspark`, llama.cpp finds it on its own.\n\n"
+        f"The drafter adds {g['drafter_gib']:.1f} GiB. Measured on the Jetson AGX Thor beside `{g['level']}` "
+        f"({g['level_gib']:.1f} GiB), the largest level it fits next to with a safety margin, greedy decoding of "
+        f"{g['n_predict']} tokens after {g['n_prompts']} held-out document prompts: "
+        f"{g['tps_plain']:.2f} tok/s without the drafter, {g['tps_spec']:.2f} with it "
+        f"({g['speedup']:.2f}x, geometric means), {100 * g['accept_rate']:.1f}% of drafted tokens accepted. "
+        + ("" if faster else "On this machine the drafter is a net slowdown: leave it off on Thor. It may still help "
+               "on hardware where verifying a few tokens at once costs little more than decoding one. ")
+        + f"{100 * g['identical_frac']:.0f}% of the outputs were token-identical to decoding without it; the rest "
+        "diverged at a near-tie, where batched verification on CUDA can pick the other token.")
+
+
 def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | None = None) -> dict:
     """The GGUF card's values: one row per published level from its own teacher_kld.json stats (carried
     in the s09 manifest) and the s09 gate; the dense precision the writer used."""
@@ -248,6 +277,7 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | Non
     return {"manifest_name": "gguf_manifest.json", **m, "levels_table": "\n".join(rows), "offload_note": note,
             "dense_table": "\n".join(dense), "eval_tokens": tokens.pop(), "engram_doc": m.get("engram", ""),
             "heal_sentence": gguf_heal_sentence(m, heal),
+            "dspark_section": "",          # filled by main() from s09_dspark gate.json, once the repo name is known
             # the level the 128 GB recipe runs: the lowest-numbered passing level (L2 unless only the L3 fallback passed)
             "run_level": min(m["levels"]),
             "run_file": _run_file(m),
@@ -348,8 +378,15 @@ def publish(a):
             user = "<user>" if a.dry_run else h.whoami()["name"]
             repo = m.get("repo") or f"{user}/DeepSeek-V4.1-Flash-1017-REAP{m['n_routed_experts']}-GGUF"
             ctx["gguf"] = gguf_context(m, gg, heal=ctx["heal"])
+            files = [(Path(f["path"]), Path(f["path"]).name) for f in m["files"]]
+            import ops.s09_dspark as SD
+            dg = SD.OUT / "gate.json"
+            dg = json.load(open(dg)) if dg.exists() else None
+            ctx["gguf"]["dspark_section"] = dspark_section(dg, SD.FILE, repo)
+            if dg is not None and dg["pass"]:
+                files.append((SD.OUT / SD.FILE, SD.FILE))     # repo root: where -hf looks for dspark-*.gguf
             plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "repo": repo, "n_routed": m["n_routed_experts"]},
-                         [(Path(f["path"]), Path(f["path"]).name) for f in m["files"]]))
+                         files))
     if "thor" in only:
         tc = ctx.get("thor_build")
         if tc is None:
