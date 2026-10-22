@@ -92,6 +92,22 @@
     "partial_offload_allowed": true,
     "note": "levels too large for full GPU offload are scored with partial -ngl from NVMe; the card states the offload"
   },
+  "dspark_gguf": {
+    "why": "the checkpoint's own DSpark drafter (mtp.0-2) as an opt-in llama.cpp sidecar (dspark-*.gguf at the GGUF repo root, loaded only with --spec-type draft-dspark). Registered 2026-10-22, owner decision, before any s10 result",
+    "source_check": "every tensor of our conversion equals the reference drafter GGUF (unsloth/DeepSeek-V4.1-Flash-1017-GGUF dspark Q8_0): MXFP4/F32/BF16 byte-identical, Q8_0 byte-identical or dequantized relative RMSE <= source_q8_max_rel_rmse; target_layers and block_size equal",
+    "source_q8_max_rel_rmse": 0.001,
+    "level": "the run level (L2 unless only the L3 fallback passed)",
+    "n_prompts": 16,
+    "n_predict": 256,
+    "ctx": 8192,
+    "draft_n_max": 3,
+    "identity": "greedy (temperature 0) output with the drafter vs without, same server build and level",
+    "min_identical_frac": 0.5,
+    "min_common_prefix_tokens": 32,
+    "min_accept_rate": 0.1,
+    "speed": "measured and reported (tok/s with and without, acceptance), not gated: the sidecar is opt-in and other hardware may gain where Thor does not",
+    "ship_rule": "source_check AND identity AND acceptance pass -> upload the sidecar and state the measured numbers in the GGUF card; otherwise publish nothing and record why"
+  },
   "s11": {
     "why": "the checkpoint's own speculative head (mtp.0-2, DSpark) refit to the served REAP: always fine-tuned; base, native head and tuned head measured; in-model (pruned+K-quantized experts) preferred, separate (source MXFP4 experts) fallback",
     "depths": [
