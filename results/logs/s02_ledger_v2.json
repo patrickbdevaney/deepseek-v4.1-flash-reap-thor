@@ -1,0 +1,62 @@
+{
+ "spec": {
+  "hash": "c1803e70af7db162",
+  "generator_policy": "no-claude",
+  "allow_unverified": false,
+  "ts": "2026-10-19T09:49:07-0400"
+ },
+ "pool:general": {
+  "done": true,
+  "rows": 73,
+  "tokens": 598016,
+  "ts": "2026-10-19T09:49:32-0400"
+ },
+ "pool:multilingual": {
+  "done": true,
+  "rows": 61,
+  "tokens": 499712,
+  "ts": "2026-10-19T09:50:17-0400"
+ },
+ "pool:agentic": {
+  "done": true,
+  "rows": 73,
+  "tokens": 598016,
+  "ts": "2026-10-19T09:50:25-0400"
+ },
+ "pool:code": {
+  "done": true,
+  "rows": 73,
+  "tokens": 598016,
+  "ts": "2026-10-19T09:50:55-0400"
+ },
+ "pool:vision": {
+  "done": true,
+  "rows": 86,
+  "tokens": 663243,
+  "ts": "2026-10-19T09:53:19-0400"
+ },
+ "pool:math": {
+  "done": true,
+  "rows": 61,
+  "tokens": 499712,
+  "ts": "2026-10-19T09:53:29-0400"
+ },
+ "pool:science": {
+  "done": true,
+  "rows": 61,
+  "tokens": 499712,
+  "ts": "2026-10-19T09:53:37-0400"
+ },
+ "pool:finance": {
+  "done": true,
+  "rows": 61,
+  "tokens": 499712,
+  "ts": "2026-10-19T09:53:52-0400"
+ },
+ "pool:longctx": {
+  "done": true,
+  "rows": 10,
+  "tokens": 535990,
+  "ts": "2026-10-19T09:54:20-0400"
+ }
+}

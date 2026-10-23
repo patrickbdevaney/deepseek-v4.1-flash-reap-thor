@@ -1,0 +1,201 @@
+[2026-10-19T05:19:28-04:00] chain start
+[2026-10-19T05:58:24-04:00] relaunch: chain extended with s04-s12 (ba578a2)
+[2026-10-19T05:58:44-04:00] chain start
+[2026-10-19T08:40:49-04:00] s00b model-00047-of-00048.safetensors on Seagate, sha ok
+[2026-10-19T08:57:38-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-19T09:14:48-04:00] s00b model-00048-of-00048.safetensors on Seagate, sha ok
+[2026-10-19T09:14:48-04:00] done s00b
+[2026-10-19T09:17:11-04:00] STOP: s01 2k gate: rc=1 verdict= (see ops/logs/s01_*.log)
+[2026-10-19T09:17:38-04:00] chain2 chain.STOP appeared while waiting: 2026-10-19T09:17:11-04:00 s01 2k gate: rc=1 verdict= (see ops/logs/s01_*.log)
+2026-10-19T09:26:19-04:00 fixed: shards.build_block now clears precompute_freqs_cis cache (s01 oracle device mismatch)
+[2026-10-19T09:26:19-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-19T09:26:19-04:00] chain start
+[2026-10-19T09:27:00-04:00] STOP: s01 2k gate: rc=0 verdict=INVESTIGATE (see ops/logs/s01_*.log)
+2026-10-19T09:27:49-04:00 s01 gate now uses bf16 reference precision control (stream 0.99836 / ffn_pre 0.99990 at 2k was routing near-ties)
+[2026-10-19T09:27:51-04:00] chain start
+[2026-10-19T09:29:18-04:00] reclaim after s01-2k: MemAvailable 111 GiB
+[2026-10-19T09:30:25-04:00] STOP: s01 chunked gate: rc=1 verdict=PASS
+2026-10-19T09:30:45-04:00 fixed: s01 routing capture across token chunks (4k chunked run compared 1024 vs 4096 rows)
+[2026-10-19T09:30:46-04:00] chain start
+[2026-10-19T09:31:12-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-19T09:32:05-04:00] reclaim after s01-2k: MemAvailable 112 GiB
+[2026-10-19T09:33:49-04:00] reclaim after s01-4k: MemAvailable 112 GiB
+[2026-10-19T09:38:35-04:00] reclaim after s01-17k: MemAvailable 112 GiB
+[2026-10-19T09:38:35-04:00] done s01
+[2026-10-19T09:46:37-04:00] done s02
+[2026-10-19T09:46:43-04:00] reclaim after s02: MemAvailable 112 GiB
+2026-10-19T09:47:18-04:00 STOP: s02 corpus defects (Nemotron tool_calling config, SWE-bench/ConvFinQA splits, ChemBench/tat-llm 0 kept, longctx 6 docs); s03 stopped at start
+[2026-10-19T09:51:12-04:00] chain2 chain.STOP appeared while waiting: 2026-10-19T09:47:18-04:00 STOP: s02 corpus defects (Nemotron tool_calling config, SWE-bench/ConvFinQA splits, ChemBench/tat-llm 0 kept, longctx 6 docs); s03 stopped at start
+2026-10-19T10:06:02-04:00 s02 rebuilt (v4): 552 rows, 4.93M tok, every pool on target, no source >15% off quota except empty selfgen
+[2026-10-19T10:06:03-04:00] chain start
+[2026-10-19T10:06:03-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-19T10:06:03-04:00] STOP: s03 failed (resumable: fix, rm chain.STOP, relaunch)
+2026-10-19T10:06:36-04:00 s03 ledger from corpus v1 archived (stale: hash marked done after s03 dir was cleared)
+[2026-10-19T10:06:36-04:00] chain start
+2026-10-19T10:36:31-04:00 s03 engram unit restarted with pread window reads (memmap over ntfs-3g was 8 MB/s)
+[2026-10-19T10:36:38-04:00] chain start
+2026-10-19T11:29:53-04:00 park_shards.py launched (s03 disk plan: park layer shards on Seagate, s04 restores)
+[2026-10-19T12:12:06-04:00] STOP: s03 failed (resumable: fix, rm chain.STOP, relaunch)
+2026-10-19T12:12:16-04:00 fixed: s03 vision tower default device (embed failed at first vision row)
+[2026-10-19T12:12:16-04:00] chain start
+[2026-10-19T12:38:08-04:00] STOP: s03 failed (resumable: fix, rm chain.STOP, relaunch)
+2026-10-19T12:38:22-04:00 fixed: s03 bank dir mkdir (layer/L0 failed at first checkpoint)
+[2026-10-19T12:38:22-04:00] chain start
+2026-10-19T12:57:28-04:00 s03 restarted on pwrite/RAM-apply layer unit (L0 at ~180/552 rows)
+[2026-10-19T12:57:37-04:00] chain start
+2026-10-19T13:09:17-04:00 s03 restarted on vectorized MoE stats + async journals (51a4729), L0 at 312/552
+[2026-10-19T13:09:23-04:00] chain start
+2026-10-19T13:17:43-04:00 s03 paused ~10 min for a kernel-level profile (L0 resumes from checkpoint)
+2026-10-19T13:19:09-04:00 s03 resumed with per-phase timing in the layer log
+[2026-10-19T13:19:09-04:00] chain start
+[2026-10-19T13:33:43-04:00] STOP: s03 failed (resumable: fix, rm chain.STOP, relaunch)
+2026-10-19T13:34:32-04:00 fixed: meta freqs_cis on Engram block build (layer/L1)
+[2026-10-19T13:34:35-04:00] chain start
+[2026-10-20T21:53:55-04:00] done s03
+[2026-10-20T21:54:00-04:00] reclaim after s03: MemAvailable 113 GiB
+[2026-10-20T22:06:30-04:00] chain2 chain.STOP appeared while waiting: 2026-10-20T22:01:46-04:00 paused before s04 select: drift_guard rising criterion domain-confounded (early baseline pooled over all rows, late bins only from the 10 long rows) -> fixing to a matched-row baseline and regenerating position_protect.json
+2026-10-20T22:08:41-04:00 drift_guard fixed (matched-row rising baseline); position_protect.json regenerated: 1746 experts, 17.2/layer outside saliency top-192; resuming s04
+[2026-10-20T22:08:41-04:00] chain start
+[2026-10-20T22:08:43-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-20T23:43:44-04:00] chain2 chain.STOP appeared while waiting: 2026-10-20T23:39:55-04:00 paused in s04 select: protect ran on --rows all but check runs on --rows calib (row mismatch -> spurious BLOCK, and held-out rows leaked into selection); regenerating protect on calib rows and re-running select
+2026-10-20T23:46:23-04:00 drift_guard rows fixed (protect+check on calib); position_protect.json regenerated (1618 experts, consistency mask FLAT); re-running s04 select
+[2026-10-20T23:46:24-04:00] chain start
+[2026-10-20T23:46:26-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-21T03:24:11-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-21T03:48:13-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-21T04:14:54-04:00] s09 done build
+  nvcc kernels/v41/v41_dense.cu
+  nvcc kernels/v41/v41_attn.cu
+  nvcc kernels/v41/v41_moe.cu
+  nvcc kernels/v41/v41_engram.cu
+  nvcc src/v41_model.cu
+  nvcc src/v41_draft.cu
+  nvcc src/v41_engine.cu
+  nvcc src/engram_store.cpp
+  nvcc src/engram_hash.cpp
+built build/v41_decode
+built build/v41_server
+built build/gate_v41_units
+built build/libkt_viterbi.so
+built build/gate_v41_golden
+built build/gemv_format_bench
+built CPU gates
+[2026-10-21T04:16:56-04:00] s08 done build
+[2026-10-21T04:16:59-04:00] s08 done cpu_gates
+[2026-10-21T04:48:31-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-21T04:55:18-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-21T22:29:28-04:00] done s04
+[2026-10-21T22:29:33-04:00] reclaim after s04: MemAvailable 112 GiB
+[2026-10-21T23:06:20-04:00] done s05
+[2026-10-21T23:07:10-04:00] reclaim after s05: MemAvailable 112 GiB
+[2026-10-22T00:33:20-04:00] STOP: owner paused for s04 multilingual re-selection; s06 killed (redo on the new keep-set)
+[2026-10-22T00:35:23-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T00:33:20-04:00 owner paused: multilingual bucket fails the release floor on screen (top1 0.52 < 0.65); s04 re-selection with multilingual protection (user decision 2026-10-22)
+[2026-10-22T00:43:42-04:00] watchdog needs the owner: STOP (not retryable): owner paused: multilingual bucket fails the release floor on screen (top1 0.52 < 0.65); s04 re-selection with multilingual protection (user decision 2026-10-22)
+[2026-10-22T01:05:26-04:00] s04 round 2 (hope_sum_ml48/96/144, floor-first winner rule); round-1 s05/s06 archived to ops/logs/archive_r1, round-1 master renamed .r1_hope_sum_pf0 on the Seagate
+[2026-10-22T01:05:26-04:00] chain start
+[2026-10-22T01:06:31-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T06:02:45-04:00] STOP: s04 failed (resumable; see ops/logs/s04.log)
+[2026-10-22T06:06:32-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T06:05:15-04:00 paused by owner-agent: s04 round 2 release floor gate failed on screen for all arms (ml144 passes buckets but not beat-random); awaiting owner decision
+[2026-10-22T06:14:05-04:00] watchdog needs the owner: STOP (not retryable): paused by owner-agent: s04 round 2 release floor gate failed on screen for all arms (ml144 passes buckets but not beat-random); awaiting owner decision [s04.log tail: [2026-10-22T06:02:33-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB / [2026-10-22T06:02:33-0400] INFO  s04              done unit head --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 in 29 / arm A: no eligible candidate passes the release floor gate on screen: hope_sum_pf0: ['bucket multilingual top1 0.5233 < ]
+[2026-10-22T06:29:42-04:00] chain start
+[2026-10-22T06:29:43-04:00] STOP: s04 failed (resumable; see ops/logs/s04.log)
+[2026-10-22T06:30:52-04:00] chain start
+[2026-10-22T06:30:54-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T06:31:04-04:00] done s04
+[2026-10-22T06:31:10-04:00] reclaim after s04: MemAvailable 112 GiB
+[2026-10-22T07:11:41-04:00] done s05
+[2026-10-22T07:12:25-04:00] reclaim after s05: MemAvailable 84 GiB
+[2026-10-22T07:12:25-04:00] STOP: memory did not return to baseline after s05 (84 GiB < 100)
+[2026-10-22T07:15:54-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T07:12:25-04:00 memory did not return to baseline after s05 (84 GiB < 100)
+[2026-10-22T07:44:09-04:00] watchdog retrying a conflict STOP (1/48): memory did not return to baseline after s05 (84 GiB < 100)
+[2026-10-22T07:44:10-04:00] chain start
+[2026-10-22T07:44:10-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T07:44:10-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T07:49:10-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T07:44:10-04:00 s06 heal failed (resumable)
+[2026-10-22T08:14:11-04:00] watchdog retrying a conflict STOP (1/48): s06 heal failed (resumable)
+[2026-10-22T08:14:11-04:00] chain start
+[2026-10-22T08:14:11-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T08:14:11-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T08:19:11-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T08:14:11-04:00 s06 heal failed (resumable)
+[2026-10-22T08:44:12-04:00] watchdog retrying a conflict STOP (2/48): s06 heal failed (resumable)
+[2026-10-22T08:44:12-04:00] chain start
+[2026-10-22T08:44:12-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T08:44:12-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T08:49:12-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T08:44:12-04:00 s06 heal failed (resumable)
+[2026-10-22T09:14:13-04:00] watchdog retrying a conflict STOP (3/48): s06 heal failed (resumable)
+[2026-10-22T09:14:13-04:00] chain start
+[2026-10-22T09:14:13-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T09:14:13-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T09:19:13-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T09:14:13-04:00 s06 heal failed (resumable)
+[2026-10-22T09:44:14-04:00] watchdog retrying a conflict STOP (4/48): s06 heal failed (resumable)
+[2026-10-22T09:44:14-04:00] chain start
+[2026-10-22T09:44:14-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T09:44:14-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T09:49:14-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T09:44:14-04:00 s06 heal failed (resumable)
+[2026-10-22T10:14:15-04:00] watchdog retrying a conflict STOP (5/48): s06 heal failed (resumable)
+[2026-10-22T10:14:15-04:00] chain start
+[2026-10-22T10:14:15-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T10:14:15-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T10:19:15-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T10:14:15-04:00 s06 heal failed (resumable)
+[2026-10-22T10:44:16-04:00] watchdog retrying a conflict STOP (6/48): s06 heal failed (resumable)
+[2026-10-22T10:44:16-04:00] chain start
+[2026-10-22T10:44:16-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T10:44:16-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T10:49:16-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T10:44:16-04:00 s06 heal failed (resumable)
+[2026-10-22T11:14:17-04:00] watchdog retrying a conflict STOP (7/48): s06 heal failed (resumable)
+[2026-10-22T11:14:17-04:00] chain start
+[2026-10-22T11:14:17-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T11:14:17-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T11:19:17-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T11:14:17-04:00 s06 heal failed (resumable)
+[2026-10-22T11:44:18-04:00] watchdog retrying a conflict STOP (8/48): s06 heal failed (resumable)
+[2026-10-22T11:44:18-04:00] chain start
+[2026-10-22T11:44:18-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T11:44:18-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T11:49:18-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T11:44:18-04:00 s06 heal failed (resumable)
+[2026-10-22T12:14:19-04:00] watchdog retrying a conflict STOP (9/48): s06 heal failed (resumable)
+[2026-10-22T12:14:19-04:00] chain start
+[2026-10-22T12:14:19-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T12:14:19-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T12:19:19-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T12:14:19-04:00 s06 heal failed (resumable)
+[2026-10-22T12:44:20-04:00] watchdog retrying a conflict STOP (10/48): s06 heal failed (resumable)
+[2026-10-22T12:44:20-04:00] chain start
+[2026-10-22T12:44:20-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T12:44:20-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T12:49:20-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T12:44:20-04:00 s06 heal failed (resumable)
+[2026-10-22T13:14:21-04:00] watchdog retrying a conflict STOP (11/48): s06 heal failed (resumable)
+[2026-10-22T13:14:21-04:00] chain start
+[2026-10-22T13:14:21-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T13:14:21-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T13:19:21-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T13:14:21-04:00 s06 heal failed (resumable)
+[2026-10-22T13:44:22-04:00] watchdog retrying a conflict STOP (12/48): s06 heal failed (resumable)
+[2026-10-22T13:44:22-04:00] chain start
+[2026-10-22T13:44:22-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T13:44:22-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T13:49:22-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T13:44:22-04:00 s06 heal failed (resumable)
+[2026-10-22T14:14:23-04:00] watchdog retrying a conflict STOP (13/48): s06 heal failed (resumable)
+[2026-10-22T14:14:23-04:00] chain start
+[2026-10-22T14:14:23-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T14:14:23-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T14:19:23-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T14:14:23-04:00 s06 heal failed (resumable)
+[2026-10-22T14:44:24-04:00] watchdog retrying a conflict STOP (14/48): s06 heal failed (resumable)
+[2026-10-22T14:44:24-04:00] chain start
+[2026-10-22T14:44:24-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T14:44:24-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T14:49:24-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T14:44:24-04:00 s06 heal failed (resumable)
+[2026-10-22T15:14:25-04:00] watchdog retrying a conflict STOP (15/48): s06 heal failed (resumable)
+[2026-10-22T15:14:25-04:00] chain start
+[2026-10-22T15:14:25-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T15:14:25-04:00] STOP: s06 heal failed (resumable)
+[2026-10-22T15:19:25-04:00] chain2 chain.STOP appeared while waiting: 2026-10-22T15:14:25-04:00 s06 heal failed (resumable)
+[2026-10-22T15:21:56-04:00] manual retry after owner stopped the ner03 llama-server: s06 heal
+[2026-10-22T15:21:58-04:00] chain start
+[2026-10-22T15:21:58-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T15:53:36-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T16:23:53-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T18:44:08-04:00] done s06
+[2026-10-22T18:44:15-04:00] reclaim after s06: MemAvailable 112 GiB
+[2026-10-22T22:02:41-04:00] done s10heal
+[2026-10-22T22:02:46-04:00] reclaim after s10heal: MemAvailable 112 GiB
+[2026-10-22T22:02:46-04:00] done s07nvfp4
+[2026-10-22T22:02:51-04:00] reclaim after s07nvfp4: MemAvailable 112 GiB
+[2026-10-22T22:42:22-04:00] chain2 chain2 start (waiting for chain.sh to finish)

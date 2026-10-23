@@ -1,48 +1,41 @@
-# DeepSeek-V4.1-Flash-1017 REAP for Jetson AGX Thor (design, not yet built)
+# DeepSeek-V4.1-Flash-1017 REAP-192 for Jetson AGX Thor
 
-> **Status: speculative.** This repo is a research-backed *plan*. No weights have been pruned,
-> healed, quantized or served. Every quality and speed number below is either cited from the
-> literature or extrapolated, and is marked that way in [`REPORT.md`](REPORT.md).
+Run `deepseek-ai/DeepSeek-V4.1-Flash-1017` (a ~763B MoE) memory-resident on one Jetson AGX Thor: 122 GiB unified
+memory with about 117 GiB usable, on sm_110a. The method keeps 192 of 384 routed experts per layer, selected with
+HOPE/REAP on a balanced nine-bucket calibration corpus. Expert deletion is bit-exact on the MXFP4 master. The quantized
+builds are made from that master, and the 189 GiB Engram tables are served from NVMe as O_DIRECT row files.
 
-**Goal:** run `deepseek-ai/DeepSeek-V4.1-Flash-1017` (~763B MoE) memory-resident on a single
-Jetson AGX Thor (122 GiB unified memory, ~117 GiB usable, sm_110a).
+This repo is the complete record of the run, not only its code:
 
-**Start here: [`pipeline-plan/PLAN.md`](pipeline-plan/PLAN.md)** (2026-10-19). This is the end-to-end plan from the unpruned teacher to the published MXFP4, NVFP4 and GGUF outputs. It draws on 7 research notes in [`pipeline-plan/notes/`](pipeline-plan/notes/), including the playbook of everything that worked and failed on GLM-5.3 and MiMo. It supersedes the 10-17 numbers below wherever they disagree. Key corrections:
-- The expert bit-width should be **~2.85 bpw, not 2.3**. The quality cliff for experts that start as FP4 sits at 2.79–2.58 bpw.
-- The model has **16.4B active parameters, not 13B**.
-- There are **no MTP heads**; the only draft model is DSpark.
-- **All 48 weight shards changed in 1017**, so 0909 artifacts are invalid.
-- On Thor, the blocker is **FlashMLA/DeepSelect shipping no sm_110 build**.
+| | |
+|---|---|
+| [`RESULTS.md`](RESULTS.md) | every measured result: each candidate keep-set against the teacher per domain, the heal decision, release gates, GGUF ladder, DSpark sidecar. Rendered from the artifacts, so no number is typed by hand |
+| [`DECISIONS.md`](DECISIONS.md) | the choices made and who made them, including why the shipped keep-set favours general and finance over multilingual |
+| [`results/`](results/) | the intermediate data: every JSON result, ledger, keep-set, mask, drift check and gate decision, the run logs, and the calibration corpus provenance (sources, revisions, licences, per-row token counts). [`results/MANIFEST.json`](results/MANIFEST.json) has the sha256 of each file |
+| HF dataset (see [`results/DATASET.json`](results/DATASET.json) once published) | the bulk arrays: per-layer expert saliency and HOPE interaction banks, the teacher routing trace and top-32 cache, heal measurements, and the per-token metrics of every arm |
+| [`pipeline-plan/PLAN.md`](pipeline-plan/PLAN.md) | the end-to-end plan the run executed (2026-10-19) and its research notes |
+| [`ops/`](ops/) | the pipeline: stages `s00`–`s13`, the pre-registered gates ([`ops/s10_gates.json`](ops/s10_gates.json), sha256-locked before the first evaluation), the systemd units that ran it unattended ([`ops/sd/`](ops/sd/)) |
+| [`cuda/`](cuda/) | the purpose-built CUDA runner for the MXFP4/NVFP4 weights on Thor |
+| [`llamacpp/`](llamacpp/) | the pinned llama.cpp fork and patches for the GGUF release (V4.1 graph, Engram row store, DSpark sidecar export, context clamp) |
+| [`REPORT.md`](REPORT.md), [`notes/`](notes/) | the 2026-10-17 research that chose this model and recipe. Superseded by `PLAN.md` wherever they disagree |
 
-## Proposed recipe (10-17 version)
+## How it ran
 
-| component | plan | bytes |
-|---|---|---|
-| Engram (hashed n-gram table, ~97 GiB at MXFP4) | **off-pool on NVMe** via an O_DIRECT row store (not mmap, not pinned-host) | 0 in pool |
-| Routed experts | delete **192 of 384** (bit-exact on MXFP4; 192 is a count vLLM's fused router accepts), block-wise heal, trellis requant survivors to **~2.9 bpw** | bulk |
-| Backbone + KV | fixed floor ~9.8 GiB; KV ~890 B/token (1M ctx < 1 GiB) | |
-| **Total** | including a 12 GiB runtime reserve | **≈113.7 GiB** |
+The stages are `s02` corpus, `s03` teacher calibration pass (saliency banks), `s04` candidate keep-sets and full-model
+arbitration against the teacher, `s05` bit-exact expert surgery on MXFP4, `s06` heal, `s10` evaluation panels, `s07`
+native Thor build, `s09` GGUF ladder, `s11` speculative head and `s12` publish. Each stage is resumable. Model-loading
+work runs one process at a time, with a page-cache reclaim and a memory check between units. A repo is made public
+only if its pre-registered gate passed. [`ops/chain.sh`](ops/chain.sh) and [`ops/chain2.sh`](ops/chain2.sh) are the
+exact sequence.
 
-**Measured locally:** Engram row-store reads on this Thor's NVMe come in at **1.13–1.30 ms/token p50**
-(48 concurrent 1 KiB reads), which prefetch can hide.
+Every decision is measured as agreement with the unpruned teacher (top-1 and top-32 KL, with row-clustered bootstrap
+CIs and paired McNemar tests). Perplexity is not used. Calibration and evaluation rows are disjoint, and the gates were
+fixed before results existed.
 
-**Everything else is extrapolated.** In particular:
-- 50% is the most expert deletion any *generalist* MoE has survived within 10% of base.
-- Requantizing MXFP4-source experts to 2.9 bpw is a double quantization (about +8% PPL, extrapolated).
+## Known limitation
 
-## Showstoppers (open)
-1. **Disk.** The checkpoint is about 475 GiB and Engram needs at least 97 GiB, but the NVMe has about 102 GB free. A second drive is needed.
-2. **Runtime.** Nobody has booted V4.1 on sm_110a yet.
-3. **Source format.** The experts ship pre-quantized (MXFP4), so only bit-exact operations are free.
+At 192 of 384 experts, multilingual text loses more agreement with the teacher than any other domain does. This was
+an explicit trade-off: see [`DECISIONS.md`](DECISIONS.md) §1 and the s04 table in [`RESULTS.md`](RESULTS.md).
 
-## First experiments (cheapest decisive)
-1. A 192E mask built with a balanced calibration corpus and per-modality ranking, compared against LibertAI's +14.7% PPL baseline.
-2. A 2 h one-layer dequant + grouped-GEMM fwd/dgrad microbench on Thor, to pin down what block-wise healing costs.
-3. A top-k 8→6 scan using the k2 renormalization rule.
-
-## Contents
-- [`REPORT.md`](REPORT.md): the full synthesis. It also gives verdicts for GLM-5.3-753B (marginal) and MiMo-V2.6-Pro-MOPD (no-go).
-- [`notes/`](notes/): 33 research notes. [`notes/INDEX.md`](notes/INDEX.md) gives a one-line result for each note and lists the first-wave claims that were later overturned.
-
-Prior proven work this builds on: [glm-5.3-reap](https://github.com/patrickbdevaney/glm-5.3-reap)
-(GLM-5.3-Flash 321B → REAP50 + heal + NVFP4, 93.6 GiB, three passes shipped).
+Prior work this builds on: [glm-5.3-reap](https://github.com/patrickbdevaney/glm-5.3-reap) (GLM-5.3-Flash 321B →
+REAP50 + NVFP4, 93.6 GiB).

@@ -1,0 +1,12 @@
+[2026-10-21T04:14:12-04:00] start llama_build
+[2026-10-21T04:14:54-04:00] llama_build rc=0
+[2026-10-21T04:14:54-04:00] start cuda_build
+[2026-10-21T04:16:56-04:00] cuda_build rc=0
+[2026-10-21T04:16:56-04:00] start cuda_cpu_gates
+[2026-10-21T04:16:59-04:00] cuda_cpu_gates rc=0
+[2026-10-21T04:16:59-04:00] start cuda_units
+[2026-10-21T04:17:01-04:00] cuda_units rc=0
+[2026-10-21T04:17:01-04:00] start backend_ops_types
+[2026-10-21T04:17:58-04:00] backend_ops_types rc=0
+[2026-10-21T04:17:58-04:00] start backend_ops_all
+[2026-10-21T04:20:49-04:00] backend_ops_all STOPPED by owner rule (no GPU beside s04); chain2 runs it in a quiet window

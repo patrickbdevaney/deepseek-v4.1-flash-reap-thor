@@ -1,0 +1,1229 @@
+{
+ "HuggingFaceFW/fineweb-edu/sample-10BT:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "filtered: s02 keeps rows whose url matches FINANCE_URL",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "dump",
+   "file_path",
+   "id",
+   "int_score",
+   "language",
+   "language_score",
+   "score",
+   "text",
+   "token_count",
+   "url"
+  ]
+ },
+ "wikimedia/wikipedia/20231101.en:train": {
+  "bucket": "general",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-sa-3.0",
+  "licence_live": "cc-by-sa-3.0,gfdl",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "id",
+   "text",
+   "title",
+   "url"
+  ]
+ },
+ "mandarjoshi/trivia_qa/rc:train": {
+  "bucket": "general",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "unknown",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answer",
+   "entity_pages",
+   "question",
+   "question_id",
+   "question_source",
+   "search_results"
+  ]
+ },
+ "cais/mmlu/auxiliary_train:train": {
+  "bucket": "general",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "train"
+  ]
+ },
+ "allenai/openbookqa/additional:train": {
+  "bucket": "general",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "unknown",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answerKey",
+   "choices",
+   "clarity",
+   "fact1",
+   "humanScore",
+   "id",
+   "question_stem",
+   "turkIdAnonymized"
+  ]
+ },
+ "HuggingFaceFW/fineweb/sample-10BT:train": {
+  "bucket": "general",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "text",
+   "token_count",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/cmn_Hani:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/rus_Cyrl:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/jpn_Jpan:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/kor_Hang:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/deu_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/fra_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/spa_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/arb_Arab:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/por_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/vie_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "HuggingFaceFW/fineweb-2/ind_Latn:train": {
+  "bucket": "multilingual",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "date",
+   "dump",
+   "file_path",
+   "id",
+   "language",
+   "language_score",
+   "language_script",
+   "minhash_cluster_size",
+   "text",
+   "top_langs",
+   "url"
+  ]
+ },
+ "local:selfgen/agentic.jsonl": {
+  "bucket": "agentic",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit (model output)",
+  "licence_live": "mit (model output)",
+  "generator": "DeepSeek-V4.1-Flash-1017 (self)",
+  "status": "s02b output; absent until generated",
+  "seen": 0,
+  "yield_": 0.0,
+  "columns": []
+ },
+ "nebius/SWE-rebench:test": {
+  "bucket": "agentic",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "FAIL_TO_FAIL",
+   "FAIL_TO_PASS",
+   "PASS_TO_FAIL",
+   "PASS_TO_PASS",
+   "base_commit",
+   "created_at",
+   "docker_image",
+   "environment",
+   "environment_setup_commit",
+   "hints_text",
+   "image_name",
+   "install_config",
+   "instance_id",
+   "license_name",
+   "meta",
+   "patch",
+   "problem_statement",
+   "repo",
+   "requirements",
+   "test_patch",
+   "version"
+  ]
+ },
+ "SWE-Gym/SWE-Gym:train": {
+  "bucket": "agentic",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "FAIL_TO_PASS",
+   "PASS_TO_PASS",
+   "base_commit",
+   "created_at",
+   "hints_text",
+   "instance_id",
+   "patch",
+   "problem_statement",
+   "repo",
+   "test_patch",
+   "version"
+  ]
+ },
+ "SWE-bench/SWE-bench:train": {
+  "bucket": "agentic",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": null,
+  "generator": "human",
+  "status": "new",
+  "error": "ValueError: Bad split: train. Available splits: ['test', 'dev']"
+ },
+ "Salesforce/xlam-function-calling-60k:train": {
+  "bucket": "agentic",
+  "usable": [
+   false,
+   "generator unverified"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "unverified",
+  "status": "new",
+  "error": "DatasetNotFoundError: Dataset 'Salesforce/xlam-function-calling-60k' is a gated dataset on the Hub. Visit the dataset page at https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k to ask for access."
+ },
+ "nvidia/Nemotron-Post-Training-Dataset-v1/tool_calling:train": {
+  "bucket": "agentic",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "DeepSeek-R1-0528 / Qwen3-235B-A22B",
+  "status": "new",
+  "error": "ValueError: BuilderConfig 'tool_calling' not found. Available: ['default']"
+ },
+ "local:selfgen/code.jsonl": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit (model output)",
+  "licence_live": "mit (model output)",
+  "generator": "DeepSeek-V4.1-Flash-1017 (self)",
+  "status": "s02b output; absent until generated",
+  "seen": 0,
+  "yield_": 0.0,
+  "columns": []
+ },
+ "nvidia/OpenCodeReasoning-2/train:python": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "DeepSeek-R1-0528 / QwQ-32B",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "dataset",
+   "difficulty",
+   "id",
+   "index",
+   "judgement",
+   "license",
+   "pass_rate",
+   "question",
+   "question_id",
+   "qwq_critique",
+   "r1_generation",
+   "solution",
+   "source",
+   "split"
+  ]
+ },
+ "nvidia/OpenCodeReasoning-2/train:cpp": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "DeepSeek-R1-0528 / QwQ-32B",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "dataset",
+   "difficulty",
+   "id",
+   "index",
+   "judgement",
+   "license",
+   "pass_rate",
+   "question",
+   "question_id",
+   "qwq_critique",
+   "r1_generation",
+   "solution",
+   "source",
+   "split"
+  ]
+ },
+ "nvidia/OpenCodeInstruct:train": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "Llama-3.3-70B-Instruct",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "average_test_score",
+   "domain",
+   "generation_algorithm",
+   "id",
+   "input",
+   "llm_judgement",
+   "output",
+   "tests_execution_status",
+   "unit_tests"
+  ]
+ },
+ "GPUMODE/KernelBook:train": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "other",
+  "generator": "human + torch inductor",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "entry_point",
+   "licenses",
+   "module_name",
+   "original_triton_code",
+   "python_code",
+   "repo_link",
+   "repo_name",
+   "sha",
+   "stars",
+   "synthetic",
+   "triton_code",
+   "uuid"
+  ]
+ },
+ "SakanaAI/AI-CUDA-Engineer-Archive:level_1": {
+  "bucket": "code",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "Sakana AI CUDA Engineer (agent; LLMs not named on the card)",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "CUDA_Code",
+   "CUDA_Runtime",
+   "CUDA_Speedup_Compile",
+   "CUDA_Speedup_Native",
+   "Clang_Tidy",
+   "Correct",
+   "Error",
+   "Kernel_Name",
+   "Level_ID",
+   "Max_Diff",
+   "NCU_Profile",
+   "Op_Name",
+   "PyTorch_Code_Functional",
+   "PyTorch_Code_Module",
+   "PyTorch_Compile_Runtime",
+   "PyTorch_Native_Runtime",
+   "Task_ID",
+   "Torch_Profile",
+   "__index_level_0__"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/chartqa:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/ai2d:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/docvqa:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/textvqa:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/infographic_vqa:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/the_cauldron/screen2words:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0 (per subset)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "HuggingFaceM4/Docmatix/images:train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "Phi-3-small (Q/A over PDFA text)",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "images",
+   "texts"
+  ]
+ },
+ "lmms-lab/LLaVA-OneVision-Data/CLEVR-Math(MathV360K):train": {
+  "bucket": "vision",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "apache-2.0",
+  "generator": "templated (CLEVR-Math)",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "conversations",
+   "data_source",
+   "id",
+   "image"
+  ]
+ },
+ "local:selfgen/math.jsonl": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit (model output)",
+  "licence_live": "mit (model output)",
+  "generator": "DeepSeek-V4.1-Flash-1017 (self)",
+  "status": "s02b output; absent until generated",
+  "seen": 0,
+  "yield_": 0.0,
+  "columns": []
+ },
+ "nvidia/OpenMathReasoning/default:cot": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "DeepSeek-R1 / QwQ-32B",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "expected_answer",
+   "generated_solution",
+   "generation_model",
+   "inference_mode",
+   "pass_rate_72b_tir",
+   "problem",
+   "problem_source",
+   "problem_type",
+   "used_in_kaggle"
+  ]
+ },
+ "zwhe99/DeepMath-103K:train": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "DeepSeek-R1",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "difficulty",
+   "final_answer",
+   "question",
+   "r1_solution_1",
+   "r1_solution_2",
+   "r1_solution_3",
+   "topic"
+  ]
+ },
+ "open-r1/OpenR1-Math-220k:train": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "apache-2.0",
+  "generator": "DeepSeek-R1",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answer",
+   "correctness_count",
+   "correctness_llama",
+   "correctness_math_verify",
+   "finish_reasons",
+   "generations",
+   "is_reasoning_complete",
+   "messages",
+   "problem",
+   "problem_type",
+   "question_type",
+   "solution",
+   "source",
+   "uuid"
+  ]
+ },
+ "HuggingFaceTB/finemath/finemath-3plus:train": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "odc-by",
+  "licence_live": "odc-by",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "char_count",
+   "content_mime_type",
+   "crawl",
+   "fetch_time",
+   "int_score",
+   "language",
+   "language_score",
+   "metadata",
+   "score",
+   "snapshot_type",
+   "text",
+   "token_count",
+   "url",
+   "warc_filename",
+   "warc_record_length",
+   "warc_record_offset"
+  ]
+ },
+ "internlm/Lean-Workbook:train": {
+  "bucket": "math",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "apache-2.0",
+  "generator": "InternLM autoformalizer",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answer",
+   "formal_statement",
+   "id",
+   "natural_language_statement",
+   "state_after",
+   "state_before",
+   "status",
+   "tactic"
+  ]
+ },
+ "local:selfgen/science.jsonl": {
+  "bucket": "science",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit (model output)",
+  "licence_live": "mit (model output)",
+  "generator": "DeepSeek-V4.1-Flash-1017 (self)",
+  "status": "s02b output; absent until generated",
+  "seen": 0,
+  "yield_": 0.0,
+  "columns": []
+ },
+ "open-thoughts/OpenThoughts3-1.2M:train": {
+  "bucket": "science",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0",
+  "licence_live": "apache-2.0",
+  "generator": "QwQ-32B",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "conversations",
+   "difficulty",
+   "domain",
+   "source"
+  ]
+ },
+ "TIGER-Lab/MMLU-Pro:test": {
+  "bucket": "science",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answer",
+   "answer_index",
+   "category",
+   "cot_content",
+   "options",
+   "question",
+   "question_id",
+   "src"
+  ]
+ },
+ "jablonkagroup/ChemBench/organic_chemistry:train": {
+  "bucket": "science",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 0.0,
+  "columns": [
+   "canary",
+   "description",
+   "examples",
+   "in_humansubset_w_tool",
+   "in_humansubset_wo_tool",
+   "keywords",
+   "metrics",
+   "name",
+   "preferred_score",
+   "subfield",
+   "uuid"
+  ]
+ },
+ "G4KMU/t2-ragbench/FinQA:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "company_cik",
+   "company_date_added",
+   "company_founded",
+   "company_headquarters",
+   "company_industry",
+   "company_name",
+   "company_sector",
+   "company_symbol",
+   "context",
+   "context_id",
+   "file_name",
+   "id",
+   "original_answer",
+   "page_number",
+   "post_text",
+   "pre_text",
+   "program_answer",
+   "question",
+   "report_year",
+   "split",
+   "table"
+  ]
+ },
+ "G4KMU/t2-ragbench/ConvFinQA:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "human",
+  "status": "reused-glm",
+  "error": "ValueError: Bad split: train. Available splits: ['turn_0']"
+ },
+ "G4KMU/t2-ragbench/TAT-DQA:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "company_name",
+   "company_sector",
+   "context",
+   "context_id",
+   "file_name",
+   "id",
+   "original_answer",
+   "program_answer",
+   "question",
+   "report_year",
+   "split"
+  ]
+ },
+ "kensho/bizbench/default:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "apache-2.0",
+  "generator": "human",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "answer",
+   "context",
+   "context_type",
+   "options",
+   "program",
+   "question",
+   "task"
+  ]
+ },
+ "next-tat/tat-llm-instructions:train": {
+  "bucket": "finance",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "cc-by-4.0",
+  "licence_live": "cc-by-4.0",
+  "generator": "human (TAT-QA derived)",
+  "status": "reused-glm",
+  "seen": 64,
+  "yield_": 0.0,
+  "columns": [
+   "id",
+   "resp",
+   "user_prompt"
+  ]
+ },
+ "local:selfgen/longctx.jsonl": {
+  "bucket": "longctx",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit (model output)",
+  "licence_live": "mit (model output)",
+  "generator": "DeepSeek-V4.1-Flash-1017 (self)",
+  "status": "s02b output: long multi-turn agentic traces; absent until generated",
+  "seen": 0,
+  "yield_": 0.0,
+  "columns": []
+ },
+ "emozilla/pg19:train": {
+  "bucket": "longctx",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "apache-2.0 (public-domain books)",
+  "licence_live": null,
+  "generator": "human",
+  "status": "new",
+  "seen": 64,
+  "yield_": 1.0,
+  "columns": [
+   "publication_date",
+   "short_book_title",
+   "text",
+   "url"
+  ]
+ },
+ "git:~/llama.cpp@origin/master": {
+  "bucket": "longctx",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "mit",
+  "licence_live": "mit",
+  "generator": "human (upstream ggml-org/llama.cpp)",
+  "status": "local",
+  "seen": 25,
+  "yield_": 1.0,
+  "columns": [
+   "_doc",
+   "text"
+  ]
+ },
+ "git:~/cutlass@origin/main": {
+  "bucket": "longctx",
+  "usable": [
+   true,
+   "ok"
+  ],
+  "licence_declared": "bsd-3-clause",
+  "licence_live": "bsd-3-clause",
+  "generator": "human (upstream NVIDIA/cutlass)",
+  "status": "local",
+  "seen": 9,
+  "yield_": 1.0,
+  "columns": [
+   "_doc",
+   "text"
+  ]
+ }
+}

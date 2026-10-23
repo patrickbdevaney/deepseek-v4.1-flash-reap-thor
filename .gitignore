@@ -3,3 +3,8 @@ __pycache__/
 ops/logs/*
 !ops/logs/.gitkeep
 .venv/
+
+# never published: session transcripts, scratch logs, script backups
+notes/transcripts/
+/logs/
+ops/*.bak-*

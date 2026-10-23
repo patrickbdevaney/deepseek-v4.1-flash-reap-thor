@@ -1,0 +1,197 @@
+{
+ "keepset_sha256": "1ace9b33134a2ca74174952593682e94edbf3c3348b4ac505ff59597a05d49ec",
+ "n_routed_experts": 192,
+ "repo": "patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4",
+ "private": true,
+ "uploaded": false,
+ "revision_base": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+ "healed": false,
+ "files": {
+  "model-00001-of-00048.safetensors": {
+   "sha256": "13bd121075f0b68cb7e8e8021a1011d42a81a83f557a2602fd9c07d52fddb0ec",
+   "bytes": 970533624
+  },
+  "model-00002-of-00048.safetensors": {
+   "sha256": "43616eebd88dd4f1f1b642772356fc160478d1d9d04edd240431e7d065d2eda7",
+   "bytes": 1323858272
+  },
+  "model-00003-of-00048.safetensors": {
+   "sha256": "57754a087dcbd5d33e512cef20d7b2876593a5f057db5cd3c7b52d26d2092e66",
+   "bytes": 3777940216
+  },
+  "model-00004-of-00048.safetensors": {
+   "sha256": "a719c7f5d069f6bebbc0780837221b04ef301597eae0dad8fa89ec5422f51923",
+   "bytes": 3777940216
+  },
+  "model-00005-of-00048.safetensors": {
+   "sha256": "51bd47eec9cebf28e0a9add03fee805a26824762ded7aac2539154a597e112f3",
+   "bytes": 3794134976
+  },
+  "model-00006-of-00048.safetensors": {
+   "sha256": "3175b141c5f626143346c42edb497ea199b7450435893c4eedfae895c927cc05",
+   "bytes": 3777940216
+  },
+  "model-00007-of-00048.safetensors": {
+   "sha256": "2b97c87b785a02d530b5b00ae609251ae41f0f79f945e886481fe9a750ff734d",
+   "bytes": 3777940216
+  },
+  "model-00008-of-00048.safetensors": {
+   "sha256": "d0bb139b8c2cd3c535c60bf63b89bc325dabb31399cc99ace1fb0105c0a71782",
+   "bytes": 3777940216
+  },
+  "model-00009-of-00048.safetensors": {
+   "sha256": "0685d2c8101692c97166e5bba92f23663bd25785e204b9bc360c4c63600fd67f",
+   "bytes": 3777940216
+  },
+  "model-00010-of-00048.safetensors": {
+   "sha256": "6756c9d61e4cbf7617b64a2fa19d3498edd79a3fc5be9ff941864009785100a6",
+   "bytes": 3777940216
+  },
+  "model-00011-of-00048.safetensors": {
+   "sha256": "008d67a1e03af4864f778f985117c4a9d6e9a1b395a60c917530dd576d2ab926",
+   "bytes": 3794134976
+  },
+  "model-00012-of-00048.safetensors": {
+   "sha256": "3a67fc05645df52fafbe475e42afb98b806481a17da24cfd6c5e94885ea5f088",
+   "bytes": 3777940216
+  },
+  "model-00013-of-00048.safetensors": {
+   "sha256": "92db89d3192d91ef7bb5ab552b2d946ea05e19ddadf73dbd4838f22efaa9ccde",
+   "bytes": 3777941400
+  },
+  "model-00014-of-00048.safetensors": {
+   "sha256": "fea86285dc1f4f20660ee49a8b4251c6827747349ce15a11891527a47fbbde0b",
+   "bytes": 3777941400
+  },
+  "model-00015-of-00048.safetensors": {
+   "sha256": "aad7f7a19b051e6c3bd6ec39fb26739d5a8e0067b08eea342ef2b490e85f240f",
+   "bytes": 3777941400
+  },
+  "model-00016-of-00048.safetensors": {
+   "sha256": "2f7d0f60c55ae433eacd9103f19bab7fe84a6ab453607f33177a1c91f0ea6cd4",
+   "bytes": 3777941400
+  },
+  "model-00017-of-00048.safetensors": {
+   "sha256": "f0550df76d7aeb9a371489cd3a94398fa9d63243d18d69e2168e3507e71611ec",
+   "bytes": 3794136168
+  },
+  "model-00018-of-00048.safetensors": {
+   "sha256": "f9d681ab8953775d9a9bf5e692b74136bb6cfd87c3362c40d1d5eaf4f17021fb",
+   "bytes": 3777941400
+  },
+  "model-00019-of-00048.safetensors": {
+   "sha256": "5beab5291023c0bca19abf9799eaf28227b95877592e265c32d44dcaad819434",
+   "bytes": 3777941400
+  },
+  "model-00020-of-00048.safetensors": {
+   "sha256": "6d57191bbbd8bc984f3f8be4c90c39b51cff905c88c6f65d4d9585da67edf4e1",
+   "bytes": 3777941400
+  },
+  "model-00021-of-00048.safetensors": {
+   "sha256": "a73aeb64f997b5d24c88c0111370c05e602935c353633fd8038e29ec028ead75",
+   "bytes": 3777941400
+  },
+  "model-00022-of-00048.safetensors": {
+   "sha256": "34b0465d924ddfd859f336ea0ad755f84c1b56847c8448f1aac120ce89bea4d7",
+   "bytes": 3777941400
+  },
+  "model-00023-of-00048.safetensors": {
+   "sha256": "a5360ab2e790dd9e403b05edbb4877621674da76c1aefc719a1705e3b4815edb",
+   "bytes": 3788893136
+  },
+  "model-00024-of-00048.safetensors": {
+   "sha256": "d302fac7fa3aba981d6a014374934b8f35fb64f2c6eb603dd1f728d9ee6686a2",
+   "bytes": 3777941400
+  },
+  "model-00025-of-00048.safetensors": {
+   "sha256": "f3f3f884894c2077da85080e566bb5751fde2fb35703c66a345be0cf09cce909",
+   "bytes": 3777941400
+  },
+  "model-00026-of-00048.safetensors": {
+   "sha256": "11a3fe108867ce1ff2f2f1653bd85c791bbbfd049bc08caf434a0cc0bbb22d97",
+   "bytes": 3777941400
+  },
+  "model-00027-of-00048.safetensors": {
+   "sha256": "2c4045283e2eec6ce08d0dcb88e3fb6df801bdaca53315a8efb8267a5c636963",
+   "bytes": 3783517416
+  },
+  "model-00028-of-00048.safetensors": {
+   "sha256": "283677d34bfece7f7ee057d1cfcd538f5b2742b43de507e6210078aadeaa8917",
+   "bytes": 3777941400
+  },
+  "model-00029-of-00048.safetensors": {
+   "sha256": "c5be361b00d1ef72a4624f2a9f70f971eb1f23ce9c0213fefbe0b664d30d86ba",
+   "bytes": 3777941400
+  },
+  "model-00030-of-00048.safetensors": {
+   "sha256": "5308d81cf93cd88f56d6b989556ebe773033c24e964304296d48ae2ae2c44c0a",
+   "bytes": 3777941400
+  },
+  "model-00031-of-00048.safetensors": {
+   "sha256": "1cfb025727990d0022ec081ea6751893e66780fcc8520ff45f695e291c436e1e",
+   "bytes": 3783517416
+  },
+  "model-00032-of-00048.safetensors": {
+   "sha256": "d9ebd9d1325563e806fb83180c8ab4d59c5716beb7508fd1ca828960153688be",
+   "bytes": 3777941400
+  },
+  "model-00033-of-00048.safetensors": {
+   "sha256": "e4589afd4313018b04359ee677c46c4499e663a91bda7d6336d6b332a1aac2d2",
+   "bytes": 3777941400
+  },
+  "model-00034-of-00048.safetensors": {
+   "sha256": "7015bc572d9ad014607bcbfda4940af53710f5407cbb3fa2e95f3d0b3617ab9e",
+   "bytes": 3777941400
+  },
+  "model-00035-of-00048.safetensors": {
+   "sha256": "1b55389bb0d0dafcef96b278a7aea53b9cc9a866e6b69ff460c925d38c2e7052",
+   "bytes": 3783517416
+  },
+  "model-00036-of-00048.safetensors": {
+   "sha256": "4fc4d1245db2f1f2a915d872a1a4bde4dc8d70a7900c8b5a472c04b873ec1ef3",
+   "bytes": 3777941400
+  },
+  "model-00037-of-00048.safetensors": {
+   "sha256": "464d523adabb420e59900f28114ab3b6de9a86b72e7cad086a0c4237989b9bb0",
+   "bytes": 3777941400
+  },
+  "model-00038-of-00048.safetensors": {
+   "sha256": "f8d5960f52d4aa2ceded9d8d9fc65978266ff8fe2c60ad98f07c6e6f8ff5d12e",
+   "bytes": 3777941400
+  },
+  "model-00039-of-00048.safetensors": {
+   "sha256": "8a90df69dd47ee8e388576d3172851615ce5e84456a3a179992f22c0ba1a8eb6",
+   "bytes": 3783517416
+  },
+  "model-00040-of-00048.safetensors": {
+   "sha256": "a89956949329c4e0fc463020623df5f2e6a7d0e120a980259a889731d1d1d94f",
+   "bytes": 3777941400
+  },
+  "model-00041-of-00048.safetensors": {
+   "sha256": "dcfddc6d2344efbbb1078558f680663a4f8cc7e8f0452648625517db236ad487",
+   "bytes": 3777941400
+  },
+  "model-00042-of-00048.safetensors": {
+   "sha256": "fd913b5b29e011ac7c549448d2057608c962f2bad0e3ad0a404b1f35f984e2d3",
+   "bytes": 3777941400
+  },
+  "model-00043-of-00048.safetensors": {
+   "sha256": "4ae12b941c3facf8616ce62dd45bc6868076c2aeb82106f98123ea6c5bb64182",
+   "bytes": 1323837624
+  },
+  "model-00044-of-00048.safetensors": {
+   "sha256": "3e8ac315c2bcca3e83c5e6e25c5758a75c03732063a6ff0c1b0e24b9ff49f6e6",
+   "bytes": 2652728736
+  },
+  "model-00045-of-00048.safetensors": {
+   "sha256": "9c73b27c4343236790008979d5e0b565f687aa64440031b9e096fed1ab8039c5",
+   "bytes": 2573998176
+  },
+  "model-00046-of-00048.safetensors": {
+   "sha256": "1dccc19a3741972c661de734572dc7d4b899e6e99bfbdf3ae4e057c707e5b339",
+   "bytes": 2706402896
+  }
+ },
+ "local_dir": "/media/patrickd/Seagate Portable Drive/v41_staging/master_REAP192",
+ "ts": "2026-10-21T23:06:20-0400"
+}

@@ -1,0 +1,294 @@
+[2026-10-22T18:44:16-0400] INFO  s10              heal: screen split, 18 rows, 198053 tokens, arms ['unhealed', 'healed']
+[2026-10-22T18:44:16-0400] INFO  s10              start unit embed --panel heal --kernels tilelang --token-chunk 8192
+[2026-10-22T18:45:26-0400] INFO  s10              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T18:45:26-0400] INFO  s10              done unit embed --panel heal --kernels tilelang --token-chunk 8192 in 70s
+[2026-10-22T18:45:26-0400] INFO  s10              start unit layer --layer 0 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T18:48:04-0400] INFO  replay           unhealed L0: 198053 tok in 145s
+[2026-10-22T18:50:32-0400] INFO  replay           healed L0: 198053 tok in 149s
+[2026-10-22T18:50:38-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T18:50:38-0400] INFO  s10              done unit layer --layer 0 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 312s
+[2026-10-22T18:50:38-0400] INFO  s10              start unit layer --layer 1 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s03_saliency.py:473: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  v = torch.from_numpy(np.ascontiguousarray(vals[a0:a1])).cuda().view(torch.float8_e4m3fn)
+[2026-10-22T18:53:05-0400] INFO  replay           unhealed L1: 198053 tok in 132s
+[2026-10-22T18:55:10-0400] INFO  replay           healed L1: 198053 tok in 126s
+[2026-10-22T18:55:15-0400] INFO  s10              reclaim: MemAvailable 112.8 GiB
+[2026-10-22T18:55:15-0400] INFO  s10              done unit layer --layer 1 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T18:55:15-0400] INFO  s10              start unit layer --layer 2 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T18:58:13-0400] INFO  replay           unhealed L2: 198053 tok in 167s
+[2026-10-22T19:00:51-0400] INFO  replay           healed L2: 198053 tok in 158s
+[2026-10-22T19:00:57-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:00:57-0400] INFO  s10              done unit layer --layer 2 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 342s
+[2026-10-22T19:00:57-0400] INFO  s10              start unit layer --layer 3 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:03:26-0400] INFO  replay           unhealed L3: 198053 tok in 136s
+[2026-10-22T19:05:22-0400] INFO  replay           healed L3: 198053 tok in 115s
+[2026-10-22T19:05:26-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:05:26-0400] INFO  s10              done unit layer --layer 3 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 269s
+[2026-10-22T19:05:27-0400] INFO  s10              start unit layer --layer 4 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:07:31-0400] INFO  replay           unhealed L4: 198053 tok in 111s
+[2026-10-22T19:09:35-0400] INFO  replay           healed L4: 198053 tok in 124s
+[2026-10-22T19:09:40-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:09:40-0400] INFO  s10              done unit layer --layer 4 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 253s
+[2026-10-22T19:09:40-0400] INFO  s10              start unit layer --layer 5 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:11:51-0400] INFO  replay           unhealed L5: 198053 tok in 119s
+[2026-10-22T19:14:01-0400] INFO  replay           healed L5: 198053 tok in 130s
+[2026-10-22T19:14:06-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:14:06-0400] INFO  s10              done unit layer --layer 5 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 266s
+[2026-10-22T19:14:06-0400] INFO  s10              start unit layer --layer 6 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:16:29-0400] INFO  replay           unhealed L6: 198053 tok in 131s
+[2026-10-22T19:18:38-0400] INFO  replay           healed L6: 198053 tok in 129s
+[2026-10-22T19:18:43-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:18:43-0400] INFO  s10              done unit layer --layer 6 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T19:18:43-0400] INFO  s10              start unit layer --layer 7 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:20:55-0400] INFO  replay           unhealed L7: 198053 tok in 120s
+[2026-10-22T19:23:24-0400] INFO  replay           healed L7: 198053 tok in 149s
+[2026-10-22T19:23:29-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:23:29-0400] INFO  s10              done unit layer --layer 7 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 287s
+[2026-10-22T19:23:29-0400] INFO  s10              start unit layer --layer 8 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:26:13-0400] INFO  replay           unhealed L8: 198053 tok in 152s
+[2026-10-22T19:28:33-0400] INFO  replay           healed L8: 198053 tok in 140s
+[2026-10-22T19:28:38-0400] INFO  s10              reclaim: MemAvailable 112.3 GiB
+[2026-10-22T19:28:38-0400] INFO  s10              done unit layer --layer 8 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 309s
+[2026-10-22T19:28:38-0400] INFO  s10              start unit layer --layer 9 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:31:08-0400] INFO  replay           unhealed L9: 198053 tok in 137s
+[2026-10-22T19:33:29-0400] INFO  replay           healed L9: 198053 tok in 142s
+[2026-10-22T19:33:34-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:33:34-0400] INFO  s10              done unit layer --layer 9 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 296s
+[2026-10-22T19:33:34-0400] INFO  s10              start unit layer --layer 10 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:35:48-0400] INFO  replay           unhealed L10: 198053 tok in 121s
+[2026-10-22T19:37:56-0400] INFO  replay           healed L10: 198053 tok in 127s
+[2026-10-22T19:38:00-0400] INFO  s10              reclaim: MemAvailable 112.7 GiB
+[2026-10-22T19:38:00-0400] INFO  s10              done unit layer --layer 10 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 266s
+[2026-10-22T19:38:00-0400] INFO  s10              start unit layer --layer 11 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:40:34-0400] INFO  replay           unhealed L11: 198053 tok in 142s
+[2026-10-22T19:42:33-0400] INFO  replay           healed L11: 198053 tok in 119s
+[2026-10-22T19:42:38-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:42:38-0400] INFO  s10              done unit layer --layer 11 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 278s
+[2026-10-22T19:42:38-0400] INFO  s10              start unit layer --layer 12 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:44:57-0400] INFO  replay           unhealed L12: 198053 tok in 126s
+[2026-10-22T19:47:16-0400] INFO  replay           healed L12: 198053 tok in 139s
+[2026-10-22T19:47:20-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:47:20-0400] INFO  s10              done unit layer --layer 12 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 282s
+[2026-10-22T19:47:20-0400] INFO  s10              start unit layer --layer 13 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T19:49:44-0400] INFO  replay           unhealed L13: 198053 tok in 131s
+[2026-10-22T19:51:52-0400] INFO  replay           healed L13: 198053 tok in 128s
+[2026-10-22T19:51:57-0400] INFO  s10              reclaim: MemAvailable 112.7 GiB
+[2026-10-22T19:51:57-0400] INFO  s10              done unit layer --layer 13 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T19:51:57-0400] INFO  s10              start unit layer --layer 14 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s03_saliency.py:473: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  v = torch.from_numpy(np.ascontiguousarray(vals[a0:a1])).cuda().view(torch.float8_e4m3fn)
+[2026-10-22T19:55:08-0400] INFO  replay           unhealed L14: 198053 tok in 177s
+[2026-10-22T19:57:38-0400] INFO  replay           healed L14: 198053 tok in 150s
+[2026-10-22T19:57:45-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T19:57:45-0400] INFO  s10              done unit layer --layer 14 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 348s
+[2026-10-22T19:57:45-0400] INFO  s10              start unit layer --layer 15 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:00:03-0400] INFO  replay           unhealed L15: 198053 tok in 124s
+[2026-10-22T20:02:04-0400] INFO  replay           healed L15: 198053 tok in 121s
+[2026-10-22T20:02:09-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:02:09-0400] INFO  s10              done unit layer --layer 15 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 263s
+[2026-10-22T20:02:09-0400] INFO  s10              start unit layer --layer 16 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:04:27-0400] INFO  replay           unhealed L16: 198053 tok in 125s
+[2026-10-22T20:06:26-0400] INFO  replay           healed L16: 198053 tok in 119s
+[2026-10-22T20:06:31-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:06:31-0400] INFO  s10              done unit layer --layer 16 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 262s
+[2026-10-22T20:06:31-0400] INFO  s10              start unit layer --layer 17 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:08:57-0400] INFO  replay           unhealed L17: 198053 tok in 133s
+[2026-10-22T20:11:18-0400] INFO  replay           healed L17: 198053 tok in 141s
+[2026-10-22T20:11:22-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:11:22-0400] INFO  s10              done unit layer --layer 17 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 291s
+[2026-10-22T20:11:22-0400] INFO  s10              start unit layer --layer 18 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:13:38-0400] INFO  replay           unhealed L18: 198053 tok in 123s
+[2026-10-22T20:15:48-0400] INFO  replay           healed L18: 198053 tok in 129s
+[2026-10-22T20:15:52-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:15:52-0400] INFO  s10              done unit layer --layer 18 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 269s
+[2026-10-22T20:15:52-0400] INFO  s10              start unit layer --layer 19 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:18:18-0400] INFO  replay           unhealed L19: 198053 tok in 133s
+[2026-10-22T20:20:32-0400] INFO  replay           healed L19: 198053 tok in 135s
+[2026-10-22T20:20:37-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:20:37-0400] INFO  s10              done unit layer --layer 19 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 285s
+[2026-10-22T20:20:37-0400] INFO  s10              start unit layer --layer 20 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:23:35-0400] INFO  replay           unhealed L20: 198053 tok in 166s
+[2026-10-22T20:26:20-0400] INFO  replay           healed L20: 198053 tok in 165s
+[2026-10-22T20:26:27-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:26:27-0400] INFO  s10              done unit layer --layer 20 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 350s
+[2026-10-22T20:26:27-0400] INFO  s10              start unit layer --layer 21 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:28:42-0400] INFO  replay           unhealed L21: 198053 tok in 122s
+[2026-10-22T20:30:52-0400] INFO  replay           healed L21: 198053 tok in 131s
+[2026-10-22T20:30:57-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:30:57-0400] INFO  s10              done unit layer --layer 21 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 271s
+[2026-10-22T20:30:57-0400] INFO  s10              start unit layer --layer 22 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:33:19-0400] INFO  replay           unhealed L22: 198053 tok in 129s
+[2026-10-22T20:35:26-0400] INFO  replay           healed L22: 198053 tok in 127s
+[2026-10-22T20:35:30-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:35:30-0400] INFO  s10              done unit layer --layer 22 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 273s
+[2026-10-22T20:35:30-0400] INFO  s10              start unit layer --layer 23 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:38:13-0400] INFO  replay           unhealed L23: 198053 tok in 151s
+[2026-10-22T20:40:16-0400] INFO  replay           healed L23: 198053 tok in 123s
+[2026-10-22T20:40:20-0400] INFO  s10              reclaim: MemAvailable 112.8 GiB
+[2026-10-22T20:40:20-0400] INFO  s10              done unit layer --layer 23 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 289s
+[2026-10-22T20:40:20-0400] INFO  s10              start unit layer --layer 24 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:43:12-0400] INFO  replay           unhealed L24: 198053 tok in 160s
+[2026-10-22T20:46:21-0400] INFO  replay           healed L24: 198053 tok in 189s
+[2026-10-22T20:46:26-0400] INFO  s10              reclaim: MemAvailable 112.3 GiB
+[2026-10-22T20:46:26-0400] INFO  s10              done unit layer --layer 24 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 367s
+[2026-10-22T20:46:26-0400] INFO  s10              start unit layer --layer 25 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:48:53-0400] INFO  replay           unhealed L25: 198053 tok in 134s
+[2026-10-22T20:51:00-0400] INFO  replay           healed L25: 198053 tok in 127s
+[2026-10-22T20:51:05-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T20:51:05-0400] INFO  s10              done unit layer --layer 25 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 279s
+[2026-10-22T20:51:05-0400] INFO  s10              start unit layer --layer 26 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:53:42-0400] INFO  replay           unhealed L26: 198053 tok in 145s
+[2026-10-22T20:55:38-0400] INFO  replay           healed L26: 198053 tok in 116s
+[2026-10-22T20:55:42-0400] INFO  s10              reclaim: MemAvailable 112.3 GiB
+[2026-10-22T20:55:42-0400] INFO  s10              done unit layer --layer 26 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T20:55:42-0400] INFO  s10              start unit layer --layer 27 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T20:58:02-0400] INFO  replay           unhealed L27: 198053 tok in 127s
+[2026-10-22T21:00:18-0400] INFO  replay           healed L27: 198053 tok in 136s
+[2026-10-22T21:00:22-0400] INFO  s10              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T21:00:22-0400] INFO  s10              done unit layer --layer 27 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 280s
+[2026-10-22T21:00:22-0400] INFO  s10              start unit layer --layer 28 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:03:35-0400] INFO  replay           unhealed L28: 198053 tok in 182s
+[2026-10-22T21:06:13-0400] INFO  replay           healed L28: 198053 tok in 158s
+[2026-10-22T21:06:18-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:06:18-0400] INFO  s10              done unit layer --layer 28 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 356s
+[2026-10-22T21:06:18-0400] INFO  s10              start unit layer --layer 29 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:08:38-0400] INFO  replay           unhealed L29: 198053 tok in 127s
+[2026-10-22T21:10:32-0400] INFO  replay           healed L29: 198053 tok in 114s
+[2026-10-22T21:10:37-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:10:37-0400] INFO  s10              done unit layer --layer 29 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 259s
+[2026-10-22T21:10:37-0400] INFO  s10              start unit layer --layer 30 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:12:56-0400] INFO  replay           unhealed L30: 198053 tok in 126s
+[2026-10-22T21:15:04-0400] INFO  replay           healed L30: 198053 tok in 128s
+[2026-10-22T21:15:09-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:15:09-0400] INFO  s10              done unit layer --layer 30 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 272s
+[2026-10-22T21:15:09-0400] INFO  s10              start unit layer --layer 31 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:17:21-0400] INFO  replay           unhealed L31: 198053 tok in 119s
+[2026-10-22T21:19:48-0400] INFO  replay           healed L31: 198053 tok in 147s
+[2026-10-22T21:19:52-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:19:52-0400] INFO  s10              done unit layer --layer 31 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 283s
+[2026-10-22T21:19:53-0400] INFO  s10              start unit layer --layer 32 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:22:35-0400] INFO  replay           unhealed L32: 198053 tok in 150s
+[2026-10-22T21:25:19-0400] INFO  replay           healed L32: 198053 tok in 164s
+[2026-10-22T21:25:24-0400] INFO  s10              reclaim: MemAvailable 112.7 GiB
+[2026-10-22T21:25:24-0400] INFO  s10              done unit layer --layer 32 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 331s
+[2026-10-22T21:25:24-0400] INFO  s10              start unit layer --layer 33 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:28:05-0400] INFO  replay           unhealed L33: 198053 tok in 149s
+[2026-10-22T21:30:11-0400] INFO  replay           healed L33: 198053 tok in 126s
+[2026-10-22T21:30:16-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:30:16-0400] INFO  s10              done unit layer --layer 33 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 292s
+[2026-10-22T21:30:16-0400] INFO  s10              start unit layer --layer 34 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:32:58-0400] INFO  replay           unhealed L34: 198053 tok in 149s
+[2026-10-22T21:35:13-0400] INFO  replay           healed L34: 198053 tok in 134s
+[2026-10-22T21:35:17-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:35:17-0400] INFO  s10              done unit layer --layer 34 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 302s
+[2026-10-22T21:35:18-0400] INFO  s10              start unit layer --layer 35 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:37:37-0400] INFO  replay           unhealed L35: 198053 tok in 127s
+[2026-10-22T21:39:52-0400] INFO  replay           healed L35: 198053 tok in 135s
+[2026-10-22T21:39:57-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:39:57-0400] INFO  s10              done unit layer --layer 35 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 279s
+[2026-10-22T21:39:57-0400] INFO  s10              start unit layer --layer 36 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:42:52-0400] INFO  replay           unhealed L36: 198053 tok in 163s
+[2026-10-22T21:45:57-0400] INFO  replay           healed L36: 198053 tok in 185s
+[2026-10-22T21:46:03-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:46:03-0400] INFO  s10              done unit layer --layer 36 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 367s
+[2026-10-22T21:46:03-0400] INFO  s10              start unit layer --layer 37 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:48:17-0400] INFO  replay           unhealed L37: 198053 tok in 121s
+[2026-10-22T21:50:36-0400] INFO  replay           healed L37: 198053 tok in 139s
+[2026-10-22T21:50:41-0400] INFO  s10              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T21:50:41-0400] INFO  s10              done unit layer --layer 37 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T21:50:41-0400] INFO  s10              start unit layer --layer 38 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:52:58-0400] INFO  replay           unhealed L38: 198053 tok in 124s
+[2026-10-22T21:55:13-0400] INFO  replay           healed L38: 198053 tok in 136s
+[2026-10-22T21:55:18-0400] INFO  s10              reclaim: MemAvailable 112.3 GiB
+[2026-10-22T21:55:18-0400] INFO  s10              done unit layer --layer 38 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 277s
+[2026-10-22T21:55:18-0400] INFO  s10              start unit layer --layer 39 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T21:57:31-0400] INFO  replay           unhealed L39: 198053 tok in 120s
+[2026-10-22T21:59:27-0400] INFO  replay           healed L39: 198053 tok in 116s
+[2026-10-22T21:59:32-0400] INFO  s10              reclaim: MemAvailable 112.7 GiB
+[2026-10-22T21:59:32-0400] INFO  s10              done unit layer --layer 39 --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 254s
+[2026-10-22T21:59:32-0400] INFO  s10              start unit head --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:698: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  tl = torch.from_numpy(np.ascontiguousarray(t_lp[g.start + c0:g.start + c1])).cuda()
+[2026-10-22T22:02:39-0400] INFO  s10              reclaim: MemAvailable 112.7 GiB
+[2026-10-22T22:02:39-0400] INFO  s10              done unit head --arms unhealed,healed --panel heal --kernels tilelang --token-chunk 8192 in 187s
+[2026-10-22T22:02:41-0400] INFO  s10              heal: adopt=False d_kl32 +0.00097 [-0.00397, +0.00556] top1 z -3.73

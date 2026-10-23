@@ -1,0 +1,19 @@
+Gate V41 UNITS (cuda/build/units)
+  [PASS] decode Q2_K                        0 / 147456 weights differ
+  [PASS] decode Q3_K                        0 / 147456 weights differ
+  [PASS] decode Q4_K                        0 / 147456 weights differ
+  [PASS] decode MXFP4 (hw cvt e2m1x2)       0 / 147456 weights differ
+  [PASS] decode MXFP4 (bit construct)       0 / 147456 weights differ
+  [PASS] decode KT2 (trellis, L=12)         0 / 147456 weights differ
+  [PASS] decode KT3 (trellis, L=12)         0 / 147456 weights differ
+  [PASS] KT rotation K=5120                 0 / 15360 values differ
+  [PASS] KT rotation K=2304                 0 / 6912 values differ
+  [PASS] KT Viterbi encoder b=2             rc 0, 0 windows in 0 / 192 sequences differ
+  [PASS] KT Viterbi encoder b=3             rc 0, 0 windows in 0 / 192 sequences differ
+  [PASS] act_quant (32, ue8m0)              0 byte / 0 scale mismatches
+  [PASS] fp8_linear                         0 off by 1 ulp, 0 by more (of 768)
+  [PASS] bf16_linear                        0 off by 1 ulp, 0 by more (of 1024)
+  [PASS] router (sqrtsoftplus, bias_vl)     0 id mismatches, max weight rel err 7.48e-07
+  [PASS] moe_routed Q3_K/Q4_K, 8 experts    cos 0.99999999, max |d| 0.00781
+  [PASS] moe_routed KT3/KT2 (rotated), 6 experts cos 0.99999989, max |d| 0.00781
+Gate V41 UNITS: PASS (0 failing)

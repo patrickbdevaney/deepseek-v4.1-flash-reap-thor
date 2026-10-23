@@ -1,0 +1,41 @@
+[2026-10-20T23:40:28-0400] INFO  drift            L0: sink [206] rising [25, 28, 33, 36, 72, 87, 119, 131] mass slope +0.00e+00
+[2026-10-20T23:40:33-0400] INFO  drift            L1: sink [132] rising [11, 26, 28, 61, 63, 84, 137, 145] mass slope +0.00e+00
+[2026-10-20T23:40:39-0400] INFO  drift            L2: sink [36, 222, 281] rising [1, 23, 30, 42, 48, 76, 77, 79] mass slope +0.00e+00
+[2026-10-20T23:40:44-0400] INFO  drift            L3: sink [132] rising [12, 14, 18, 40, 44, 60, 61, 90] mass slope +0.00e+00
+[2026-10-20T23:40:50-0400] INFO  drift            L4: sink [19, 64, 98, 352] rising [0, 13, 22, 26, 28, 49, 55, 58] mass slope +0.00e+00
+[2026-10-20T23:40:57-0400] INFO  drift            L5: sink [243, 279, 364] rising [24, 28, 36, 41, 47, 58, 60, 70] mass slope +0.00e+00
+[2026-10-20T23:41:04-0400] INFO  drift            L6: sink [4, 70, 131, 377] rising [0, 2, 11, 12, 15, 18, 24, 27] mass slope +0.00e+00
+[2026-10-20T23:41:11-0400] INFO  drift            L7: sink [171] rising [4, 6, 16, 19, 23, 38, 49, 50] mass slope +0.00e+00
+[2026-10-20T23:41:17-0400] INFO  drift            L8: sink [7, 231, 331] rising [0, 2, 39, 55, 65, 66, 83, 111] mass slope +0.00e+00
+[2026-10-20T23:41:24-0400] INFO  drift            L9: sink [46, 144, 233] rising [1, 19, 33, 53, 58, 72, 80, 91] mass slope +0.00e+00
+[2026-10-20T23:41:32-0400] INFO  drift            L10: sink [292] rising [1, 2, 25, 29, 33, 49, 50, 51] mass slope +0.00e+00
+[2026-10-20T23:41:40-0400] INFO  drift            L11: sink [40, 257] rising [0, 27, 33, 34, 38, 41, 62, 65] mass slope +0.00e+00
+[2026-10-20T23:41:47-0400] INFO  drift            L12: sink [122] rising [0, 7, 13, 18, 28, 42, 58, 62] mass slope +0.00e+00
+[2026-10-20T23:41:53-0400] INFO  drift            L13: sink [182, 221] rising [2, 9, 12, 34, 40, 46, 49, 57] mass slope +0.00e+00
+[2026-10-20T23:42:01-0400] INFO  drift            L14: sink [62, 155, 198] rising [0, 2, 3, 5, 6, 11, 14, 18] mass slope +0.00e+00
+[2026-10-20T23:42:05-0400] INFO  drift            L15: sink [4, 70, 247, 339, 355] rising [7, 14, 51, 62, 83, 108, 120, 132] mass slope +0.00e+00
+[2026-10-20T23:42:12-0400] INFO  drift            L16: sink [3, 13] rising [11, 16, 27, 29, 31, 38, 39, 43] mass slope +0.00e+00
+[2026-10-20T23:42:19-0400] INFO  drift            L17: sink [78, 232, 300] rising [0, 6, 17, 25, 36, 37, 38, 44] mass slope +0.00e+00
+[2026-10-20T23:42:26-0400] INFO  drift            L18: sink [184, 283] rising [3, 8, 9, 17, 30, 34, 36, 40] mass slope +0.00e+00
+[2026-10-20T23:42:33-0400] INFO  drift            L19: sink [148] rising [9, 11, 22, 44, 46, 48, 50, 62] mass slope +0.00e+00
+[2026-10-20T23:42:39-0400] INFO  drift            L20: sink [180, 293] rising [4, 18, 19, 23, 36, 59, 68, 72] mass slope +0.00e+00
+[2026-10-20T23:42:46-0400] INFO  drift            L21: sink [214, 296, 320, 338] rising [0, 8, 15, 31, 32, 33, 35, 37] mass slope +0.00e+00
+[2026-10-20T23:42:52-0400] INFO  drift            L22: sink [121, 341, 365] rising [4, 6, 8, 9, 18, 42, 44, 56] mass slope +0.00e+00
+[2026-10-20T23:42:57-0400] INFO  drift            L23: sink [63, 259, 268, 333] rising [4, 11, 40, 44, 52, 99, 148, 151] mass slope +0.00e+00
+[2026-10-20T23:43:03-0400] INFO  drift            L24: sink [154, 245, 280, 289, 339] rising [10, 22, 44, 55, 92, 99, 132, 138] mass slope +0.00e+00
+[2026-10-20T23:43:09-0400] INFO  drift            L25: sink [135, 244] rising [20, 23, 33, 37, 43, 55, 73, 157] mass slope +0.00e+00
+[2026-10-20T23:43:16-0400] INFO  drift            L26: sink [82, 170, 178, 305, 371] rising [0, 4, 12, 30, 40, 42, 46, 96] mass slope +0.00e+00
+[2026-10-20T23:43:22-0400] INFO  drift            L27: sink [223, 305] rising [3, 43, 49, 52, 61, 68, 88, 101] mass slope +0.00e+00
+[2026-10-20T23:43:29-0400] INFO  drift            L28: sink [7] rising [9, 15, 27, 39, 40, 50, 52, 57] mass slope +0.00e+00
+[2026-10-20T23:43:34-0400] INFO  drift            L29: sink [18, 188, 243, 357] rising [4, 69, 79, 117, 126, 149, 153, 166] mass slope +0.00e+00
+[2026-10-20T23:43:40-0400] INFO  drift            L30: sink [50, 73, 213] rising [3, 44, 56, 67, 72, 77, 80, 84] mass slope +0.00e+00
+[2026-10-20T23:43:45-0400] INFO  drift            L31: sink [109, 370] rising [7, 11, 17, 31, 51, 85, 95, 96] mass slope +0.00e+00
+[2026-10-20T23:43:51-0400] INFO  drift            L32: sink [357] rising [19, 22, 33, 56, 82, 107, 114, 121] mass slope +0.00e+00
+[2026-10-20T23:43:56-0400] INFO  drift            L33: sink [129, 310, 332] rising [6, 19, 22, 48, 49, 55, 57, 65] mass slope +0.00e+00
+[2026-10-20T23:44:01-0400] INFO  drift            L34: sink [89, 189, 344] rising [39, 48, 75, 92, 113, 117, 121, 141] mass slope +0.00e+00
+[2026-10-20T23:44:07-0400] INFO  drift            L35: sink [5, 129, 316, 364] rising [12, 21, 37, 39, 77, 84, 85, 92] mass slope +0.00e+00
+[2026-10-20T23:44:11-0400] INFO  drift            L36: sink [7, 198, 370] rising [28, 42, 60, 104, 165, 166, 171, 197] mass slope +0.00e+00
+[2026-10-20T23:44:16-0400] INFO  drift            L37: sink [123, 127, 202, 224, 290] rising [18, 26, 33, 45, 46, 50, 84, 92] mass slope +0.00e+00
+[2026-10-20T23:44:21-0400] INFO  drift            L38: sink [67, 100, 199, 214, 222, 250, 264, 314] rising [28, 30, 33, 40, 89, 93, 116, 118] mass slope +0.00e+00
+[2026-10-20T23:44:26-0400] INFO  drift            L39: sink [4, 7, 14, 30, 62, 87, 119, 182] rising [2, 7, 35, 59, 75, 91, 92, 146] mass slope +0.00e+00
+[2026-10-20T23:44:26-0400] INFO  drift            protect lists -> /home/patrickd/models/v41-work/s04/position_protect.json: 1618 experts over 40 layers

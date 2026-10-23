@@ -253,6 +253,12 @@ if ! step_done s12_release; then
 fi
 log "RELEASE DONE: REAP + GGUF published per their gates; CUDA server and s11 follow (soft)"
 
+# ------------------------------------------------------------------------------------------------ s13: the REAP record
+# results/ + RESULTS.md (rendered from artifacts) -> git; once the MXFP4 master is public (s12 ledger) the bulk arrays go
+# to a public HF dataset and the GitHub repo goes public (owner decision 2026-10-22). Soft: never blocks the release.
+results() { env -u HF_XET_HIGH_PERFORMANCE $PY ops/s13_results.py release --push >> $L/s13_results.log 2>&1; }
+soft results_release results
+
 # ------------------------------------------------------------------------------------------------ GGUF L3 add-on (soft)
 # Only when L2 passed (a failed L2 already evaluated L3 as its fallback above). L3 goes through the same s09 gate; a
 # pass re-writes the manifest with both levels and s12 uploads only the new files (its ledger skips L2's) + the card.
@@ -329,6 +335,7 @@ if ! step_done s12_final; then
   env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py > $L/s12_final.log 2>&1 || stop "s12 final re-render"
   mark s12_final
 fi
+soft results_final results     # re-export: RESULTS.md gains the GGUF L3/DSpark/s11 sections
 ST11=$($PY -c "import json;print(json.load(open('$WORK/s11/decision.json'))['status'])" 2>/dev/null || echo none)
 if [ "$ST11" = blocked ]; then      # a decision for the owner, not a crash: the CUDA server has no draft/verify path
   echo "$(date -Is) s11 end-to-end gate BLOCKED: no verified DSpark draft+verify path in cuda/ (see $WORK/s11/decision.json)" >> $FOLLOW

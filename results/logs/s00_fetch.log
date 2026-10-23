@@ -1,0 +1,71 @@
+[2026-10-19T04:40:00-04:00] waiting: leafllm runner stop + model moves
+[2026-10-19T04:47:55-04:00] relaunched: xet high-performance download, 16 workers (user: ~800 MB/s)
+[2026-10-19T04:47:55-04:00] waiting: leafllm runner stop + model moves
+[2026-10-19T04:48:09-04:00] waiting: leafllm runner stop + model moves
+[2026-10-19T06:55:13-04:00] runner stopped, moves done: [2026-10-19T06:16:39-04:00] DeepSeek-V4-Flash-0731-REAP moved (162 files, checksums match; dir was read-only, chmod u+w then removed), symlinked
+[2026-10-19T06:55:23-04:00] swap removed
+[2026-10-19T06:55:23-04:00] free before download: /dev/nvme0n1p1  936G  318G  572G  36% /
+/home/patrickd/leafllm/.venv/lib/python3.12/site-packages/huggingface_hub/cli/download.py:160: UserWarning: Ignoring `--exclude` since filenames have been explicitly set.
+  warnings.warn("Ignoring `--exclude` since filenames have been explicitly set.")
+Error: File not found in model 'deepseek-ai/DeepSeek-V4.1-Flash-1017'.
+URL: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/resolve/1bae0e1088993b9b82de08f59de5be5a34e42170/model-00048-%2A
+Hint: set HF_DEBUG=1 as environment variable for full traceback.
+[2026-10-19T06:55:24-04:00] download pass 1 failed, retrying
+[2026-10-19T06:56:26-04:00] waiting: leafllm runner stop + model moves
+[2026-10-19T06:56:26-04:00] runner stopped, moves done: [2026-10-19T06:16:39-04:00] DeepSeek-V4-Flash-0731-REAP moved (162 files, checksums match; dir was read-only, chmod u+w then removed), symlinked
+[2026-10-19T06:56:26-04:00] free before download: /dev/nvme0n1p1  936G  318G  572G  36% /
+[2026-10-19T07:31:06-04:00] download pass 1 failed, retrying
+path=/home/patrickd/models/DeepSeek-V4.1-Flash-1017
+path=/home/patrickd/models/DeepSeek-V4.1-Flash-1017
+[2026-10-19T07:58:45-04:00] download finished: 492G; free /dev/nvme0n1p1  936G  809G   80G  92% /
+inference/examples/images/carrots.jpeg ok
+model-00001-of-00048.safetensors ok
+model-00002-of-00048.safetensors ok
+model-00003-of-00048.safetensors ok
+model-00004-of-00048.safetensors ok
+model-00005-of-00048.safetensors ok
+model-00006-of-00048.safetensors ok
+model-00007-of-00048.safetensors ok
+model-00008-of-00048.safetensors ok
+model-00009-of-00048.safetensors ok
+model-00010-of-00048.safetensors ok
+model-00011-of-00048.safetensors ok
+model-00012-of-00048.safetensors ok
+model-00013-of-00048.safetensors ok
+model-00014-of-00048.safetensors ok
+model-00015-of-00048.safetensors ok
+model-00016-of-00048.safetensors ok
+model-00017-of-00048.safetensors ok
+model-00018-of-00048.safetensors ok
+model-00019-of-00048.safetensors ok
+model-00020-of-00048.safetensors ok
+model-00021-of-00048.safetensors ok
+model-00022-of-00048.safetensors ok
+model-00023-of-00048.safetensors ok
+model-00024-of-00048.safetensors ok
+model-00025-of-00048.safetensors ok
+model-00026-of-00048.safetensors ok
+model-00027-of-00048.safetensors ok
+model-00028-of-00048.safetensors ok
+model-00029-of-00048.safetensors ok
+model-00030-of-00048.safetensors ok
+model-00031-of-00048.safetensors ok
+model-00032-of-00048.safetensors ok
+model-00033-of-00048.safetensors ok
+model-00034-of-00048.safetensors ok
+model-00035-of-00048.safetensors ok
+model-00036-of-00048.safetensors ok
+model-00037-of-00048.safetensors ok
+model-00038-of-00048.safetensors ok
+model-00039-of-00048.safetensors ok
+model-00040-of-00048.safetensors ok
+model-00041-of-00048.safetensors ok
+model-00042-of-00048.safetensors ok
+model-00043-of-00048.safetensors ok
+model-00044-of-00048.safetensors ok
+model-00045-of-00048.safetensors ok
+model-00046-of-00048.safetensors ok
+model-00047-of-00048.safetensors ok
+model-00048-of-00048.safetensors ok
+SHA VERIFY PASS
+[2026-10-19T08:07:23-04:00] s00 done

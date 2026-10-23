@@ -1,0 +1,83 @@
+gate_spec_host: 10442 steps, 10357 verifies, 25483 pools, 5198 restores, 4739000 window reads, 297 reuses, 93 refused -> PASS
+[vector 1 thinking]   2476 bytes byte-exact, 0 image(s) -> PASS
+[vector 2 chat    ]    294 bytes byte-exact, 0 image(s) -> PASS
+[vector 3 chat    ]   2481 bytes byte-exact, 0 image(s) -> PASS
+[vector 4 chat    ]    574 bytes byte-exact, 0 image(s) -> PASS
+[vector 5 thinking]    408 bytes byte-exact, 2 image(s) -> PASS
+[parse tool-call output strict + round-trip] -> PASS
+[reference fuzz 400 cases] 400 byte-exact -> PASS
+7 pass, 0 fail
+[PASS] default thinking_mode is 'thinking'
+[PASS] explicit thinking_mode honoured
+[PASS] enable_thinking=false -> chat
+[PASS] chat_template_kwargs.thinking=false -> chat
+[PASS] invalid thinking_mode falls back safely
+[PASS] reasoning_effort is orthogonal to thinking_mode
+[PASS] numeric reasoning_effort accepted
+[PASS] out-of-range reasoning_effort falls back to the default (high = 75)
+[PASS] default temperature is 1.0 (NOT gemma/Laguna's 0.7)
+[PASS] default top_p is 1.0 without tools
+[PASS] top_p becomes 0.95 when tools are present (agentic)
+[PASS] has_tools detected
+[PASS] explicit top_p overrides the default
+[PASS] tools with no system message -> a system message is created to carry them
+[PASS] tools with an existing system message -> attached, no message added
+[PASS] prompt starts with BOS
+[PASS] reasoning_effort prefix sits at the FRONT (prefix-cache hazard, CHAT_FORMAT §2.2)
+[PASS] string param encoded with string="true"
+[PASS] number param encoded with string="false"
+[PASS] bool param encoded with string="false"
+[PASS] one tool call parsed back
+[PASS] string arg round-trips as a string  {"location": "Beijing", "days": 5, "metric": true}
+[PASS] number arg round-trips as a NUMBER, not "5"
+[PASS] bool arg round-trips as a bool
+[PASS] tool name round-trips
+[PASS] reasoning_content surfaced as its own field
+[PASS] finish_reason 'stop' with no tool calls
+[PASS] usage totals add up
+[PASS] finish_reason 'tool_calls' when a call is present
+[PASS] tool calls get ids
+[PASS] SSE chunk is 'data: {...}\n\n'
+
+Gate API: 31 passed, 0 failed -> PASS
+  [PASS] thinking then content
+  [PASS] chat mode, no think marker
+  [PASS] thinking with no content
+  [PASS] empty reasoning
+  [PASS] content then tools
+  [PASS] reasoning, content, tools
+  [PASS] multibyte content
+  [PASS] marker-like text that is not a marker
+  [PASS] no markers at all
+  [PASS] every delta is independently valid UTF-8
+  [PASS] buffered tool block parses to one call via the gated DSML parser
+
+Gate STREAM: 11 passed, 0 failed -> PASS
+[tok] vocab 128000  merges 127741  added 1283  bos 0 eos 1
+  [PASS] canonical gate 'The capital of France is'
+  encode: 2116/2116 cases exact (168291 reference tokens)
+  roundtrip: 2116/2116 cases lossless
+  stream:    2116/2116 cases match one-shot decode
+  [PASS] </think> and DSML markers survive decode_stream(skip_special=false)
+  speed:     4.1 MB/s  (559263 bytes -> 168236 tokens in 136.7 ms)
+
+Gate TOKENIZER: PASS
+case 0: n=10  mismatches=0
+case 1: n=33  mismatches=0
+case 2: n=34  mismatches=0
+case 3: n=300  mismatches=0
+PASS: 18096 hash ids, 0 mismatches
+[fmt fp8  , 128 tokens] 0 bad slots, 41974 us -> PASS
+[fmt fp8  ,   1 tokens] 0 bad slots, 371 us -> PASS
+[fmt fp8  ,  77 tokens] 0 bad slots, 23721 us -> PASS
+[fmt mxfp6, 128 tokens] 0 bad slots, 43675 us -> PASS
+[fmt mxfp6,   1 tokens] 0 bad slots, 406 us -> PASS
+[fmt mxfp6,  77 tokens] 0 bad slots, 27654 us -> PASS
+[n_rows below the hash buckets] refused (build/engram_gate/engram_L1.v41rows: n_rows does not cover the largest hash bucket) -> PASS
+Gate ENGRAM STORE: PASS
+[Q2_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[Q3_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[Q4_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[KT2] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[KT3] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[2026-10-21T04:16:59-04:00] s08 done cpu_gates

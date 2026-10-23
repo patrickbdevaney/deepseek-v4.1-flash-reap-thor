@@ -1,0 +1,332 @@
+[2026-10-22T01:05:26-0400] INFO  s04              screen subset: 18 rows, 198053 tokens, rows sha 5b5d79330f1f7770
+[2026-10-22T01:05:26-0400] INFO  s04              3 arms to score, 7.6 GiB stream each, batches [3]
+[2026-10-22T01:05:26-0400] INFO  s04              start unit layer --layer 0 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:08:29-0400] INFO  replay           hope_sum_ml48 L0: 198053 tok in 172s
+[2026-10-22T01:11:30-0400] INFO  replay           hope_sum_ml96 L0: 198053 tok in 181s
+[2026-10-22T01:14:38-0400] INFO  replay           hope_sum_ml144 L0: 198053 tok in 188s
+[2026-10-22T01:14:51-0400] INFO  s04              reclaim: MemAvailable 112.1 GiB
+[2026-10-22T01:14:51-0400] INFO  s04              done unit layer --layer 0 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 565s
+[2026-10-22T01:14:51-0400] INFO  s04              start unit layer --layer 1 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s03_saliency.py:473: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  v = torch.from_numpy(np.ascontiguousarray(vals[a0:a1])).cuda().view(torch.float8_e4m3fn)
+[2026-10-22T01:17:51-0400] INFO  replay           hope_sum_ml48 L1: 198053 tok in 164s
+[2026-10-22T01:20:26-0400] INFO  replay           hope_sum_ml96 L1: 198053 tok in 155s
+[2026-10-22T01:22:49-0400] INFO  replay           hope_sum_ml144 L1: 198053 tok in 143s
+[2026-10-22T01:22:54-0400] INFO  s04              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T01:22:54-0400] INFO  s04              done unit layer --layer 1 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 483s
+[2026-10-22T01:22:54-0400] INFO  s04              start unit layer --layer 2 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:25:56-0400] INFO  replay           hope_sum_ml48 L2: 198053 tok in 171s
+[2026-10-22T01:28:38-0400] INFO  replay           hope_sum_ml96 L2: 198053 tok in 162s
+[2026-10-22T01:31:24-0400] INFO  replay           hope_sum_ml144 L2: 198053 tok in 167s
+[2026-10-22T01:31:31-0400] INFO  s04              reclaim: MemAvailable 112.1 GiB
+[2026-10-22T01:31:31-0400] INFO  s04              done unit layer --layer 2 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 517s
+[2026-10-22T01:31:31-0400] INFO  s04              start unit layer --layer 3 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:34:12-0400] INFO  replay           hope_sum_ml48 L3: 198053 tok in 150s
+[2026-10-22T01:37:07-0400] INFO  replay           hope_sum_ml96 L3: 198053 tok in 175s
+[2026-10-22T01:38:58-0400] INFO  replay           hope_sum_ml144 L3: 198053 tok in 111s
+[2026-10-22T01:39:03-0400] INFO  s04              reclaim: MemAvailable 112.1 GiB
+[2026-10-22T01:39:03-0400] INFO  s04              done unit layer --layer 3 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 452s
+[2026-10-22T01:39:03-0400] INFO  s04              start unit layer --layer 4 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:41:15-0400] INFO  replay           hope_sum_ml48 L4: 198053 tok in 121s
+[2026-10-22T01:43:18-0400] INFO  replay           hope_sum_ml96 L4: 198053 tok in 123s
+[2026-10-22T01:45:09-0400] INFO  replay           hope_sum_ml144 L4: 198053 tok in 111s
+[2026-10-22T01:45:14-0400] INFO  s04              reclaim: MemAvailable 111.9 GiB
+[2026-10-22T01:45:14-0400] INFO  s04              done unit layer --layer 4 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 371s
+[2026-10-22T01:45:14-0400] INFO  s04              start unit layer --layer 5 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:47:35-0400] INFO  replay           hope_sum_ml48 L5: 198053 tok in 129s
+[2026-10-22T01:49:49-0400] INFO  replay           hope_sum_ml96 L5: 198053 tok in 135s
+[2026-10-22T01:52:10-0400] INFO  replay           hope_sum_ml144 L5: 198053 tok in 140s
+[2026-10-22T01:52:15-0400] INFO  s04              reclaim: MemAvailable 112.2 GiB
+[2026-10-22T01:52:15-0400] INFO  s04              done unit layer --layer 5 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 420s
+[2026-10-22T01:52:15-0400] INFO  s04              start unit layer --layer 6 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T01:54:29-0400] INFO  replay           hope_sum_ml48 L6: 198053 tok in 122s
+[2026-10-22T01:56:35-0400] INFO  replay           hope_sum_ml96 L6: 198053 tok in 126s
+[2026-10-22T01:58:38-0400] INFO  replay           hope_sum_ml144 L6: 198053 tok in 123s
+[2026-10-22T01:58:43-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T01:58:43-0400] INFO  s04              done unit layer --layer 6 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 389s
+[2026-10-22T01:58:43-0400] INFO  s04              start unit layer --layer 7 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:01:03-0400] INFO  replay           hope_sum_ml48 L7: 198053 tok in 128s
+[2026-10-22T02:03:00-0400] INFO  replay           hope_sum_ml96 L7: 198053 tok in 117s
+[2026-10-22T02:05:09-0400] INFO  replay           hope_sum_ml144 L7: 198053 tok in 130s
+[2026-10-22T02:05:14-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T02:05:14-0400] INFO  s04              done unit layer --layer 7 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 391s
+[2026-10-22T02:05:14-0400] INFO  s04              start unit layer --layer 8 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:08:08-0400] INFO  replay           hope_sum_ml48 L8: 198053 tok in 163s
+[2026-10-22T02:10:39-0400] INFO  replay           hope_sum_ml96 L8: 198053 tok in 150s
+[2026-10-22T02:13:21-0400] INFO  replay           hope_sum_ml144 L8: 198053 tok in 162s
+[2026-10-22T02:13:26-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T02:13:26-0400] INFO  s04              done unit layer --layer 8 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 492s
+[2026-10-22T02:13:26-0400] INFO  s04              start unit layer --layer 9 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:15:58-0400] INFO  replay           hope_sum_ml48 L9: 198053 tok in 140s
+[2026-10-22T02:18:33-0400] INFO  replay           hope_sum_ml96 L9: 198053 tok in 154s
+[2026-10-22T02:21:13-0400] INFO  replay           hope_sum_ml144 L9: 198053 tok in 161s
+[2026-10-22T02:21:19-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T02:21:19-0400] INFO  s04              done unit layer --layer 9 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 473s
+[2026-10-22T02:21:19-0400] INFO  s04              start unit layer --layer 10 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:23:28-0400] INFO  replay           hope_sum_ml48 L10: 198053 tok in 117s
+[2026-10-22T02:25:44-0400] INFO  replay           hope_sum_ml96 L10: 198053 tok in 136s
+[2026-10-22T02:28:09-0400] INFO  replay           hope_sum_ml144 L10: 198053 tok in 146s
+[2026-10-22T02:28:15-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T02:28:15-0400] INFO  s04              done unit layer --layer 10 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 416s
+[2026-10-22T02:28:15-0400] INFO  s04              start unit layer --layer 11 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:31:08-0400] INFO  replay           hope_sum_ml48 L11: 198053 tok in 161s
+[2026-10-22T02:33:37-0400] INFO  replay           hope_sum_ml96 L11: 198053 tok in 149s
+[2026-10-22T02:36:13-0400] INFO  replay           hope_sum_ml144 L11: 198053 tok in 156s
+[2026-10-22T02:36:18-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T02:36:18-0400] INFO  s04              done unit layer --layer 11 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 483s
+[2026-10-22T02:36:18-0400] INFO  s04              start unit layer --layer 12 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:38:56-0400] INFO  replay           hope_sum_ml48 L12: 198053 tok in 146s
+[2026-10-22T02:41:39-0400] INFO  replay           hope_sum_ml96 L12: 198053 tok in 162s
+[2026-10-22T02:43:27-0400] INFO  replay           hope_sum_ml144 L12: 198053 tok in 109s
+[2026-10-22T02:43:33-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T02:43:33-0400] INFO  s04              done unit layer --layer 12 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 434s
+[2026-10-22T02:43:33-0400] INFO  s04              start unit layer --layer 13 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T02:45:52-0400] INFO  replay           hope_sum_ml48 L13: 198053 tok in 127s
+[2026-10-22T02:48:17-0400] INFO  replay           hope_sum_ml96 L13: 198053 tok in 146s
+[2026-10-22T02:50:34-0400] INFO  replay           hope_sum_ml144 L13: 198053 tok in 137s
+[2026-10-22T02:50:39-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T02:50:39-0400] INFO  s04              done unit layer --layer 13 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 427s
+[2026-10-22T02:50:39-0400] INFO  s04              start unit layer --layer 14 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s03_saliency.py:473: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  v = torch.from_numpy(np.ascontiguousarray(vals[a0:a1])).cuda().view(torch.float8_e4m3fn)
+[2026-10-22T02:53:16-0400] INFO  replay           hope_sum_ml48 L14: 198053 tok in 142s
+[2026-10-22T02:56:06-0400] INFO  replay           hope_sum_ml96 L14: 198053 tok in 170s
+[2026-10-22T02:58:57-0400] INFO  replay           hope_sum_ml144 L14: 198053 tok in 171s
+[2026-10-22T02:59:03-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T02:59:03-0400] INFO  s04              done unit layer --layer 14 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 504s
+[2026-10-22T02:59:03-0400] INFO  s04              start unit layer --layer 15 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:01:38-0400] INFO  replay           hope_sum_ml48 L15: 198053 tok in 143s
+[2026-10-22T03:04:11-0400] INFO  replay           hope_sum_ml96 L15: 198053 tok in 153s
+[2026-10-22T03:06:22-0400] INFO  replay           hope_sum_ml144 L15: 198053 tok in 131s
+[2026-10-22T03:06:27-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:06:27-0400] INFO  s04              done unit layer --layer 15 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 443s
+[2026-10-22T03:06:27-0400] INFO  s04              start unit layer --layer 16 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:09:12-0400] INFO  replay           hope_sum_ml48 L16: 198053 tok in 154s
+[2026-10-22T03:11:33-0400] INFO  replay           hope_sum_ml96 L16: 198053 tok in 141s
+[2026-10-22T03:14:02-0400] INFO  replay           hope_sum_ml144 L16: 198053 tok in 149s
+[2026-10-22T03:14:07-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T03:14:07-0400] INFO  s04              done unit layer --layer 16 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 461s
+[2026-10-22T03:14:07-0400] INFO  s04              start unit layer --layer 17 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:16:44-0400] INFO  replay           hope_sum_ml48 L17: 198053 tok in 145s
+[2026-10-22T03:18:46-0400] INFO  replay           hope_sum_ml96 L17: 198053 tok in 122s
+[2026-10-22T03:20:55-0400] INFO  replay           hope_sum_ml144 L17: 198053 tok in 129s
+[2026-10-22T03:21:00-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:21:00-0400] INFO  s04              done unit layer --layer 17 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 413s
+[2026-10-22T03:21:00-0400] INFO  s04              start unit layer --layer 18 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:23:29-0400] INFO  replay           hope_sum_ml48 L18: 198053 tok in 138s
+[2026-10-22T03:25:49-0400] INFO  replay           hope_sum_ml96 L18: 198053 tok in 139s
+[2026-10-22T03:27:58-0400] INFO  replay           hope_sum_ml144 L18: 198053 tok in 130s
+[2026-10-22T03:28:03-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:28:03-0400] INFO  s04              done unit layer --layer 18 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 423s
+[2026-10-22T03:28:03-0400] INFO  s04              start unit layer --layer 19 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:30:31-0400] INFO  replay           hope_sum_ml48 L19: 198053 tok in 135s
+[2026-10-22T03:32:38-0400] INFO  replay           hope_sum_ml96 L19: 198053 tok in 127s
+[2026-10-22T03:34:46-0400] INFO  replay           hope_sum_ml144 L19: 198053 tok in 128s
+[2026-10-22T03:34:51-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:34:51-0400] INFO  s04              done unit layer --layer 19 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 408s
+[2026-10-22T03:34:51-0400] INFO  s04              start unit layer --layer 20 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:37:34-0400] INFO  replay           hope_sum_ml48 L20: 198053 tok in 152s
+[2026-10-22T03:40:08-0400] INFO  replay           hope_sum_ml96 L20: 198053 tok in 154s
+[2026-10-22T03:42:44-0400] INFO  replay           hope_sum_ml144 L20: 198053 tok in 157s
+[2026-10-22T03:42:50-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:42:50-0400] INFO  s04              done unit layer --layer 20 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 479s
+[2026-10-22T03:42:50-0400] INFO  s04              start unit layer --layer 21 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:45:17-0400] INFO  replay           hope_sum_ml48 L21: 198053 tok in 136s
+[2026-10-22T03:47:38-0400] INFO  replay           hope_sum_ml96 L21: 198053 tok in 140s
+[2026-10-22T03:49:47-0400] INFO  replay           hope_sum_ml144 L21: 198053 tok in 130s
+[2026-10-22T03:49:52-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:49:52-0400] INFO  s04              done unit layer --layer 21 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 422s
+[2026-10-22T03:49:52-0400] INFO  s04              start unit layer --layer 22 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:52:24-0400] INFO  replay           hope_sum_ml48 L22: 198053 tok in 140s
+[2026-10-22T03:54:33-0400] INFO  replay           hope_sum_ml96 L22: 198053 tok in 129s
+[2026-10-22T03:56:44-0400] INFO  replay           hope_sum_ml144 L22: 198053 tok in 131s
+[2026-10-22T03:56:50-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T03:56:50-0400] INFO  s04              done unit layer --layer 22 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 417s
+[2026-10-22T03:56:50-0400] INFO  s04              start unit layer --layer 23 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T03:59:09-0400] INFO  replay           hope_sum_ml48 L23: 198053 tok in 128s
+[2026-10-22T04:01:13-0400] INFO  replay           hope_sum_ml96 L23: 198053 tok in 124s
+[2026-10-22T04:03:25-0400] INFO  replay           hope_sum_ml144 L23: 198053 tok in 132s
+[2026-10-22T04:03:30-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T04:03:30-0400] INFO  s04              done unit layer --layer 23 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 400s
+[2026-10-22T04:03:30-0400] INFO  s04              start unit layer --layer 24 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:06:24-0400] INFO  replay           hope_sum_ml48 L24: 198053 tok in 163s
+[2026-10-22T04:08:55-0400] INFO  replay           hope_sum_ml96 L24: 198053 tok in 151s
+[2026-10-22T04:11:23-0400] INFO  replay           hope_sum_ml144 L24: 198053 tok in 148s
+[2026-10-22T04:11:29-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:11:29-0400] INFO  s04              done unit layer --layer 24 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 479s
+[2026-10-22T04:11:29-0400] INFO  s04              start unit layer --layer 25 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:13:57-0400] INFO  replay           hope_sum_ml48 L25: 198053 tok in 136s
+[2026-10-22T04:16:02-0400] INFO  replay           hope_sum_ml96 L25: 198053 tok in 125s
+[2026-10-22T04:18:20-0400] INFO  replay           hope_sum_ml144 L25: 198053 tok in 138s
+[2026-10-22T04:18:25-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:18:25-0400] INFO  s04              done unit layer --layer 25 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 416s
+[2026-10-22T04:18:25-0400] INFO  s04              start unit layer --layer 26 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:20:34-0400] INFO  replay           hope_sum_ml48 L26: 198053 tok in 117s
+[2026-10-22T04:22:45-0400] INFO  replay           hope_sum_ml96 L26: 198053 tok in 131s
+[2026-10-22T04:24:43-0400] INFO  replay           hope_sum_ml144 L26: 198053 tok in 118s
+[2026-10-22T04:24:48-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:24:48-0400] INFO  s04              done unit layer --layer 26 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 383s
+[2026-10-22T04:24:48-0400] INFO  s04              start unit layer --layer 27 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:27:13-0400] INFO  replay           hope_sum_ml48 L27: 198053 tok in 133s
+[2026-10-22T04:29:27-0400] INFO  replay           hope_sum_ml96 L27: 198053 tok in 134s
+[2026-10-22T04:31:31-0400] INFO  replay           hope_sum_ml144 L27: 198053 tok in 123s
+[2026-10-22T04:31:37-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:31:37-0400] INFO  s04              done unit layer --layer 27 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 408s
+[2026-10-22T04:31:37-0400] INFO  s04              start unit layer --layer 28 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:34:48-0400] INFO  replay           hope_sum_ml48 L28: 198053 tok in 180s
+[2026-10-22T04:37:15-0400] INFO  replay           hope_sum_ml96 L28: 198053 tok in 147s
+[2026-10-22T04:39:52-0400] INFO  replay           hope_sum_ml144 L28: 198053 tok in 157s
+[2026-10-22T04:39:58-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:39:58-0400] INFO  s04              done unit layer --layer 28 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 501s
+[2026-10-22T04:39:58-0400] INFO  s04              start unit layer --layer 29 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:42:25-0400] INFO  replay           hope_sum_ml48 L29: 198053 tok in 136s
+[2026-10-22T04:44:27-0400] INFO  replay           hope_sum_ml96 L29: 198053 tok in 122s
+[2026-10-22T04:46:27-0400] INFO  replay           hope_sum_ml144 L29: 198053 tok in 120s
+[2026-10-22T04:46:32-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:46:32-0400] INFO  s04              done unit layer --layer 29 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 395s
+[2026-10-22T04:46:32-0400] INFO  s04              start unit layer --layer 30 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:48:41-0400] INFO  replay           hope_sum_ml48 L30: 198053 tok in 116s
+[2026-10-22T04:50:31-0400] INFO  replay           hope_sum_ml96 L30: 198053 tok in 110s
+[2026-10-22T04:52:44-0400] INFO  replay           hope_sum_ml144 L30: 198053 tok in 133s
+[2026-10-22T04:52:49-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T04:52:49-0400] INFO  s04              done unit layer --layer 30 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 377s
+[2026-10-22T04:52:49-0400] INFO  s04              start unit layer --layer 31 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T04:55:27-0400] INFO  replay           hope_sum_ml48 L31: 198053 tok in 147s
+[2026-10-22T04:57:31-0400] INFO  replay           hope_sum_ml96 L31: 198053 tok in 124s
+[2026-10-22T04:59:30-0400] INFO  replay           hope_sum_ml144 L31: 198053 tok in 119s
+[2026-10-22T04:59:35-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T04:59:35-0400] INFO  s04              done unit layer --layer 31 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 406s
+[2026-10-22T04:59:35-0400] INFO  s04              start unit layer --layer 32 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:02:26-0400] INFO  replay           hope_sum_ml48 L32: 198053 tok in 160s
+[2026-10-22T05:05:24-0400] INFO  replay           hope_sum_ml96 L32: 198053 tok in 177s
+[2026-10-22T05:07:59-0400] INFO  replay           hope_sum_ml144 L32: 198053 tok in 155s
+[2026-10-22T05:08:05-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:08:05-0400] INFO  s04              done unit layer --layer 32 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 510s
+[2026-10-22T05:08:05-0400] INFO  s04              start unit layer --layer 33 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:10:31-0400] INFO  replay           hope_sum_ml48 L33: 198053 tok in 135s
+[2026-10-22T05:12:44-0400] INFO  replay           hope_sum_ml96 L33: 198053 tok in 133s
+[2026-10-22T05:14:47-0400] INFO  replay           hope_sum_ml144 L33: 198053 tok in 122s
+[2026-10-22T05:14:52-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:14:52-0400] INFO  s04              done unit layer --layer 33 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 407s
+[2026-10-22T05:14:52-0400] INFO  s04              start unit layer --layer 34 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:16:54-0400] INFO  replay           hope_sum_ml48 L34: 198053 tok in 109s
+[2026-10-22T05:19:18-0400] INFO  replay           hope_sum_ml96 L34: 198053 tok in 144s
+[2026-10-22T05:21:31-0400] INFO  replay           hope_sum_ml144 L34: 198053 tok in 133s
+[2026-10-22T05:21:36-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:21:36-0400] INFO  s04              done unit layer --layer 34 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 404s
+[2026-10-22T05:21:36-0400] INFO  s04              start unit layer --layer 35 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:24:23-0400] INFO  replay           hope_sum_ml48 L35: 198053 tok in 156s
+[2026-10-22T05:27:03-0400] INFO  replay           hope_sum_ml96 L35: 198053 tok in 160s
+[2026-10-22T05:29:35-0400] INFO  replay           hope_sum_ml144 L35: 198053 tok in 153s
+[2026-10-22T05:29:41-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:29:41-0400] INFO  s04              done unit layer --layer 35 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 485s
+[2026-10-22T05:29:41-0400] INFO  s04              start unit layer --layer 36 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:32:33-0400] INFO  replay           hope_sum_ml48 L36: 198053 tok in 161s
+[2026-10-22T05:34:50-0400] INFO  replay           hope_sum_ml96 L36: 198053 tok in 137s
+[2026-10-22T05:37:10-0400] INFO  replay           hope_sum_ml144 L36: 198053 tok in 140s
+[2026-10-22T05:37:16-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:37:16-0400] INFO  s04              done unit layer --layer 36 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 455s
+[2026-10-22T05:37:16-0400] INFO  s04              start unit layer --layer 37 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:39:58-0400] INFO  replay           hope_sum_ml48 L37: 198053 tok in 151s
+[2026-10-22T05:42:12-0400] INFO  replay           hope_sum_ml96 L37: 198053 tok in 133s
+[2026-10-22T05:44:07-0400] INFO  replay           hope_sum_ml144 L37: 198053 tok in 116s
+[2026-10-22T05:44:13-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T05:44:13-0400] INFO  s04              done unit layer --layer 37 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 417s
+[2026-10-22T05:44:13-0400] INFO  s04              start unit layer --layer 38 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:46:34-0400] INFO  replay           hope_sum_ml48 L38: 198053 tok in 130s
+[2026-10-22T05:48:43-0400] INFO  replay           hope_sum_ml96 L38: 198053 tok in 129s
+[2026-10-22T05:50:30-0400] INFO  replay           hope_sum_ml144 L38: 198053 tok in 107s
+[2026-10-22T05:50:36-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T05:50:36-0400] INFO  s04              done unit layer --layer 38 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 383s
+[2026-10-22T05:50:36-0400] INFO  s04              start unit layer --layer 39 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[2026-10-22T05:52:43-0400] INFO  replay           hope_sum_ml48 L39: 198053 tok in 116s
+[2026-10-22T05:55:09-0400] INFO  replay           hope_sum_ml96 L39: 198053 tok in 146s
+[2026-10-22T05:57:39-0400] INFO  replay           hope_sum_ml144 L39: 198053 tok in 150s
+[2026-10-22T05:57:44-0400] INFO  s04              reclaim: MemAvailable 112.5 GiB
+[2026-10-22T05:57:44-0400] INFO  s04              done unit layer --layer 39 --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 --kernels tilelang --token-chunk 8192 in 428s
+[2026-10-22T05:57:44-0400] INFO  s04              start unit head --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:698: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  tl = torch.from_numpy(np.ascontiguousarray(t_lp[g.start + c0:g.start + c1])).cuda()
+[2026-10-22T06:02:33-0400] INFO  s04              reclaim: MemAvailable 112.6 GiB
+[2026-10-22T06:02:33-0400] INFO  s04              done unit head --arms hope_sum_ml48,hope_sum_ml96,hope_sum_ml144 in 290s
+arm A: no eligible candidate passes the release floor gate on screen: hope_sum_pf0: ['bucket multilingual top1 0.5233 < 0.65']; hope_sum_knee: ['bucket multilingual top1 0.5469 < 0.65']; hope_cond_knee: ['bucket multilingual top1 0.5758 < 0.65']; reap_sum: ['bucket multilingual top1 0.4576 < 0.65', 'does not beat the best random anchor (d_kl32 CI hi +0.0407)']; hope_sum_ml48: ['bucket multilingual top1 0.5375 < 0.65']; mass: ['bucket multilingual top1 0.4418 < 0.65', 'does not beat the best random anchor (d_kl32 CI hi +0.0835)']; hope_sum_ml96: ['bucket multilingual top1 0.5975 < 0.65']; hope_sum_ml144: ['does not beat the best random anchor (d_kl32 CI hi +0.0353)']; freq: ['bucket multilingual top1 0.4279 < 0.65', 'does not beat the best random anchor (d_kl32 CI hi +0.1511)']

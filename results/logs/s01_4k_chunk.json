@@ -1,0 +1,81 @@
+{
+ "stage": "s01_layer_probe",
+ "ts": "2026-10-19T09:32:09-0400",
+ "layer": 3,
+ "run_layers": [
+  2,
+  3
+ ],
+ "tokens": 4096,
+ "kernels": "tilelang",
+ "input": "embed(prompt) -> 4 streams, layers 0-1 skipped",
+ "torch": "2.14.1+cu130",
+ "device": "NVIDIA Thor",
+ "capability": [
+  11,
+  0
+ ],
+ "gpu_indexer": "chunked (s03)",
+ "gpu_block": "chunked at 1024 (active: True)",
+ "gpu": {
+  "layer_s": 0.6427047420002054,
+  "tok_per_s": 6373.066405660176,
+  "times": [
+   0.6447416299779434,
+   0.6367301240097731,
+   0.6427047420002054
+  ],
+  "peak_cuda_gib": 15.350249767303467,
+  "memavail_drop_gib": 33.88692092895508
+ },
+ "oracle": {
+  "layer_s": 16.171896404994186
+ },
+ "vs_oracle": {
+  "stream": {
+   "cos": 0.997587500974693,
+   "rel_l2": 0.06946462736068913,
+   "max_abs": 0.2505890130996704,
+   "finite": true
+  },
+  "ffn_pre": {
+   "cos": 0.9998722326065612,
+   "rel_l2": 0.016015579191405876,
+   "max_abs": 0.0451207160949707,
+   "finite": true
+  }
+ },
+ "routing_agreement": {
+  "2": {
+   "exact_set": 0.72412109375,
+   "slot_overlap": 0.9518229365348816
+  },
+  "3": {
+   "exact_set": 0.684814453125,
+   "slot_overlap": 0.9457194209098816
+  }
+ },
+ "control_vs_oracle": {
+  "stream": {
+   "cos": 0.9975943382782264,
+   "rel_l2": 0.069366897625487,
+   "max_abs": 0.2502550482749939,
+   "finite": true
+  },
+  "ffn_pre": {
+   "cos": 0.9998700248890312,
+   "rel_l2": 0.016155496715782498,
+   "max_abs": 0.04881972074508667,
+   "finite": true
+  }
+ },
+ "control_routing_agreement": {
+  "2": {
+   "slot_overlap": 0.9518635869026184
+  },
+  "3": {
+   "slot_overlap": 0.9456787109375
+  }
+ },
+ "verdict": "PASS"
+}

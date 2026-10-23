@@ -1,0 +1,63 @@
+[2026-10-19T09:41:43-0400] INFO  s02              general: HuggingFaceFW/fineweb-edu/sample-10BT:train +258,980 tok (quota 257,146), kept 289/289
+[2026-10-19T09:41:45-0400] INFO  s02              general: wikimedia/wikipedia/20231101.en:train +75,028 tok (quota 71,761), kept 7/7
+[2026-10-19T09:41:47-0400] INFO  s02              general: HuggingFaceFW/fineweb-edu/sample-10BT:train +89,860 tok (quota 89,702), kept 362/1207
+Ignoring part of dataset_info from the dataset card: The `splits` field in YAML is malformed or missing the name/num_examples/num_bytes fields
+Ignoring part of dataset_info from the dataset card: The `splits` field in YAML is malformed or missing the name/num_examples/num_bytes fields
+Ignoring part of dataset_info from the dataset card: The `splits` field in YAML is malformed or missing the name/num_examples/num_bytes fields
+Ignoring part of dataset_info from the dataset card: The `splits` field in YAML is malformed or missing the name/num_examples/num_bytes fields
+[2026-10-19T09:41:51-0400] INFO  s02              general: mandarjoshi/trivia_qa/rc:train +73,107 tok (quota 71,761), kept 73/73
+[2026-10-19T09:41:53-0400] INFO  s02              general: cais/mmlu/auxiliary_train:train +48,039 tok (quota 47,841), kept 166/166
+[2026-10-19T09:41:54-0400] INFO  s02              general: allenai/openbookqa/additional:train +29,943 tok (quota 29,900), kept 499/499
+[2026-10-19T09:42:01-0400] INFO  s02              general: HuggingFaceFW/fineweb/sample-10BT:train +30,634 tok (quota 29,900), kept 49/49
+[2026-10-19T09:42:06-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/cmn_Hani:train +251,259 tok (quota 249,856), kept 400/400
+[2026-10-19T09:42:10-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/rus_Cyrl:train +41,501 tok (quota 39,976), kept 27/27
+[2026-10-19T09:42:14-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/jpn_Jpan:train +35,088 tok (quota 34,979), kept 47/47
+[2026-10-19T09:42:18-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/kor_Hang:train +32,195 tok (quota 29,982), kept 49/49
+[2026-10-19T09:42:21-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/deu_Latn:train +25,695 tok (quota 24,985), kept 24/24
+[2026-10-19T09:42:25-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/fra_Latn:train +26,369 tok (quota 24,985), kept 25/25
+[2026-10-19T09:42:29-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/spa_Latn:train +25,694 tok (quota 24,985), kept 27/27
+[2026-10-19T09:42:33-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/arb_Arab:train +21,764 tok (quota 19,988), kept 14/14
+[2026-10-19T09:42:37-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/por_Latn:train +29,845 tok (quota 19,988), kept 31/31
+[2026-10-19T09:42:41-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/vie_Latn:train +103,299 tok (quota 14,991), kept 8/8
+[2026-10-19T09:42:46-0400] INFO  s02              multilingual: HuggingFaceFW/fineweb-2/ind_Latn:train +17,926 tok (quota 14,991), kept 21/21
+[2026-10-19T09:42:46-0400] INFO  s02              agentic: local:selfgen/agentic.jsonl +0 tok (quota 142,384), kept 0/0
+[2026-10-19T09:42:49-0400] INFO  s02              agentic: nebius/SWE-rebench:test +523,655 tok (quota 313,245), kept 53/53
+[2026-10-19T09:42:51-0400] INFO  s02              agentic: SWE-Gym/SWE-Gym:train +114,058 tok (quota 113,907), kept 56/56
+[2026-10-19T09:42:51-0400] INFO  s02              agentic: SWE-bench/SWE-bench:train +0 tok (quota 85,430), kept 0/0 ERROR ValueError: Bad split: train. Available splits: ['test', 'dev']
+[2026-10-19T09:42:52-0400] INFO  s02              agentic: nvidia/Nemotron-Post-Training-Dataset-v1/tool_calling:train +0 tok (quota 170,860), kept 0/0 ERROR ValueError: BuilderConfig 'tool_calling' not found. Available: ['default']
+[2026-10-19T09:42:53-0400] INFO  s02              code: local:selfgen/code.jsonl +0 tok (quota 78,002), kept 0/0
+[2026-10-19T09:43:01-0400] INFO  s02              code: nvidia/OpenCodeReasoning-2/train:python +240,985 tok (quota 234,006), kept 32/32
+[2026-10-19T09:43:12-0400] INFO  s02              code: nvidia/OpenCodeReasoning-2/train:cpp +81,751 tok (quota 78,002), kept 10/10
+[2026-10-19T09:43:16-0400] INFO  s02              code: nvidia/OpenCodeInstruct:train +130,373 tok (quota 130,003), kept 298/298
+[2026-10-19T09:43:19-0400] INFO  s02              code: GPUMODE/KernelBook:train +106,162 tok (quota 104,002), kept 265/265
+[2026-10-19T09:43:21-0400] INFO  s02              code: SakanaAI/AI-CUDA-Engineer-Archive:level_1 +52,275 tok (quota 52,001), kept 51/51
+[2026-10-19T09:43:28-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/chartqa:train +105,720 tok (quota 105,676), kept 402/402
+[2026-10-19T09:43:38-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/ai2d:train +70,494 tok (quota 70,451), kept 177/177
+[2026-10-19T09:43:54-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/docvqa:train +105,688 tok (quota 105,676), kept 98/98
+[2026-10-19T09:44:29-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/textvqa:train +70,885 tok (quota 70,451), kept 147/147
+[2026-10-19T09:44:44-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/infographic_vqa:train +71,222 tok (quota 70,451), kept 112/112
+[2026-10-19T09:44:57-0400] INFO  s02              vision: HuggingFaceM4/the_cauldron/screen2words:train +71,311 tok (quota 70,451), kept 78/78
+[2026-10-19T09:45:11-0400] INFO  s02              vision: HuggingFaceM4/Docmatix/images:train +105,706 tok (quota 105,676), kept 52/52
+[2026-10-19T09:45:45-0400] INFO  s02              vision: lmms-lab/LLaVA-OneVision-Data/CLEVR-Math(MathV360K):train +105,871 tok (quota 105,676), kept 459/459
+[2026-10-19T09:45:46-0400] INFO  s02              math: local:selfgen/math.jsonl +0 tok (quota 65,179), kept 0/0
+[2026-10-19T09:45:49-0400] INFO  s02              math: nvidia/OpenMathReasoning/default:cot +218,158 tok (quota 217,265), kept 35/35
+[2026-10-19T09:45:51-0400] INFO  s02              math: zwhe99/DeepMath-103K:train +110,901 tok (quota 108,633), kept 22/22
+[2026-10-19T09:45:53-0400] INFO  s02              math: open-r1/OpenR1-Math-220k:train +65,341 tok (quota 65,179), kept 149/149
+[2026-10-19T09:45:55-0400] INFO  s02              math: HuggingFaceTB/finemath/finemath-3plus:train +66,128 tok (quota 65,179), kept 50/50
+[2026-10-19T09:45:57-0400] INFO  s02              math: internlm/Lean-Workbook:train +43,504 tok (quota 43,453), kept 319/319
+[2026-10-19T09:45:57-0400] INFO  s02              science: local:selfgen/science.jsonl +0 tok (quota 45,428), kept 0/0
+[2026-10-19T09:46:00-0400] INFO  s02              science: open-thoughts/OpenThoughts3-1.2M:train +251,977 tok (quota 249,855), kept 16/16
+[2026-10-19T09:46:02-0400] INFO  s02              science: TIGER-Lab/MMLU-Pro:test +68,165 tok (quota 68,142), kept 912/912
+[2026-10-19T09:46:03-0400] INFO  s02              science: jablonkagroup/ChemBench/organic_chemistry:train +0 tok (quota 45,428), kept 0/429
+[2026-10-19T09:46:05-0400] INFO  s02              science: HuggingFaceFW/fineweb-edu/sample-10BT:train +182,792 tok (quota 181,713), kept 534/2756
+[2026-10-19T09:46:08-0400] INFO  s02              finance: G4KMU/t2-ragbench/FinQA:train +110,141 tok (quota 109,936), kept 308/308
+[2026-10-19T09:46:09-0400] INFO  s02              finance: G4KMU/t2-ragbench/ConvFinQA:train +0 tok (quota 74,956), kept 0/0 ERROR ValueError: Bad split: train. Available splits: ['turn_0']
+[2026-10-19T09:46:12-0400] INFO  s02              finance: G4KMU/t2-ragbench/TAT-DQA:train +139,975 tok (quota 139,918), kept 146/146
+[2026-10-19T09:46:14-0400] INFO  s02              finance: kensho/bizbench/default:train +99,949 tok (quota 99,942), kept 6437/6437
+[2026-10-19T09:46:16-0400] INFO  s02              finance: next-tat/tat-llm-instructions:train +0 tok (quota 74,956), kept 0/2001
+[2026-10-19T09:46:19-0400] INFO  s02              finance: HuggingFaceFW/fineweb-edu/sample-10BT:train +150,529 tok (quota 149,912), kept 674/19310
+[2026-10-19T09:46:19-0400] INFO  s02              longctx: local:selfgen/longctx.jsonl +0 tok (quota 99,942), kept 0/0
+[2026-10-19T09:46:32-0400] INFO  s02              longctx: emozilla/pg19:train +331,926 tok (quota 324,812), kept 3/3
+[2026-10-19T09:46:34-0400] INFO  s02              longctx: git:~/llama.cpp@origin/master +175,651 tok (quota 99,942), kept 2/9
+[2026-10-19T09:46:34-0400] INFO  s02              longctx: git:~/cutlass@origin/main +76,765 tok (quota 74,956), kept 1/1
+[2026-10-19T09:46:36-0400] INFO  s02              corpus done: 555 rows, 5,040,481 tokens, achieved general 0.119, multilingual 0.099, agentic 0.119, code 0.119, vision 0.132, math 0.099, science 0.099, finance 0.099, longctx 0.116

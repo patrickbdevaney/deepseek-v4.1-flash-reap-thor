@@ -1,0 +1,18 @@
+{
+ "select": {
+  "done": true,
+  "n": 11,
+  "ts": "2026-10-21T01:38:30-0400"
+ },
+ "decide": {
+  "done": true,
+  "winner_A": "1ace9b33134a2ca74174952593682e94edbf3c3348b4ac505ff59597a05d49ec",
+  "winner_B": "6d8093257a38b2e7e33549ed1eff527715b5e5294c0f360a0305b6f256da8bb1",
+  "ts": "2026-10-22T06:31:04-0400"
+ },
+ "select_ml": {
+  "done": true,
+  "n": 3,
+  "ts": "2026-10-22T01:04:59-0400"
+ }
+}

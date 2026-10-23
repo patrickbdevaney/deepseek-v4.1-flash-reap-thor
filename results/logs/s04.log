@@ -1,0 +1,4 @@
+[2026-10-22T06:30:52-0400] INFO  s04              screen subset: 18 rows, 198053 tokens, rows sha 5b5d79330f1f7770
+[2026-10-22T06:30:52-0400] INFO  s04              0 arms to score, 7.6 GiB stream each, batches []
+[2026-10-22T06:31:04-0400] INFO  s04              arm A (192): winner hope_sum_pf0 kl32 0.2977 top1 0.8666 sha 1ace9b33134a2ca7
+[2026-10-22T06:31:04-0400] INFO  s04              arm B (128): winner b128_hope_sum_knee kl32 0.6003 top1 0.8019 sha 6d8093257a38b2e7

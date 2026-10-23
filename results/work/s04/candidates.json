@@ -1,0 +1,340 @@
+{
+ "knees": {
+  "A": 0.06,
+  "B": 0.03
+ },
+ "candidates": [
+  {
+   "name": "hope_sum_knee",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": 0.06,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "4c6dca68066d3b71b45e7c7654f89b211a23744027bc6f9059151f237994f59c",
+   "icost": 0.028207415583352435,
+   "worst_retention": 0.7439128283188501,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "hope_cond_knee",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": 0.06,
+   "form": "cond",
+   "eligible": true,
+   "sha256": "913aebdd2e984f35d0f07655a11db9728cad8740dc0ba2d2c912223049094c42",
+   "icost": 0.030628984075360865,
+   "worst_retention": 0.7407027155110062,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "hope_sum_pf0",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": 0.0,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "1ace9b33134a2ca74174952593682e94edbf3c3348b4ac505ff59597a05d49ec",
+   "icost": 0.025363757553392735,
+   "worst_retention": 0.7172479549777717,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "reap_sum",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "reap_sum",
+   "pf": null,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "fb7c8fe8ea785d4cd89ce7557c656702cfa17fb1376d9a0420588cd1233ea30d",
+   "icost": 0.026621050519778013,
+   "worst_retention": 0.6834854517771578,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "mass",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "mass",
+   "pf": null,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "fb9e4130cb921dca5b0127b0d6c6a78775b82dba980bb1d83bfd6d397e88afcb",
+   "icost": 0.0367862696939541,
+   "worst_retention": 0.6820947380536662,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "freq",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "freq",
+   "pf": null,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "ae4ef23f23b1692d933664a03667e95f68b2659f4c5bd5cf4c7df1e7a98170e7",
+   "icost": 0.14136381482974064,
+   "worst_retention": 0.656075876509222,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "random0",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "random",
+   "pf": null,
+   "form": "sum",
+   "eligible": false,
+   "sha256": "9d4e03d6d298c1b49926b111d31c8762550a33ac4abc5a6e6539ab28faf553a0",
+   "icost": 0.18192687120285758,
+   "worst_retention": 0.553131658413346,
+   "drift_verdict": "POSITION_SENSITIVE"
+  },
+  {
+   "name": "random1",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "random",
+   "pf": null,
+   "form": "sum",
+   "eligible": false,
+   "sha256": "ad80422f3ea45b66ced427cc3c7cc1671fb742a94c506c85c6d11bf8fb14f766",
+   "icost": 0.14684867070285557,
+   "worst_retention": 0.558695577136965,
+   "drift_verdict": "POSITION_SENSITIVE"
+  },
+  {
+   "name": "random2",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "random",
+   "pf": null,
+   "form": "sum",
+   "eligible": false,
+   "sha256": "686ec21e034cf665ba614f77d302b60af379a9e610a54d4263d04763c90e72a1",
+   "icost": 0.16296657285965574,
+   "worst_retention": 0.5447768263263834,
+   "drift_verdict": "POSITION_SENSITIVE"
+  },
+  {
+   "name": "b128_hope_sum_knee",
+   "arm": "B",
+   "n_keep": 128,
+   "criterion": "hope",
+   "pf": 0.03,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "6d8093257a38b2e7e33549ed1eff527715b5e5294c0f360a0305b6f256da8bb1",
+   "icost": 0.06782703832003494,
+   "worst_retention": 0.5942663116283529,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "b128_reap_sum",
+   "arm": "B",
+   "n_keep": 128,
+   "criterion": "reap_sum",
+   "pf": null,
+   "form": "sum",
+   "eligible": true,
+   "sha256": "8ea8a77925d7ee4a35784fd03ffb1fa18e059aaa42f49554c9e60c87fa0af8a1",
+   "icost": 0.06484707856684445,
+   "worst_retention": 0.5355776924714232,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "hope_sum_ml48",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": null,
+   "form": "sum",
+   "ml_k": 48,
+   "round": 2,
+   "eligible": true,
+   "sha256": "7117d21d0311afee375ce48ff951bc711ba553467cd7b7c3656244602c83b179",
+   "icost": 0.029172850622021095,
+   "worst_retention": 0.7489440899840625,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "hope_sum_ml96",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": null,
+   "form": "sum",
+   "ml_k": 96,
+   "round": 2,
+   "eligible": true,
+   "sha256": "b01142511262fc31cadc801a9aaf4bb189ab6aa7ab9e443e79f11e1e8c0af2cd",
+   "icost": 0.0355373880660594,
+   "worst_retention": 0.7068610089583733,
+   "drift_verdict": "FLAT"
+  },
+  {
+   "name": "hope_sum_ml144",
+   "arm": "A",
+   "n_keep": 192,
+   "criterion": "hope",
+   "pf": null,
+   "form": "sum",
+   "ml_k": 144,
+   "round": 2,
+   "eligible": true,
+   "sha256": "55a1113c0f3d14779bafad439b6daf1f8c66726fcf858b23e64428a730e80986",
+   "icost": 0.05430492154002666,
+   "worst_retention": 0.5990275044170964,
+   "drift_verdict": "FLAT"
+  }
+ ],
+ "guards": {
+  "protect_file": "/home/patrickd/models/v41-work/s04/position_protect.json",
+  "super_expert_candidates": {
+   "0": [],
+   "1": [],
+   "2": [],
+   "3": [],
+   "4": [],
+   "5": [],
+   "6": [],
+   "7": [],
+   "8": [],
+   "9": [],
+   "10": [],
+   "11": [],
+   "12": [],
+   "13": [],
+   "14": [],
+   "15": [
+    4,
+    70,
+    339,
+    355
+   ],
+   "16": [
+    3
+   ],
+   "17": [],
+   "18": [],
+   "19": [],
+   "20": [
+    180
+   ],
+   "21": [
+    296,
+    320,
+    338
+   ],
+   "22": [
+    121,
+    341
+   ],
+   "23": [
+    259,
+    268
+   ],
+   "24": [
+    339
+   ],
+   "25": [
+    135,
+    244
+   ],
+   "26": [
+    170,
+    178,
+    305,
+    371
+   ],
+   "27": [
+    223,
+    305
+   ],
+   "28": [
+    7
+   ],
+   "29": [
+    18,
+    188,
+    243
+   ],
+   "30": [
+    50,
+    73,
+    213
+   ],
+   "31": [
+    109,
+    370
+   ],
+   "32": [
+    357
+   ],
+   "33": [
+    310,
+    332
+   ],
+   "34": [
+    89,
+    344
+   ],
+   "35": [
+    129,
+    316,
+    364
+   ],
+   "36": [
+    7,
+    335,
+    370
+   ],
+   "37": [
+    123,
+    202,
+    224,
+    288,
+    290
+   ],
+   "38": [
+    67,
+    100,
+    121,
+    214,
+    222,
+    250,
+    264,
+    314,
+    383
+   ],
+   "39": [
+    4,
+    7,
+    14,
+    30,
+    62,
+    87,
+    119,
+    182,
+    188,
+    190,
+    229,
+    269,
+    307,
+    312,
+    313,
+    350,
+    351,
+    359,
+    366,
+    378,
+    382
+   ]
+  }
+ }
+}
