@@ -214,8 +214,15 @@ def commit(push: bool, msg: str) -> None:
         git("commit", "-m", msg + "\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
         env.log(f"commit: {git('rev-parse', '--short', 'HEAD').stdout.strip()}", STAGE)
     if push:
-        git("push", "origin", "HEAD")
-        env.log("pushed", STAGE)
+        # GitHub SSH has timed out at the banner exchange from this box (2026-10-22) and worked minutes later
+        for i in range(5):
+            r = git("push", "origin", "HEAD", check=False)
+            if r.returncode == 0:
+                env.log("pushed", STAGE)
+                return
+            env.log(f"push failed (try {i + 1}/5): {r.stderr.strip()[-200:]}", STAGE, "WARN")
+            env.time.sleep(60 * (i + 1))
+        raise SystemExit("git push failed 5 times")
 
 
 def bulk(user: str, n: int) -> str:
