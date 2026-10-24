@@ -8,6 +8,8 @@ tags: [deepseek, moe, reap, expert-pruning, jetson-thor, cuda]
 
 This is {{ base.repo }} pruned to {{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts (keep-set `{{ thor.keepset_sha256 | short }}`), in the `{{ thor_build.format }}` layout. That layout is built for one 128 GB NVIDIA Jetson Thor running a pure-CUDA decoder, with the Engram tables read from NVMe rather than held in memory.
 
+**Text only for now.** The vision tower and aligner are in this build unchanged, and the pruning protected the experts image tokens route to, but the CUDA server here does not run the vision tower yet: image inputs are not accepted. Vision support is planned as a server update; the weights will not change.
+
 ## Format
 
 {{ thor.description }}
