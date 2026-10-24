@@ -459,8 +459,9 @@ static void engram(const LayerW& w, State& s, const Rows& R, const Engram& eg, c
     if (!rows) return;                                               // Engram OFF (bench only)
     if (eg.store && eg.graph_wait)
         cuStreamWaitValue32((CUstream)st, (CUdeviceptr)eg.store->flag_dev(slot), 1, CU_STREAM_WAIT_VALUE_EQ);
-    v41k::engram_dequant(s.eg_e, rows, eg.store ? eg.store->row_bytes() : 264, eg.store ? eg.store->format() : eg.fmt,
-                         R.M, st);
+    const int cap = eg.store ? eg.store->capacity() : eg.rows_cap;
+    if (R.M > cap) throw std::runtime_error("engram: " + std::to_string(R.M) + " rows > arena capacity " + std::to_string(cap));
+    v41k::engram_dequant(s.eg_e, rows, cap, eg.store ? eg.store->format() : eg.fmt, R.M, st);
     v41k::act_quant_fp8(s.xq, s.xs, s.eg_e, R.M, ENGRAM_KV_IN, st);
     v41k::fp8_linear(s.eg_kv, s.xq, s.xs, w.eg_wkv, w.eg_wkv_s, R.M, ENGRAM_KV_OUT, ENGRAM_KV_IN, true, st);
     v41k::engram_gate(R.h, s.eg_kv, w.eg_q, w.eg_k, R.noimg, R.M, NORM_EPS, st);

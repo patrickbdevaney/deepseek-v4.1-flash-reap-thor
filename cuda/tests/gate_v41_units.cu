@@ -256,6 +256,37 @@ int main(int argc, char** argv) {
     }
 
     CK(cudaDeviceSynchronize());
+    // ---- Engram row dequant with M < arena capacity (decode, a prompt's last chunk): the slot-offset table
+    //      sits after cap*24 slots whatever M is. A table read after M*24 slots took stale row bytes for offsets.
+    {
+        const int cap = 8, cols = v41::ENGRAM_COLS, D = v41::ENGRAM_HEAD_DIM;
+        std::vector<uint8_t> ar((size_t)cap * cols * 1024 + (size_t)cap * cols * 2, 0xFF);   // 0xFF slots: e4m3 NaN
+        uint16_t* off = reinterpret_cast<uint16_t*>(ar.data() + (size_t)cap * cols * 1024);
+        auto e4m3 = [](uint8_t c) { const int e = (c >> 3) & 15, m = c & 7;
+            const float v = e == 0 ? m / 8.f * ldexpf(1.f, -6) : (1 + m / 8.f) * ldexpf(1.f, e - 7); return (c & 128) ? -v : v; };
+        std::vector<float> ref((size_t)cap * cols * D);
+        for (int sl = 0; sl < cap * cols; ++sl) {
+            off[sl] = (uint16_t)((sl * 37) % 700);                     // the reader's in-slot offset (< 1024 - 264)
+            uint8_t* row = ar.data() + (size_t)sl * 1024 + off[sl];
+            for (int d = 0; d < D; ++d) row[d] = (uint8_t)((sl * 13 + d * 7) % 0x7E);   // finite e4m3 codes
+            for (int g = 0; g < 8; ++g) row[256 + g] = (uint8_t)(120 + (sl + g) % 15);  // e8m0 scales 2^-7..2^7
+            for (int d = 0; d < D; ++d) ref[(size_t)sl * D + d] = e4m3(row[d]) * ldexpf(1.f, row[256 + (d >> 5)] - 127);
+        }
+        uint8_t* dar = dzero<uint8_t>(ar.size()); CK(cudaMemcpy(dar, ar.data(), ar.size(), cudaMemcpyHostToDevice));
+        float* de = dzero<float>((size_t)cap * cols * D);
+        for (int M : {1, 3, cap}) {
+            CK(cudaMemset(de, 0, (size_t)cap * cols * D * 4));
+            v41k::engram_dequant(de, dar, cap, 0, M, st);
+            auto h = down(de, (size_t)M * cols * D);
+            long bad = 0;
+            for (size_t i = 0; i < h.size(); ++i) bad += !(h[i] == ref[i]);
+            char nm[48], b[96]; snprintf(nm, sizeof nm, "engram dequant M=%d cap=%d", M, cap);
+            snprintf(b, sizeof b, "%ld / %zu values differ", bad, h.size());
+            verdict(bad == 0, nm, b);
+        }
+        cudaFree(dar); cudaFree(de);
+    }
+
     printf("Gate V41 UNITS: %s (%d failing)\n", g_fail ? "FAIL" : "PASS", g_fail);
     return g_fail ? 1 : 0;
 }

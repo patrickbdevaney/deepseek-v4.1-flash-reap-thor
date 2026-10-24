@@ -129,6 +129,10 @@ struct State {
     void* moe_scratch = nullptr; void* cand_scratch = nullptr;
     std::vector<void*> allocs;
     size_t bytes = 0;
+    State() = default;
+    // owns its device buffers (freed in ~State): move-only, or a copy's destructor frees the original's
+    State(const State&) = delete; State& operator=(const State&) = delete;
+    State(State&&) = default; State& operator=(State&&) = default;
     ~State();
 };
 // seqmax: context ceiling (<= 1M). max_rows: largest M per call. score_budget caps the
@@ -141,6 +145,7 @@ int  max_chunk(const State& s);                  // rows per prefill chunk the s
 struct Engram {
     EngramStore* store = nullptr;        // null + rows_dev null => Engram OFF (wrong output; benches only)
     const uint8_t* rows_dev[2] = {nullptr, nullptr};   // alternatively: rows already in device memory
+    int rows_cap = 0;                    // rows_dev arenas: capacity in tokens (offset table after rows_cap*24 slots)
     int fmt = 0;
     bool graph_wait = false;             // emit cuStreamWaitValue32/WriteValue32 around the layer
 };

@@ -34,10 +34,10 @@ __global__ void k_engram_dequant(float* e, const uint8_t* arena, const uint16_t*
     }
     e[(size_t)slot * v41::ENGRAM_HEAD_DIM + d] = bf16r(v);
 }
-void engram_dequant(float* e, const uint8_t* rows, int row_bytes, int fmt, int M, cudaStream_t st) {
-    (void)row_bytes;
-    // the slot-offset table lives right after the 1 KiB slots (see EngramStore::arena layout)
-    const uint16_t* off = reinterpret_cast<const uint16_t*>(rows + (size_t)M * v41::ENGRAM_COLS * 1024);
+void engram_dequant(float* e, const uint8_t* rows, int cap, int fmt, int M, cudaStream_t st) {
+    // the slot-offset table lives right after ALL cap*24 1 KiB slots (see EngramStore::arena layout); M < cap
+    // (decode, a prompt's last chunk) must not move it
+    const uint16_t* off = reinterpret_cast<const uint16_t*>(rows + (size_t)cap * v41::ENGRAM_COLS * 1024);
     k_engram_dequant<<<M * v41::ENGRAM_COLS, v41::ENGRAM_HEAD_DIM, 0, st>>>(e, rows, off, fmt);
 }
 

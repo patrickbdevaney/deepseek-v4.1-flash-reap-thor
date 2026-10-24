@@ -74,6 +74,7 @@ public:
     int  format() const { return fmt_; }  // 0 = FP8+E8M0 (264 B), 1 = MXFP6+E8M0 (200 B)
     int64_t n_rows(int l) const { return n_rows_[l]; }
     int  row_bytes() const { return row_bytes_; }
+    int  capacity() const { return cfg_.max_tokens; }   // arena slots / 24: where the offset table starts
     const EngramHashTables& tables() const { return tabs_; }
 
     // Device pointers the kernels and the graph use. Arena layout per layer: max_tokens*24 slots of

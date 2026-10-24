@@ -151,8 +151,9 @@ void ring_store(float* ring_buf, int ring, const float* kv, const int* d_pos, in
 
 // ------------------------------------------------------------------ Engram
 // rows: [M, 24, row_bytes] in the arena (fp8 x256 + e8m0 x8 = 264 B; or MXFP6 = 200 B) -> e[M,6144]
-// bf16 values (dequant exactly as ParallelEngramEmbedding.forward).
-void engram_dequant(float* e, const uint8_t* rows, int row_bytes, int fmt, int M, cudaStream_t st);
+// bf16 values (dequant exactly as ParallelEngramEmbedding.forward). cap: the arena's capacity in tokens
+// (EngramStore max_tokens): the slot-offset table sits after cap*24 slots, not after M*24.
+void engram_dequant(float* e, const uint8_t* rows, int cap, int fmt, int M, cudaStream_t st);
 // kv[M, 25600] = wkv(e) (bf16). h[M,4,dim] += gate * value, gate per (token, copy). mask[M] (0 = shut).
 void engram_gate(float* h, const float* kv, const uint16_t* qw, const uint16_t* kw, const uint8_t* mask,
                  int M, float eps, cudaStream_t st);
