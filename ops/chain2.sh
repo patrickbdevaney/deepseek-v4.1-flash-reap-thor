@@ -32,9 +32,11 @@ quiet() { local b
   b=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(leaf-teacher|vllm)' | head -1)
   [ -n "$b" ] && stop "a vLLM server is up (docker $b)"
   leaf_runner_up && ! [ -f ~/leafllm/run/runner.stop ] && stop "leafllm runner active"
-  b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; gpu_ok; true; }
+  b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; true; }
 # a wedged driver (2026-10-24: GC6 exit failed under memory pressure) makes CUDA steps fail and llama tools fall back
-# to the CPU: refuse GPU work until nvidia-smi sees the device again (recovery needs a reboot)
+# to the CPU: refuse GPU work until nvidia-smi sees the device again (recovery needs a reboot). Called where a GPU
+# step really starts (imatrix here; the CHAIN_STEPS quiet()s run after their done checks), not in quiet(): gpu()
+# calls quiet() before steps that turn out to be done already.
 gpu_ok() { nvidia-smi -L >/dev/null 2>&1 || stop "GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)"; }
 free_gib() { echo $(( $(df -B1 --output=avail "$1" | tail -1) / GIB )); }
 need() { local f; f=$(free_gib "$1"); [ "$f" -ge "$2" ] || stop "disk: $3 needs ${2} GiB free on $1, only ${f} GiB"; log "df ok for $3: ${f} GiB free on $1 (need $2)"; }

@@ -51,7 +51,9 @@ gpu_busy() {  # a model-loading process is up. Matches the process NAME (comm, <
   # `bash -c` wrapper that merely mentions one of these names is not a model loader.
   pgrep '^(llama-server|llama-cli|llama-perplexi|test-backend-op|v41-teacher-kld|v41_server|v41_decode|gate_v41_)' >/dev/null \
     || pgrep -f '^[^ ]*python[0-9.]*( -[^ ]+)* [^ ]*(s03_saliency|s01_layer_probe|ref_dump)\.py( |$)' >/dev/null; }
-quiet() { docker ps --format '{{.Names}}' 2>/dev/null | grep -q leaf-teacher && die "a leafllm vLLM server is up"
+# a wedged driver makes CUDA steps fail and llama tools fall back to the CPU (ops/chain2.sh gpu_ok)
+gpu_ok() { nvidia-smi -L >/dev/null 2>&1 || die "GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)"; }
+quiet() { gpu_ok; docker ps --format '{{.Names}}' 2>/dev/null | grep -q leaf-teacher && die "a leafllm vLLM server is up"
   pgrep -f pipeline/runner.sh >/dev/null && ! [ -f ~/leafllm/run/runner.stop ] && die "leafllm runner active"
   gpu_busy && die "another model-loading process is up"; true; }
 reclaim() { sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'; sleep 5
@@ -112,7 +114,7 @@ convert)
     log "convert: done marker present but $SRCG is missing or carries another keep-set: converting again"
     rm -f $L/done.s09_convert
   fi
-  quiet
+  gpu_ok() { :; }; quiet          # convert is CPU-only: it runs on a wedged driver too
   mkdir -p $G/src
   # heal gains: the SAME rule as the NVFP4/Thor builds (ops/s07_quant.py heal_decision: s10/heal/decision.json
   # adopt + s06/heal_gain.json, both keep-set checked; no decision file -> fatal, the GGUF must not precede it).

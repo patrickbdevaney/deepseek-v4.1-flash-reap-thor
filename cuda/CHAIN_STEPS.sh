@@ -86,7 +86,9 @@ leaf_runner_up() { local d; local -a argv
     [ ${#argv[@]} -ge 2 ] || continue
     case "${argv[0]##*/}" in bash|sh) case "${argv[1]:-}" in *pipeline/runner.sh) return 0 ;; esac ;; esac
   done; return 1; }
-quiet() { local b
+# a wedged driver makes CUDA steps fail and llama tools fall back to the CPU (ops/chain2.sh gpu_ok)
+gpu_ok() { nvidia-smi -L >/dev/null 2>&1 || die "GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)"; }
+quiet() { gpu_ok; local b
   b=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(leaf-teacher|vllm)' | head -1)
   [ -n "$b" ] && die "a vLLM server is up (docker $b)"
   leaf_runner_up && ! [ -f ~/leafllm/run/runner.stop ] && die "leafllm runner active"
