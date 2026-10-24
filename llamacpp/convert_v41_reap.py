@@ -224,9 +224,10 @@ def patch_converter(reap: dict, lossless: bool) -> None:
 
     def index_tensors(self, remote_hf_model_id=None):
         out = orig_index(self, remote_hf_model_id=remote_hf_model_id)
-        dropped = [n for n in self.model_tensors if ".engram.embed." in n]
+        # __init__ assigns self.model_tensors from this return value, so filter the dict being returned
+        dropped = [n for n in out if ".engram.embed." in n]
         for n in dropped:
-            del self.model_tensors[n]
+            del out[n]
         log.info("engram tables dropped (%d tensors): served from the .v41rows files", len(dropped))
         return out
 
