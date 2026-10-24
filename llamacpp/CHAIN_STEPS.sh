@@ -136,9 +136,16 @@ EOF
   # s05 does not rehost Engram shards 47/48 but the master's index maps engram.* to them, and the converter opens
   # every shard the index names: it reads a symlink view (master + 47/48 from V41_SRC; nothing written to the master).
   # The view's name is the GGUF's general.name; the V4.1 chat template is forced whatever the name.
-  $PY llamacpp/convert_v41_reap.py "$MASTER" --expect-keep-sha "$KEEP_SHA" --heal-gains $G/src/heal_gains.json --no-mtp \
-      --engram-src "$V41SRC" --view-dir $G/src/$NAME \
+  # --use-temp-file: upstream repacks each routed-expert tensor into an eager numpy array and the writer keeps
+  # every one until the final write (~145 GiB for 40 layers): without it memguard killed convert at layer 32 and
+  # the GPU wedged on a GC6 exit under the memory pressure (2026-10-24). The spill (~150 GiB) lives next to the
+  # output on NVMe and is deleted when the writer closes: peak NVMe use is spill + output.
+  F=$(free_gib $G/); [ "$F" -ge 320 ] || die "convert: $F GiB free on NVMe, need 320 (output ~152 + temp spill ~150)"
+  rm -rf $G/tmp; mkdir -p $G/tmp
+  TMPDIR=$G/tmp $PY llamacpp/convert_v41_reap.py "$MASTER" --expect-keep-sha "$KEEP_SHA" --heal-gains $G/src/heal_gains.json --no-mtp \
+      --engram-src "$V41SRC" --view-dir $G/src/$NAME --use-temp-file \
       --outfile $SRCG > $L/s09_convert.log 2>&1 || die "convert (keep-set errors are fatal by design; see $L/s09_convert.log)"
+  rm -rf $G/tmp
   reclaim convert; mark convert ;;
 imatrix)
   : "${MASTER:?MASTER}"

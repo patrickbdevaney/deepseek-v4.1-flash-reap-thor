@@ -32,10 +32,14 @@ quiet() { local b
   b=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(leaf-teacher|vllm)' | head -1)
   [ -n "$b" ] && stop "a vLLM server is up (docker $b)"
   leaf_runner_up && ! [ -f ~/leafllm/run/runner.stop ] && stop "leafllm runner active"
-  b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; true; }
+  b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; gpu_ok; true; }
+# a wedged driver (2026-10-24: GC6 exit failed under memory pressure) makes CUDA steps fail and llama tools fall back
+# to the CPU: refuse GPU work until nvidia-smi sees the device again (recovery needs a reboot)
+gpu_ok() { nvidia-smi -L >/dev/null 2>&1 || stop "GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)"; }
 free_gib() { echo $(( $(df -B1 --output=avail "$1" | tail -1) / GIB )); }
 need() { local f; f=$(free_gib "$1"); [ "$f" -ge "$2" ] || stop "disk: $3 needs ${2} GiB free on $1, only ${f} GiB"; log "df ok for $3: ${f} GiB free on $1 (need $2)"; }
-gpu() { quiet; "$@" || stop "$*"; reclaim "$*"; }        # a model-loading step
+gpu() { quiet; "$@" || stop "$*"; reclaim "$*"; }
+quiet_nogpu() { local b; b=$(gpu_busy); [ -n "$b" ] && stop "another model-loading process is up: $b"; true; }        # a model-loading step
 cpu() { "$@" || stop "$*"; }
 s08() { bash cuda/CHAIN_STEPS.sh "$@"; }
 FOLLOW=$L/OWNER_FOLLOWUP
@@ -220,8 +224,9 @@ fi
 export MASTER S09_QUANT_ROOT="$SEAW/s09" S09_LEVELS="L2 L3"
 quants_done() { [ -f $L/done.s09_quant_L2 ] && [ -f $L/done.s09_quant_L3 ]; }
 if ! quants_done; then
-  [ -f $L/done.s09_convert ] || need / 170 "s09 source GGUF (~152 GiB)"; gpu s09 convert
-  cpu s09 imatrix
+  # convert is CPU-only (no gpu_ok): it loads the master, so it still takes the model-loading slot
+  if ! [ -f $L/done.s09_convert ]; then need / 320 "s09 source GGUF (~152 GiB) + its temp spill"; quiet_nogpu; s09 convert || stop "s09 convert"; reclaim "s09 convert"; fi
+  gpu_ok; cpu s09 imatrix
   for LV in L2 L3; do [ -f $L/done.s09_quant_$LV ] || { need "$SEAROOT" 250 "quant $LV"; cpu s09 quant $LV; }; done
 fi
 cpu s09 drop_source
