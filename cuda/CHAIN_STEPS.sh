@@ -73,7 +73,7 @@ gpu_busy() { local anc=" " p=$$ d pid comm a0 a s m prev hits=""
           case "$a" in -*) prev=$a; continue ;; esac
           s=${a##*/}
           case "$s" in
-            s0[1-9]_*.py|s0[1-9][a-z]_*.py|s1[0-2]_*.py|s1[0-2][a-z]_*.py|ref_dump.py|v41_unit_ref.py) m="$a0 $s" ;;
+            s0[1-9]_*.py|s0[1-9][a-z]_*.py|s1[0-1]_*.py|s1[0-1][a-z]_*.py|ref_dump.py|v41_unit_ref.py) m="$a0 $s" ;;
           esac
           break
         done ;;
@@ -101,6 +101,9 @@ gpu() { local name=$1; shift; log "start $name: $*"; setsid "$@" > $L/s08_$name.
   wait $p; local rc=$?; tail -n 40 $L/s08_$name.log | tee -a $C >/dev/null; return $rc; }
 
 step=${1:?step}; ARM=${2:-}; DRAFT=${3:-}; TAG=${4:-native}
+# DSV4_NVFP4_OVERLAY=<dir> (inherited by v41_decode/v41_server) runs decode/server with the NVFP4 dense overlay;
+# its markers, logs and JSON get this suffix so they never collide with the base build's.
+SFX=${DSV4_NVFP4_OVERLAY:+_overlay}
 # spec sweep for one context: $1 = 128 | 8k. Skipped when its JSON exists. v41_decode exits 1 on a GROSS
 # identity mismatch but still writes the JSON; the callers judge it.
 spec_sweep() { local c=$1 f=$OUT/spec_${1}_${ARM}_${TAG}.json; [ -f $f ] && return 0
@@ -173,22 +176,22 @@ golden_store)
   reclaim golden_store_$ARM; mark golden_store_$ARM ;;
 decode)
   : ${ARM:?ARM}; [ "$ARM" = src ] && die "decode needs a thor build (the source checkpoint does not fit Thor)"
-  done_ decode_$ARM && exit 0; quiet
+  done_ decode_$ARM$SFX && exit 0; quiet
   [ -f $ROWS/engram_L14.v41rows ] || die "Engram row files missing ($ROWS): run llamacpp/CHAIN_STEPS.sh rowfile"
   K="--ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS"
-  gpu decode_$ARM $B/v41_decode $K --chat "Write a short paragraph about the history of the printing press." \
-      --n 256 --repeat 3 --consistency 8 --json $OUT/decode_$ARM.json || die "decode $ARM (determinism/consistency)"
-  reclaim decode_$ARM
-  gpu decode_ng_$ARM $B/v41_decode $K --chat "Write a short paragraph about the history of the printing press." \
-      --n 256 --no-graph --json $OUT/decode_nograph_$ARM.json || die "decode no-graph $ARM"
-  reclaim decode_ng_$ARM
-  $PY -c "import json,sys;a=json.load(open('$OUT/decode_$ARM.json'));b=json.load(open('$OUT/decode_nograph_$ARM.json'));sys.exit(a['ids']!=b['ids'])" \
+  gpu decode_$ARM$SFX $B/v41_decode $K --chat "Write a short paragraph about the history of the printing press." \
+      --n 256 --repeat 3 --consistency 8 --json $OUT/decode_$ARM$SFX.json || die "decode $ARM (determinism/consistency)"
+  reclaim decode_$ARM$SFX
+  gpu decode_ng_$ARM$SFX $B/v41_decode $K --chat "Write a short paragraph about the history of the printing press." \
+      --n 256 --no-graph --json $OUT/decode_nograph_$ARM$SFX.json || die "decode no-graph $ARM"
+  reclaim decode_ng_$ARM$SFX
+  $PY -c "import json,sys;a=json.load(open('$OUT/decode_$ARM$SFX.json'));b=json.load(open('$OUT/decode_nograph_$ARM$SFX.json'));sys.exit(a['ids']!=b['ids'])" \
     || die "graph and no-graph decode emitted different ids"
   $PY -c "import numpy as n;print(' '.join(map(str,n.load('$WORK/golden/$ARM/long20k/tokens.npy')[:8192])))" > $OUT/ids8k.txt \
     || die "ids8k (needs golden_ref $ARM --long)"
-  gpu decode8k_$ARM $B/v41_decode $K --seqmax 16384 --ids-file $OUT/ids8k.txt --n 128 --json $OUT/decode8k_$ARM.json \
+  gpu decode8k_$ARM$SFX $B/v41_decode $K --seqmax 16384 --ids-file $OUT/ids8k.txt --n 128 --json $OUT/decode8k_$ARM$SFX.json \
     || die "decode at 8k"
-  reclaim decode8k_$ARM; mark decode_$ARM ;;
+  reclaim decode8k_$ARM$SFX; mark decode_$ARM$SFX ;;
 ctx1m)
   : ${ARM:?ARM}; done_ ctx1m_$ARM && exit 0; quiet
   $PY -c "import numpy as n;t=list(n.load('$WORK/golden/$ARM/long20k/tokens.npy'))*4;print(' '.join(map(str,t[:65536])))" \
@@ -197,22 +200,22 @@ ctx1m)
       --ids-file $OUT/ids64k.txt --n 64 --json $OUT/ctx1m_$ARM.json || die "1M-context state / 64k prefill"
   reclaim ctx1m_$ARM; mark ctx1m_$ARM ;;
 server)
-  : ${ARM:?ARM}; done_ server_$ARM && exit 0; quiet
+  : ${ARM:?ARM}; done_ server_$ARM$SFX && exit 0; quiet
   PORT=18108
   setsid $B/v41_server --ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS --port $PORT --host 127.0.0.1 \
-      > $L/s08_server_$ARM.log 2>&1 < /dev/null & SP=$!
+      > $L/s08_server_$ARM$SFX.log 2>&1 < /dev/null & SP=$!
   for i in $(seq 1 180); do curl -sf --max-time 10 localhost:$PORT/health >/dev/null && break; kill -0 $SP 2>/dev/null || break; sleep 10; done
   ok=1
   r=$(curl -sf --max-time 600 localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' \
       -d '{"messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":64,"temperature":0,"thinking_mode":"chat"}') || ok=0
   echo "$r" | $PY -c "import json,sys;d=json.load(sys.stdin);c=d['choices'][0];sys.exit(not(c['finish_reason']=='stop' and c['message']['content'].strip()))" || ok=0
   t=$(curl -sf --max-time 600 localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"What is the weather in Paris? Use the tool."}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":256,"temperature":0,"thinking_mode":"chat"}') || ok=0
-  echo "$t" >> $L/s08_server_$ARM.log
+  echo "$t" >> $L/s08_server_$ARM$SFX.log
   echo "$t" | $PY -c "import json,sys;d=json.load(sys.stdin);tc=d['choices'][0]['message'].get('tool_calls') or [];sys.exit(not(tc and tc[0]['function']['name']=='get_weather'))" || ok=0
   kill $SP; wait $SP 2>/dev/null
-  reclaim server_$ARM
-  [ $ok = 1 ] || die "server smoke $ARM (see $L/s08_server_$ARM.log)"
-  mark server_$ARM ;;
+  reclaim server_$ARM$SFX
+  [ $ok = 1 ] || die "server smoke $ARM (see $L/s08_server_$ARM$SFX.log)"
+  mark server_$ARM$SFX ;;
 spec_identity)
   : ${ARM:?ARM}; [ "$ARM" = src ] && die "spec needs a thor build"
   done_ spec_identity_${ARM}_$TAG && exit 0; quiet; rebuild

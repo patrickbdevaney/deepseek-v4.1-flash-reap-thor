@@ -23,7 +23,7 @@ gpu_busy() { local anc=" " p=$$ d pid comm a0 a s m prev hits=""
           case "$a" in -*) prev=$a; continue ;; esac
           s=${a##*/}
           case "$s" in
-            s0[1-9]_*.py|s0[1-9][a-z]_*.py|s1[0-2]_*.py|s1[0-2][a-z]_*.py|ref_dump.py|v41_unit_ref.py) m="$a0 $s" ;;
+            s0[1-9]_*.py|s0[1-9][a-z]_*.py|s1[0-1]_*.py|s1[0-1][a-z]_*.py|ref_dump.py|v41_unit_ref.py) m="$a0 $s" ;;
           esac
           break
         done ;;

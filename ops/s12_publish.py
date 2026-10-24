@@ -198,6 +198,33 @@ def thor_context(W: Path, tb: Path, tj: dict, arm_name: str, g: dict) -> dict:
                              "and verified, but you need that runtime to load them.")}
 
 
+def overlay_context(W: Path, g: dict, tc: dict | None) -> dict | None:
+    """The NVFP4 dense-overlay card: s10's paired overlay-vs-thorA numbers and the s08 decode runs of the same build
+    with and without the overlay. None until every piece exists (the overlay ships only on top of the published,
+    served Thor build)."""
+    led = jload(env.LOGS / "s12_ledger.json", "s12 ledger") if (env.LOGS / "s12_ledger.json").exists() else {}
+    if tc is None or not g.get("thor") or not g.get("overlay_adopted") or not (led.get("thor") or {}).get("public"):
+        return None
+    name = tc["name"]
+    dec = {k: W / "s08" / f"decode{s}_{name}{k}.json" for k in ("", "_overlay") for s in ("", "8k")}
+    marks = [env.LOGS / f"done.s08_{m}_{name}_overlay" for m in ("decode", "server")]
+    if not all(p.exists() for p in dec.values()) or not all(m.exists() for m in marks):
+        return None
+    tok = lambda s, k: json.load(open(W / "s08" / f"decode{s}_{name}{k}.json"))["decode_tok_s"]
+    res = jload(W / "s10" / "final" / "results.json", "s10 final results")
+    cmp, S = res["comparisons"]["overlay_vs_thorA"], res["summaries"]
+    oj = json.load(open(W / "thor" / "overlay_nvfp4" / "overlay.json"))
+    ob = sum(p.stat().st_size for p in (W / "thor" / "overlay_nvfp4").iterdir() if p.is_file())
+    return {"build": name, "bytes_gib": f"{ob / 2**30:.2f}", "layers": oj.get("layers"),
+            "tok_base": f"{tok('', ''):.2f}", "tok_ovl": f"{tok('', '_overlay'):.2f}",
+            "tok8k_base": f"{tok('8k', ''):.2f}", "tok8k_ovl": f"{tok('8k', '_overlay'):.2f}",
+            "d_kl32": f"{cmp['d_kl32']['mean']:+.4f} (interval {cmp['d_kl32']['lo']:+.4f} to {cmp['d_kl32']['hi']:+.4f})",
+            "top1_base": f"{S['thorA']['overall']['top1']['mean']:.4f}",
+            "top1_ovl": f"{S['thorA_overlay']['overall']['top1']['mean']:.4f}",
+            "flips": f"{(S['thorA_overlay']['overall']['confident_flip_rate'] - S['thorA']['overall']['confident_flip_rate']) * 100:+.2f}",
+            "gate": res["gates"]["overlay"]}
+
+
 def runtime_bundle(out: Path) -> Path:
     """git archive of the runtime (cuda/ without build products, the Engram row-file builder and its lib)."""
     import subprocess
@@ -368,7 +395,7 @@ def publish(a):
     ctx = context()
     parts = {p.stem.replace(".md", ""): p.read_text() for p in CARDS.glob("*.md.part")}
     g = json.load(open(env.WORK / "s10" / "gates.json"))
-    only = set(a.only.split(",")) if a.only else {"mxfp4", "nvfp4", "gguf", "thor"}
+    only = set(a.only.split(",")) if a.only else {"mxfp4", "nvfp4", "gguf", "thor", "overlay"}
     led = env.Ledger(env.LOGS / "s12_ledger.json")
     h = None if a.dry_run else api()
     nA = len(keepset.load(env.WORK / "s04" / "keepset.json")[0]["0"])
@@ -444,6 +471,19 @@ def publish(a):
             repo = f"{user}/DeepSeek-V4.1-Flash-1017-REAP{tj['n_routed_experts']}-Thor"
             plan.append(("thor", repo, bool(g["thor"]) and tc["fits"],
                          {"name": repo.split("/")[-1], "n_routed": tj["n_routed_experts"]}, files))
+    if "overlay" in only:
+        oc = overlay_context(env.WORK, g, ctx.get("thor_build"))
+        if oc is None:
+            env.log("overlay: not ready (needs the published Thor build, the overlay gate and the s08 overlay "
+                    "decode + server runs); skipping", STAGE)
+        else:
+            ctx["overlay"] = oc
+            user = "<user>" if a.dry_run else h.whoami()["name"]
+            repo = f"{user}/DeepSeek-V4.1-Flash-1017-REAP{nA}-Thor-NVFP4-overlay"
+            ctx["overlay"]["thor_repo"] = f"{user}/DeepSeek-V4.1-Flash-1017-REAP{nA}-Thor"
+            od = env.WORK / "thor" / "overlay_nvfp4"
+            plan.append(("overlay", repo, True, {"name": repo.split("/")[-1], "n_routed": nA},
+                         [(p, p.name) for p in sorted(od.iterdir()) if p.is_file()]))
     for kind, repo, passed, art, files in plan:
         c = dict(ctx, artifact={**art, "n_routed_base": N_BASE, "kind": kind})
         text = cards.render((CARDS / f"{kind}.md.tmpl").read_text(), c, parts)

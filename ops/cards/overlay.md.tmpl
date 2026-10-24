@@ -1,0 +1,33 @@
+---
+license: mit
+base_model: {{ overlay.thor_repo }}
+tags: [deepseek, moe, reap, expert-pruning, jetson-thor, cuda, nvfp4]
+---
+
+# {{ artifact.name }}
+
+An optional speed add-on for [{{ overlay.thor_repo }}](https://huggingface.co/{{ overlay.thor_repo }}). It holds NVFP4 copies of that build's dense FP8 linear weights ({{ overlay.layers }} layers, {{ overlay.bytes_gib }} GiB; `overlay.json` lists them). The CUDA decoder uses them in place of the FP8 originals when single-token decode is bound by memory traffic. The routed experts and everything else are unchanged; this repo is useless without the Thor build.
+
+## What it costs and what it buys
+
+Both numbers come from the build pipeline, never typed by hand.
+
+| | Thor build | Thor build + overlay |
+|---|---|---|
+| decode tok/s, short context | {{ overlay.tok_base }} | {{ overlay.tok_ovl }} |
+| decode tok/s, after an 8k-token prompt | {{ overlay.tok8k_base }} | {{ overlay.tok8k_ovl }} |
+| top-1 agreement with the unpruned model | {{ overlay.top1_base }} | {{ overlay.top1_ovl }} |
+
+Paired against the same build without the overlay on the held-out confirmation split, kl32 changes by {{ overlay.d_kl32 }} and confident-token flips by {{ overlay.flips }} percentage points. Both are within the pre-registered overlay gate (`ops/s10_gates.json` "overlay"). Speeds are greedy, batch 1, Engram rows on NVMe, measured by the s08 decode gate on the `{{ overlay.build }}` build with and without this overlay.
+
+## How to use it
+
+Download this repository next to the Thor build and start the server with the overlay directory in the environment:
+
+```
+DSV4_NVFP4_OVERLAY=<this repo> v41_server --ckpt <thor build> --keepset <thor build>/reap_keepset.json --engram <row-file dir> --port 18108
+```
+
+Without the variable, nothing from this repo is loaded and the decoder runs the FP8 path unchanged.
+
+**License:** MIT. For provenance, see the master repository's card.

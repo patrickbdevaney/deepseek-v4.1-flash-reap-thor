@@ -60,13 +60,18 @@ sha_ok() {  # sha_ok FILE OID
   [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$2" ]; }
 
 # ------------------------------------------------------------------------------------------------ wait for chain 1
-log "chain2 start (waiting for chain.sh to finish)"
-# done.s12 also counts: chain.sh marks it just before logging the end line, and a kill between the two must not wedge us
-until grep -q "chain reached the end of implemented stages" $C 2>/dev/null || [ -f $L/done.s12 ]; do
+# Owner 2026-10-24: start as soon as s10 final has decided. Chain 1's only remaining step is s12 (hash + upload of the
+# MXFP4 master from the Seagate: disk and network, never the GPU), so the GPU work here runs beside it; every s12/s13
+# call below waits for chain 1 first (wait_c1), so two s12 processes never share the ledger.
+log "chain2 start (waiting for s10 final)"
+until [ -f $L/done.s10final ] && [ -f $WORK/s10/gates.json ]; do
   [ -f $L/chain.STOP ] && { log "chain.STOP appeared while waiting: $(cat $L/chain.STOP)"; exit 1; }
   sleep 300
 done
-while pgrep -f '^(/usr)?(/bin/)?bash ops/chain\.sh$' >/dev/null; do sleep 30; done
+c1_done() { { grep -q "chain reached the end of implemented stages" $C 2>/dev/null || [ -f $L/done.s12 ]; } \
+  && ! pgrep -f '^(/usr)?(/bin/)?bash ops/chain\.sh$' >/dev/null; }
+wait_c1() { c1_done && return 0; log "waiting for chain 1 (s12 MXFP4 upload) before publishing"
+  until c1_done; do [ -f $L/chain.STOP ] && { log "chain.STOP while waiting for chain 1: $(cat $L/chain.STOP)"; exit 1; }; sleep 120; done; }
 mountpoint -q "$SEAROOT" || stop "the Seagate is not mounted at $SEAROOT"
 [ -f $L/done.s10final ] && [ -f $WORK/s10/final/results.json ] || stop "s10final has not passed; chain2 needs it"
 NKEEP=$($PY -c "import sys;sys.path.insert(0,'.');from ops.lib import keepset;print(len(keepset.load('$WORK/s04/keepset.json')[0]['0']))") \
@@ -134,8 +139,9 @@ trellis() {
     reclaim s07trellis; mark s07trellis
   fi
   quiet; setsid $PY ops/s10_eval.py trellis --kernels $KERN > $L/s10_trellis.log 2>&1 < /dev/null; }
-if [ $CUDA_OK = 1 ]; then soft trellis trellis || true
-else log "trellis sub-arm skipped: the CUDA build/gates did not pass (no gemv_bench)"; fi
+# Owner 2026-10-24 ("quickly"): the trellis sub-arm (17-25 h of GPU quantization + its panel) runs at the END of chain2,
+# after every release. If it is adopted it is an extra release: gates.json thor_build_dir then names A<n>kt, and a chain2
+# re-run serves, gates and publishes that build (OWNER_FOLLOWUP says so).
 
 # ------------------------------------------------------------------------------------------------ the served arm
 # s10/gates.json thor_build_dir (written by the trellis panel: A<n>, A<n>kt or B<n>), else thor_arm (ops/s11_spec.served)
@@ -236,6 +242,7 @@ if [ -z "$PASS" ]; then
   gate L2 L3
 fi
 log "s09 gate: passing levels [${PASS}]"
+wait_c1
 if [ -n "$PASS" ]; then
   step_done s09_manifest || { $PY ops/s09_gguf_ladder.py manifest --levels $PASS > $L/s09_manifest.log 2>&1 || stop "s09 manifest"; mark s09_manifest; }
   if ! step_done s12_gguf; then
@@ -304,6 +311,19 @@ if [ $CUDA_OK = 1 ] && ! step_done s12_thor; then   # the served Thor build + ru
   mark s12_thor
 fi
 
+# ------------------------------------------------------------------------------------------------ NVFP4 dense overlay (soft)
+# Owner 2026-10-24: an extra release on top of the Thor build. s10 gated its accuracy (overlay_adopted); here the CUDA
+# server must decode and serve with it loaded (DSV4_NVFP4_OVERLAY), and s12 publishes it as its own repo with the
+# measured tok/s beside the base build's.
+OVL=$WORK/thor/overlay_nvfp4
+if [ $CUDA_OK = 1 ] && step_done s12_thor && [ -f $OVL/overlay.json ] \
+   && $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json'))['overlay_adopted'])"; then
+  { soft overlay_decode env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh decode $ARM \
+    && soft overlay_server env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh server $ARM; } && ! step_done s12_overlay && {
+    env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only overlay > $L/s12_overlay.log 2>&1 || stop "s12 overlay publish"
+    mark s12_overlay; }
+fi
+
 # ------------------------------------------------------------------------------------------------ s11: the speculative head
 quiet; s11 traces_eval traces --set eval;   reclaim s11_traces_eval
 quiet; s11 traces_train traces --set train; reclaim s11_traces_train
@@ -340,5 +360,12 @@ ST11=$($PY -c "import json;print(json.load(open('$WORK/s11/decision.json'))['sta
 if [ "$ST11" = blocked ]; then      # a decision for the owner, not a crash: the CUDA server has no draft/verify path
   echo "$(date -Is) s11 end-to-end gate BLOCKED: no verified DSpark draft+verify path in cuda/ (see $WORK/s11/decision.json)" >> $FOLLOW
 fi
+# ------------------------------------------------------------------------------------------------ trellis sub-arm (soft, last)
+if [ -f $L/done.s08_gemv_bench ]; then
+  soft trellis trellis || true
+  if $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json')).get('trellis_adopted'))" 2>/dev/null; then
+    echo "$(date -Is) trellis ADOPTED: s10/gates.json now serves $($PY -c "import json;print(json.load(open('$WORK/s10/gates.json'))['thor_build_dir'])"); re-run chain2 (rm done.c2_s12_thor done.c2_s12_final) to gate and publish it as an extra release" >> $FOLLOW
+  fi
+else log "trellis sub-arm skipped: no s08 gemv_bench"; fi
 # leafllm stays paused while OWNER_FOLLOWUP lists Thor work (ops/sd/watchdog.py checks it)
 log "chain2 reached the end: s11 decision $ST11, CUDA_OK=$CUDA_OK, follow-ups: $( [ -f $FOLLOW ] && wc -l < $FOLLOW || echo 0)"
