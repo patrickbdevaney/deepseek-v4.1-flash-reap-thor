@@ -392,7 +392,12 @@ def publish(a):
             ctx["gguf"]["dspark_section"] = dspark_section(dg, SD.FILE, repo)
             if dg is not None and dg["pass"]:
                 files.append((SD.OUT / SD.FILE, SD.FILE))     # repo root: where -hf looks for dspark-*.gguf
-            plan.append(("gguf", repo, bool(gg["passing"]), {"name": repo.split("/")[-1], "repo": repo, "n_routed": m["n_routed_experts"]},
+            # The "gguf" gate is defined as the ladder of the PUBLISHED master and has no beat-random or bucket
+            # clause of its own; a GGUF of a master that failed its release gate must not go public through it.
+            gguf_ok = bool(gg["passing"]) and bool(g["mxfp4_master"])
+            if gg["passing"] and not g["mxfp4_master"]:
+                env.log("gguf: levels passed s09 but the MXFP4 master failed its release gate; kept private", STAGE, "WARN")
+            plan.append(("gguf", repo, gguf_ok, {"name": repo.split("/")[-1], "repo": repo, "n_routed": m["n_routed_experts"]},
                          files))
     if "thor" in only:
         tc = ctx.get("thor_build")
