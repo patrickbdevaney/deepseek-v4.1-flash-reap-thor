@@ -1,0 +1,16 @@
+prefill_n20          mask_active=0 queries= 20 blocks_equal=1 topk_equal=1 max|out err|=2.643e-07 max|score err|=7.538e-08 min_boundary_gap=inf unreachable_kept=44 model.py_select_equal=1
+prefill_n32          mask_active=0 queries= 32 blocks_equal=1 topk_equal=1 max|out err|=4.058e-07 max|score err|=6.434e-08 min_boundary_gap=inf unreachable_kept=48 model.py_select_equal=1
+prefill_n33          mask_active=1 queries= 33 blocks_equal=1 topk_equal=1 max|out err|=3.641e-07 max|score err|=7.528e-08 min_boundary_gap=4.695e-02 unreachable_kept=48 model.py_select_equal=1
+prefill_n100         mask_active=1 queries=100 blocks_equal=1 topk_equal=1 max|out err|=3.051e-07 max|score err|=1.271e-07 min_boundary_gap=6.609e-04 unreachable_kept=48 model.py_select_equal=1
+prefill_n300         mask_active=1 queries=300 blocks_equal=1 topk_equal=1 max|out err|=4.459e-07 max|score err|=1.318e-07 min_boundary_gap=4.741e-05 unreachable_kept=48 model.py_select_equal=1
+prefill_n20_pad256   mask_active=0 queries= 20 blocks_equal=1 topk_equal=1 max|out err|=2.623e-07 max|score err|=7.814e-08 min_boundary_gap=inf unreachable_kept=44 model.py_select_equal=1
+decode_p19           mask_active=0 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=1.743e-07 max|score err|=3.688e-08 min_boundary_gap=inf unreachable_kept=1 model.py_select_equal=1
+decode_p31           mask_active=0 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=1.117e-07 max|score err|=2.232e-08 min_boundary_gap=inf unreachable_kept=0 model.py_select_equal=1
+decode_p32           mask_active=1 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=1.224e-07 max|score err|=6.365e-08 min_boundary_gap=6.554e-02 unreachable_kept=0 model.py_select_equal=1
+decode_p99           mask_active=1 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=2.578e-07 max|score err|=4.950e-08 min_boundary_gap=1.634e-02 unreachable_kept=0 model.py_select_equal=1
+decode_p299          mask_active=1 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=1.698e-07 max|score err|=5.723e-08 min_boundary_gap=7.439e-03 unreachable_kept=0 model.py_select_equal=1
+decode_p300_big      mask_active=1 queries=  1 blocks_equal=1 topk_equal=1 max|out err|=2.614e-07 max|score err|=4.160e-08 min_boundary_gap=3.346e-02 unreachable_kept=0 model.py_select_equal=1
+chunk_p280_q16       mask_active=1 queries= 16 blocks_equal=1 topk_equal=1 max|out err|=2.298e-07 max|score err|=9.087e-08 min_boundary_gap=2.742e-04 unreachable_kept=0 model.py_select_equal=1
+stream2_decode       mask_active=1 queries=  2 blocks_equal=1 topk_equal=1 max|out err|=1.942e-07 max|score err|=4.752e-08 min_boundary_gap=4.554e-03 unreachable_kept=1 model.py_select_equal=1
+stream2_chunk        mask_active=1 queries= 16 blocks_equal=1 topk_equal=1 max|out err|=3.060e-07 max|score err|=7.568e-08 min_boundary_gap=8.027e-03 unreachable_kept=14 model.py_select_equal=1
+OK: 0 failing case(s); worst attention max|err| 4.459e-07, worst level-one score max|err| 1.318e-07

@@ -1,0 +1,420 @@
+From fc4f2a55ff99f2183541876e183f7ffd9646dfd3 Mon Sep 17 00:00:00 2001
+From: Patrick Devaney <patrickbdevaney@gmail.com>
+Date: Sat, 24 Oct 2026 04:58:24 -0400
+Subject: [PATCH] deepseek41 : two-level candidate-block mask, lift the 16384
+ clamp when present
+
+The reference (model.py Indexer.forward, select_candidate_blocks) has the candidate source
+layer (20) score its compressed rows as usual, take the best row of every block of 8, pin the
+block holding the query's newest row, and keep the top 2048 blocks. Every later index source
+(24, 28, 32, 36) masks its own indexer score to those blocks before its top-k; the layers in
+between reuse that top-k (patch 0002). The source itself is not restricted. Past 2048 x 8
+compressed rows this tree attended outside the picked blocks and silently diverged.
+
+- src/models/deepseek41-candidates.h: the mask as a ggml subgraph from existing ops only
+  (pool_1d max, exp/pad/sub for the pin, top_k, fill + set_rows, broadcast add); no new op,
+  every op already has a CUDA kernel. While n_blocks <= topk_blocks every reachable block is
+  kept, so nothing is built and the graph is exactly the old one.
+- deepseek41.cpp: build at the candidate source, apply at later index sources, prefill and
+  decode alike (per-query n_visible from the plan's causal mask).
+- Optional KVs deepseek41.candidate.{source_layer,topk_blocks,block_size}, written by the
+  converter from config.json and checked at load (source must be an index source; later index
+  sources must share its ratio; block size must divide the 256-row plan padding).
+- llama-context: the 0006 clamp now applies only to a file without those keys. Older files can
+  pass them with --override-kv; LLAMA_DSV41_UNSAFE_LONG_CTX keeps its meaning there and is
+  ignored when the mask is present.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01FRxsM9A6MEwiwPjBPC6hDa
+---
+ conversion/deepseek.py             |  14 ++++
+ gguf-py/gguf/constants.py          |   5 ++
+ src/llama-arch.cpp                 |   3 +
+ src/llama-arch.h                   |   3 +
+ src/llama-context.cpp              |  18 +++--
+ src/llama-hparams.h                |  10 +++
+ src/models/deepseek41-candidates.h | 126 +++++++++++++++++++++++++++++
+ src/models/deepseek41.cpp          |  69 +++++++++++++++-
+ src/models/models.h                |   4 +
+ 9 files changed, 242 insertions(+), 10 deletions(-)
+ create mode 100644 src/models/deepseek41-candidates.h
+
+diff --git a/conversion/deepseek.py b/conversion/deepseek.py
+index 76e75d066..e11b5f4bb 100644
+--- a/conversion/deepseek.py
++++ b/conversion/deepseek.py
+@@ -1280,6 +1280,20 @@ class DeepseekV41Model(DeepseekV4Model):
+     def set_gguf_parameters(self):
+         super().set_gguf_parameters()
+         hparams = self.hparams
++
++        # Two-level candidate mask (model.py select_candidate_blocks). Without these keys the
++        # runtime has no mask and caps the context at topk_blocks * block_size compressed rows.
++        cand_src = hparams.get("candidate_source_layer_id", -1)
++        if cand_src is not None and cand_src >= 0:
++            arch = self.gguf_writer.arch
++            topk_blocks = int(hparams["candidate_topk_blocks"])
++            block_size = int(hparams["candidate_block_size"])
++            if topk_blocks <= 0 or block_size <= 0 or 256 % block_size != 0:
++                raise ValueError(f"candidate mask: {topk_blocks} blocks of {block_size} rows is not supported")
++            self.gguf_writer.add_uint32(gguf.Keys.Candidate.SOURCE_LAYER.format(arch=arch), int(cand_src))
++            self.gguf_writer.add_uint32(gguf.Keys.Candidate.TOPK_BLOCKS.format(arch=arch), topk_blocks)
++            self.gguf_writer.add_uint32(gguf.Keys.Candidate.BLOCK_SIZE.format(arch=arch), block_size)
++
+         if (engram_ids := hparams.get("engram_layer_ids")) is not None:
+             # These MUST carry the arch prefix, not a literal "deepseek4.". llama.cpp resolves
+             # every LLM_KV_* as "{arch}.{key}", so a hardcoded prefix means the runtime looks up
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index a2f627c3e..24579fb99 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -247,6 +247,11 @@ class Keys:
+         TOKEN_MAP      = "{arch}.engram.token_map"
+         PAD_ID         = "{arch}.engram.pad_id"
+ 
++    class Candidate:
++        SOURCE_LAYER = "{arch}.candidate.source_layer"
++        TOPK_BLOCKS  = "{arch}.candidate.topk_blocks"
++        BLOCK_SIZE   = "{arch}.candidate.block_size"
++
+     class PerLayerEmbedding:
+         LAYERS             = "{arch}.ple.layers"
+         NGRAM_SIZE         = "{arch}.ple.ngram_size"
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 80abdc3d0..5591db202 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -303,6 +303,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+     { LLM_KV_ENGRAM_TOKEN_MAP,                       "%s.engram.token_map"                       },
+     { LLM_KV_ENGRAM_PAD_ID,                          "%s.engram.pad_id"                          },
+     { LLM_KV_REAP_ROUTED_GAIN,                       "%s.reap.routed_gain"                       },
++    { LLM_KV_CANDIDATE_SOURCE_LAYER,                 "%s.candidate.source_layer"                 },
++    { LLM_KV_CANDIDATE_TOPK_BLOCKS,                  "%s.candidate.topk_blocks"                  },
++    { LLM_KV_CANDIDATE_BLOCK_SIZE,                   "%s.candidate.block_size"                   },
+     { LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,           "%s.attention.output_group_count"           },
+     { LLM_KV_ATTENTION_OUTPUT_LORA_RANK,             "%s.attention.output_lora_rank"             },
+     { LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE,      "%s.attention.compress_rope_freq_base"      },
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 4652689e0..c70b29301 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -308,6 +308,9 @@ enum llm_kv {
+     LLM_KV_ENGRAM_TOKEN_MAP,
+     LLM_KV_ENGRAM_PAD_ID,
+     LLM_KV_REAP_ROUTED_GAIN,
++    LLM_KV_CANDIDATE_SOURCE_LAYER,
++    LLM_KV_CANDIDATE_TOPK_BLOCKS,
++    LLM_KV_CANDIDATE_BLOCK_SIZE,
+     LLM_KV_ATTENTION_OUTPUT_GROUP_COUNT,
+     LLM_KV_ATTENTION_OUTPUT_LORA_RANK,
+     LLM_KV_ATTENTION_COMPRESS_ROPE_FREQ_BASE,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 1b27524ab..7d22ee31f 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -304,15 +304,19 @@ llama_context::llama_context(
+         }
+     }
+ 
+-    // DeepSeek-V4.1: this tree has no two-level candidate mask (deepseek41.cpp). Past candidate_topk_blocks x
+-    // candidate_block_size = 2048 x 8 compressed rows of the ratio-1 source the reference restricts layers 21-39 to
+-    // the picked blocks and this graph does not, so output silently diverges. Clamp until the mask is implemented;
+-    // LLAMA_DSV41_UNSAFE_LONG_CTX=1 lifts the clamp (only for testing a port of the mask).
+-    if (model.arch == LLM_ARCH_DEEPSEEK41 && !getenv("LLAMA_DSV41_UNSAFE_LONG_CTX")) {
++    // DeepSeek-V4.1: past candidate_topk_blocks x candidate_block_size = 2048 x 8 compressed rows of the ratio-1
++    // source the reference restricts the index sources after layer 20 to the blocks it picked (deepseek41.cpp,
++    // deepseek41-candidates.h). The graph builds that mask only when the file carries the deepseek41.candidate.*
++    // keys; without them, output would silently diverge there, so the context is clamped. A file converted
++    // before the keys existed can supply them with --override-kv deepseek41.candidate.source_layer=int:20
++    // (plus topk_blocks=int:2048, block_size=int:8). LLAMA_DSV41_UNSAFE_LONG_CTX=1 still lifts the clamp on a
++    // file without them, for measuring the unmasked divergence; it has no effect when the mask is present.
++    if (model.arch == LLM_ARCH_DEEPSEEK41 && !model.hparams.dsv41_has_candidates() && !getenv("LLAMA_DSV41_UNSAFE_LONG_CTX")) {
+         const uint32_t cap = 2048u * 8u;
+         if (cparams.n_ctx_seq > cap) {
+-            LLAMA_LOG_WARN("%s: DeepSeek-V4.1: n_ctx_seq %u clamped to %u: the candidate-block mask is not implemented "
+-                           "in this build, and longer contexts diverge from the model\n", __func__, cparams.n_ctx_seq, cap);
++            LLAMA_LOG_WARN("%s: DeepSeek-V4.1: n_ctx_seq %u clamped to %u: the file has no deepseek41.candidate.* keys, "
++                           "so the candidate-block mask is off and longer contexts diverge from the model\n",
++                           __func__, cparams.n_ctx_seq, cap);
+             cparams.n_ctx_seq = cap;
+             cparams.n_ctx     = cparams.kv_unified ? cap : cap * cparams.n_seq_max;
+         }
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index 69dfd47b0..49dfc3b5a 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -333,6 +333,16 @@ struct llama_hparams {
+     bool dsv41_owns_index_k   (uint32_t il) const { return dsv41_index_key_source[il] == (int32_t) il; }
+     bool dsv41_is_index_source(uint32_t il) const { return dsv41_topk_source[il]      == (int32_t) il; }
+ 
++    // DeepSeek-V4.1 two-level candidate mask (model.py select_candidate_blocks), read from the
++    // optional %s.candidate.* keys: index sources after dsv41_candidate_source score only inside
++    // its top dsv41_candidate_topk_blocks blocks of dsv41_candidate_block_size compressed rows.
++    // -1 means the file carries no mask, and llama_context then caps the context (see there).
++    int32_t  dsv41_candidate_source      = -1;
++    uint32_t dsv41_candidate_topk_blocks = 0;
++    uint32_t dsv41_candidate_block_size  = 0;
++
++    bool dsv41_has_candidates() const { return dsv41_candidate_source >= 0; }
++
+     uint32_t ple_ngram_size      = 0;
+     uint32_t ple_heads_per_ngram = 0;
+     uint32_t ple_conv_kernel     = 0;
+diff --git a/src/models/deepseek41-candidates.h b/src/models/deepseek41-candidates.h
+new file mode 100644
+index 000000000..f891d57f2
+--- /dev/null
++++ b/src/models/deepseek41-candidates.h
+@@ -0,0 +1,126 @@
++#pragma once
++
++// DeepSeek-V4.1 two-level top-k, level one: the candidate-block mask.
++//
++// Reference: inference/model.py, select_candidate_blocks() and Indexer.forward(). The candidate
++// source layer (candidate_source_layer_id, 20) scores every compressed row with its indexer as
++// usual, then groups the rows into blocks of candidate_block_size (8) and keeps the
++// candidate_topk_blocks (2048) blocks with the highest best row. The block holding the query's
++// newest row is always kept. Every later index source (24, 28, 32, 36) masks its own indexer score
++// to those blocks before its top-k; the layers in between reuse that top-k (patch 0002), so they
++// inherit the restriction. The source layer itself does not apply the mask.
++//
++// Only existing ggml ops are used (pool_1d, exp, pad, sub, scale, add, top_k, fill, set_rows), so
++// every backend that runs the indexer already runs this. Kept in a header with no llama.cpp
++// dependencies so tests/test-dsv41-candidates.cpp can build exactly this graph on the CPU.
++
++#include "ggml.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++
++static inline ggml_tensor * dsv41_cont(ggml_context * ctx, ggml_tensor * t) {
++    return ggml_is_contiguous(t) ? t : ggml_cont(ctx, t);
++}
++
++// score: F32 [n_comp, n_q, 1, n_stream], the source layer's indexer score with the causal mask
++//        already added (rows a query cannot reach are -inf).
++// mask:  F32 [n_comp, n_q, 1, n_stream], that causal mask: 0 for row j < n_visible(query), else -inf.
++//
++// Returns F32 [n_blocks, n_q, 1, n_stream]: 0 for a kept block, -inf for a dropped one; add it to a
++// later index source's score with dsv41_apply_candidate_blocks(). Returns nullptr when there are
++// no more blocks than topk_blocks: every reachable block is then kept and the mask changes nothing
++// (model.py: topk(min(topk_blocks, num_blocks)) then `top.values > -inf`), so the graph stays the
++// one this tree had before the mask existed. `force` builds it anyway (tests only).
++static inline ggml_tensor * dsv41_build_candidate_blocks(
++        ggml_context * ctx,
++        ggml_tensor * score,
++        ggml_tensor * mask,
++        int64_t topk_blocks,
++        int64_t block_size,
++        bool force = false) {
++    GGML_ASSERT(score->type == GGML_TYPE_F32 && mask->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_are_same_shape(score, mask));
++    GGML_ASSERT(score->ne[2] == 1);
++    GGML_ASSERT(topk_blocks > 0 && block_size > 0);
++
++    const int64_t n_comp   = score->ne[0];
++    const int64_t n_q      = score->ne[1];
++    const int64_t n_stream = score->ne[3];
++
++    // the compressed caches and their plans are padded to a multiple of 256 rows, so a block never
++    // straddles the end; the loader only accepts block sizes that divide 256
++    GGML_ASSERT(n_comp % block_size == 0);
++    const int64_t n_blocks = n_comp / block_size;
++
++    if (n_blocks <= topk_blocks && !force) {
++        return nullptr;
++    }
++    const int64_t k = std::min(topk_blocks, n_blocks);
++
++    // block score = its best row. An all -inf block comes out as -FLT_MAX (pool_1d starts from
++    // -FLT_MAX on CPU and CUDA alike), which still ranks below every reachable block; and since
++    // its rows are all -inf in every consumer's score too, keeping or dropping it is the same.
++    ggml_tensor * bscore = ggml_pool_1d(ctx, dsv41_cont(ctx, score), GGML_OP_POOL_MAX, (int) block_size, (int) block_size, 0);
++
++    // Pin the block holding the newest reachable row, (n_visible - 1) / block_size, as the reference
++    // does with +inf: it is only partly filled and could otherwise lose to an older full block.
++    // Visibility is monotone in the row (j < n_visible), so a block is visible iff its first row
++    // is, and the pinned block is the last visible one: vis[b] - vis[b+1] is 1 there and 0
++    // elsewhere. A query that sees nothing pins nothing (reference: last = -1).
++    ggml_tensor * vis = ggml_reshape_4d(ctx, dsv41_cont(ctx, mask), block_size, n_blocks, n_q, n_stream);
++    vis = ggml_view_4d(ctx, vis, 1, n_blocks, n_q, n_stream, vis->nb[1], vis->nb[2], vis->nb[3], 0);
++    vis = ggml_reshape_4d(ctx, ggml_cont(ctx, vis), n_blocks, n_q, 1, n_stream);
++    vis = ggml_exp(ctx, vis);                                   // 0 -> 1, -inf -> 0
++
++    ggml_tensor * vis_next = ggml_pad(ctx, vis, 1, 0, 0, 0);    // [n_blocks + 1, ...], last = 0
++    vis_next = ggml_view_4d(ctx, vis_next, n_blocks, n_q, 1, n_stream,
++            vis_next->nb[1], vis_next->nb[2], vis_next->nb[3], ggml_element_size(vis_next));
++    vis_next = ggml_cont(ctx, vis_next);
++
++    // +1e30 instead of +inf: the pinned block's score is finite, so this ranks it above every
++    // other block (index scores are O(1e2)) without inf arithmetic; only the kept set matters.
++    ggml_tensor * pin = ggml_scale(ctx, ggml_sub(ctx, vis, vis_next), 1e30f);
++    bscore = ggml_add(ctx, bscore, pin);
++
++    ggml_tensor * top = ggml_cont(ctx, ggml_top_k(ctx, bscore, (int) k));   // I32 [k, n_q, 1, n_stream]
++
++    // scatter 0 into a -inf block row at the picked blocks, one element per row (as
++    // build_top_k_mask does for the index top-k)
++    ggml_tensor * keep = ggml_fill(ctx, bscore, -INFINITY);
++    keep = ggml_view_4d(ctx, keep, 1, n_blocks, n_q, n_stream, keep->nb[0], keep->nb[1], keep->nb[3], 0);
++
++    ggml_tensor * top_3d = ggml_view_4d(ctx, top, k, n_q, n_stream, 1, top->nb[1], top->nb[3], n_stream*top->nb[3], 0);
++
++    ggml_tensor * zeros = ggml_fill(ctx, ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, k, n_q, n_stream), 0.0f);
++
++    keep = ggml_set_rows(ctx, keep, zeros, top_3d);
++    keep = ggml_view_4d(ctx, keep, n_blocks, n_q, 1, n_stream, keep->nb[2], keep->nb[3], keep->nb[3], 0);
++
++    return keep;
++}
++
++// score: F32 [n_comp, n_q, 1, n_stream] of a later index source (causal mask already added).
++// keep:  what dsv41_build_candidate_blocks() returned for the same plan (same n_comp, n_q).
++// Every row of a dropped block becomes -inf (model.py: index_score.masked_fill(~candidates, -inf)).
++static inline ggml_tensor * dsv41_apply_candidate_blocks(
++        ggml_context * ctx,
++        ggml_tensor * score,
++        ggml_tensor * keep,
++        int64_t block_size) {
++    const int64_t n_comp   = score->ne[0];
++    const int64_t n_q      = score->ne[1];
++    const int64_t n_stream = score->ne[3];
++    const int64_t n_blocks = keep->ne[0];
++
++    GGML_ASSERT(score->ne[2] == 1);
++    GGML_ASSERT(n_comp == n_blocks*block_size);
++    GGML_ASSERT(keep->ne[1] == n_q && keep->ne[3] == n_stream);
++
++    ggml_tensor * s = ggml_reshape_4d(ctx, dsv41_cont(ctx, score), block_size, n_blocks, n_q, n_stream);
++    ggml_tensor * m = ggml_reshape_4d(ctx, dsv41_cont(ctx, keep), 1, n_blocks, n_q, n_stream);
++    s = ggml_add(ctx, s, m);   // broadcast over the rows of each block
++
++    return ggml_reshape_4d(ctx, s, n_comp, n_q, 1, n_stream);
++}
+diff --git a/src/models/deepseek41.cpp b/src/models/deepseek41.cpp
+index 7fab76214..18c198ff4 100644
+--- a/src/models/deepseek41.cpp
++++ b/src/models/deepseek41.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "llama-kv-cache-dsv4.h"
+ #include "deepseek41-engram-rowstore.h"
++#include "deepseek41-candidates.h"
+ 
+ #include <algorithm>
+ #include <cinttypes>
+@@ -30,9 +31,10 @@
+ // it derives index keys from that shared latent rather than from a second compressor. See
+ // build_attention_v41().
+ //
+-// Not implemented: the two level candidate mask. Measured against the reference, it selects every
+-// block until the compressed length passes candidate_topk_blocks * candidate_block_size, so it
+-// changes nothing below that and the context is capped there instead.
++// The two-level candidate mask (deepseek41-candidates.h) is built when the file carries the
++// %s.candidate.* keys. It keeps every block until the compressed length passes
++// candidate_topk_blocks * candidate_block_size, so below that the graph is the one without it.
++// Without the keys llama_context caps the context there instead.
+ 
+ // mean over the hyper-connection copies; deepseek4.cpp keeps its own copy of this
+ static ggml_tensor * dsv41_hc_mean(ggml_context * ctx, ggml_tensor * x) {
+@@ -100,6 +102,30 @@ void llama_model_deepseek41::load_arch_hparams(llama_model_loader & ml) {
+         }
+     }
+ 
++    // optional two-level candidate mask; checked against the layer roles in load_arch_tensors
++    {
++        uint32_t src = 0;
++        hparams.dsv41_candidate_source      = -1;
++        hparams.dsv41_candidate_topk_blocks = 0;
++        hparams.dsv41_candidate_block_size  = 0;
++        if (ml.get_key(LLM_KV_CANDIDATE_SOURCE_LAYER, src, false)) {
++            ml.get_key(LLM_KV_CANDIDATE_TOPK_BLOCKS, hparams.dsv41_candidate_topk_blocks);
++            ml.get_key(LLM_KV_CANDIDATE_BLOCK_SIZE,  hparams.dsv41_candidate_block_size);
++            if (src >= hparams.n_layer()) {
++                throw std::runtime_error(format("candidate source layer %u is out of range", src));
++            }
++            // the compressed plans and caches are padded to multiples of 256 rows, and a block
++            // must not straddle that end
++            const uint32_t bs = hparams.dsv41_candidate_block_size;
++            if (hparams.dsv41_candidate_topk_blocks == 0 || bs == 0 || 256 % bs != 0) {
++                throw std::runtime_error(format("candidate mask: %u blocks of %u rows is not supported "
++                                                "(need at least one block, and a block size dividing 256)",
++                                                hparams.dsv41_candidate_topk_blocks, bs));
++            }
++            hparams.dsv41_candidate_source = (int32_t) src;
++        }
++    }
++
+     ml.get_arr(LLM_KV_ENGRAM_MULTIPLIERS, engram_multipliers);
+     ml.get_arr(LLM_KV_ENGRAM_PRIMES,      engram_primes);
+     ml.get_arr(LLM_KV_ENGRAM_OFFSETS,     engram_offsets);
+@@ -289,6 +315,25 @@ void llama_model_deepseek41::load_arch_tensors(llama_model_loader & ml) {
+         hparams.dsv41_topk_source[i]      = last_index_source;
+     }
+ 
++    // The candidate mask is a per-row mask over the source's compressed rows, so the source must
++    // run an indexer and every later index source must read rows laid out the same way (the
++    // reference would fail to broadcast otherwise).
++    if (hparams.dsv41_has_candidates()) {
++        const int32_t cs = hparams.dsv41_candidate_source;
++        if (!hparams.dsv41_is_index_source(cs) || hparams.dsv4_compress_ratios[cs] == 0) {
++            throw std::runtime_error(format("candidate source layer %d is not an index source", cs));
++        }
++        for (int i = cs + 1; i < n_layer; ++i) {
++            if (hparams.dsv41_is_index_source(i) &&
++                hparams.dsv4_compress_ratios[i] != hparams.dsv4_compress_ratios[cs]) {
++                throw std::runtime_error(format("index source %d compresses at ratio %u, candidate source %d at %u",
++                                                i, hparams.dsv4_compress_ratios[i], cs, hparams.dsv4_compress_ratios[cs]));
++            }
++        }
++        LLAMA_LOG_INFO("%s: candidate mask: layers after %d keep the top %u blocks of %u compressed rows\n", __func__,
++                       cs, hparams.dsv41_candidate_topk_blocks, hparams.dsv41_candidate_block_size);
++    }
++
+     // a compressor with no gate only makes sense where there is nothing to pool
+     for (int i = 0; i < n_layer; ++i) {
+         if (hparams.dsv41_is_kv_source(i) && !layers[i].attn_comp_wgate && hparams.dsv4_compress_ratios[i] != 1) {
+@@ -644,6 +689,24 @@ ggml_tensor * llama_model_deepseek41::graph::build_indexer_top_k(
+     score = ggml_add(ctx0, score, mask);
+     cb(score, "idx_score", il);
+ 
++    // Two-level top-k (model.py Indexer.forward): the candidate source picks blocks from its own
++    // score but does not restrict itself; every later index source scores only inside them.
++    // published_candidates stays null while every block is kept, which is then a no-op.
++    if (hparams.dsv41_has_candidates()) {
++        const int32_t cs = hparams.dsv41_candidate_source;
++        if (il == cs) {
++            published_candidates = dsv41_build_candidate_blocks(ctx0, score, mask,
++                    hparams.dsv41_candidate_topk_blocks, hparams.dsv41_candidate_block_size);
++            if (published_candidates) {
++                cb(published_candidates, "idx_cand_blocks", il);
++            }
++        } else if (il > cs && published_candidates) {
++            score = dsv41_apply_candidate_blocks(ctx0, score, published_candidates,
++                    hparams.dsv41_candidate_block_size);
++            cb(score, "idx_score_cand", il);
++        }
++    }
++
+     const uint32_t n_top_k = score->ne[0] < hparams.indexer_top_k ? score->ne[0] : hparams.indexer_top_k;
+ 
+     ggml_tensor * top_k = ggml_cont(ctx0, ggml_top_k(ctx0, score, n_top_k));
+diff --git a/src/models/models.h b/src/models/models.h
+index a16cb12eb..559fa151b 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -1441,6 +1441,10 @@ struct llama_model_deepseek41 : public llama_model_deepseek4 {
+         // the top-k each index source published, read by the layers after it (as
+         // shared_attn.topk_idxs in the reference); without it a reader attends to every row
+         mutable std::array<ggml_tensor *, LLAMA_MAX_LAYERS> published_top_k{};
++
++        // the candidate source's kept blocks, F32 [n_blocks, n_q, 1, n_stream] of 0 / -inf (as
++        // shared_attn.candidates in the reference); null when absent or when every block is kept
++        mutable ggml_tensor * published_candidates = nullptr;
+     };
+ 
+     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+-- 
+2.43.0
+

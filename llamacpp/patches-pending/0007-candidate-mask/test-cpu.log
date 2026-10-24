@@ -1,0 +1,16 @@
+prefill_n20          S=1 Q= 20 n_comp=  32 n_blocks=  4 max_vis= 20  mask_built=0  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+prefill_n32          S=1 Q= 32 n_comp=  32 n_blocks=  4 max_vis= 32  mask_built=0  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+prefill_n33          S=1 Q= 33 n_comp=  64 n_blocks=  8 max_vis= 33  mask_built=1  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+prefill_n100         S=1 Q=100 n_comp= 128 n_blocks= 16 max_vis=100  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.88   old-vs-forced: bits_equal=0 max|d|=2.88
+prefill_n300         S=1 Q=300 n_comp= 320 n_blocks= 40 max_vis=300  mask_built=1  old-vs-new: bits_equal=0 max|d|=3.53   old-vs-forced: bits_equal=0 max|d|=3.53
+prefill_n20_pad256   S=1 Q= 20 n_comp= 256 n_blocks= 32 max_vis= 20  mask_built=1  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+decode_p19           S=1 Q=  1 n_comp=  32 n_blocks=  4 max_vis= 20  mask_built=0  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+decode_p31           S=1 Q=  1 n_comp=  32 n_blocks=  4 max_vis= 32  mask_built=0  old-vs-new: bits_equal=1 max|d|=0   old-vs-forced: bits_equal=1 max|d|=0
+decode_p32           S=1 Q=  1 n_comp=  64 n_blocks=  8 max_vis= 33  mask_built=1  old-vs-new: bits_equal=0 max|d|=0.727   old-vs-forced: bits_equal=0 max|d|=0.727
+decode_p99           S=1 Q=  1 n_comp= 128 n_blocks= 16 max_vis=100  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.25   old-vs-forced: bits_equal=0 max|d|=2.25
+decode_p299          S=1 Q=  1 n_comp= 512 n_blocks= 64 max_vis=300  mask_built=1  old-vs-new: bits_equal=0 max|d|=1.82   old-vs-forced: bits_equal=0 max|d|=1.82
+decode_p300_big      S=1 Q=  1 n_comp=1024 n_blocks=128 max_vis=301  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.24   old-vs-forced: bits_equal=0 max|d|=2.24
+chunk_p280_q16       S=1 Q= 16 n_comp= 512 n_blocks= 64 max_vis=296  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.72   old-vs-forced: bits_equal=0 max|d|=2.72
+stream2_decode       S=2 Q=  1 n_comp= 256 n_blocks= 32 max_vis=201  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.09   old-vs-forced: bits_equal=0 max|d|=2.09
+stream2_chunk        S=2 Q=  8 n_comp= 256 n_blocks= 32 max_vis=158  mask_built=1  old-vs-new: bits_equal=0 max|d|=2.67   old-vs-forced: bits_equal=0 max|d|=2.67
+OK: 0 structural failure(s)
