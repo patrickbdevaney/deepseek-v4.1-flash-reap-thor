@@ -50,12 +50,13 @@ struct Prompt {
 
 int main(int argc, char** argv) {
     std::string ckpt, ref, keepset, egdir;
-    int chunk = 128; bool hw = true;
+    int chunk = 128; bool hw = true, head_only = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--ckpt") ckpt = next(); else if (a == "--ref") ref = next(); else if (a == "--keepset") keepset = next();
         else if (a == "--chunk") chunk = atoi(next().c_str()); else if (a == "--sw-mxfp4") hw = false;
+        else if (a == "--head-only") head_only = true;
         else if (a == "--engram") egdir = next();
         else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 2; }
     }
@@ -75,6 +76,37 @@ int main(int argc, char** argv) {
     v41m::Model G;
     { v41m::LoadOpts o; o.layer_lo = 0; o.layer_hi = -1; o.embed_head = true; o.keepset_sha256 = ks_sha; v41m::load_model(G, ckpt, o); }
 
+    if (head_only) {   // the head alone, on the reference's own layer-39 output rows: argmax + last-row logits cos
+        cudaStream_t hs; CK(cudaStreamCreateWithFlags(&hs, cudaStreamNonBlocking));
+        v41m::State s; v41m::alloc_state(s, 256, 1);
+        int* dt; CK(cudaMalloc(&dt, 4));
+        int bad = 0;
+        for (auto it = meta["prompts"].begin(); it != meta["prompts"].end(); ++it) {
+            const std::string nm = it.key();
+            const Npy rh = npy_load(ref + "/" + nm + "/L39_h.npy"), rp = npy_load(ref + "/" + nm + "/L39_pre.npy");
+            const Npy am = npy_load(ref + "/" + nm + "/head_argmax.npy"), ll = npy_load(ref + "/" + nm + "/head_last_logits.npy");
+            const int S = (int)am.shape[0];
+            long agree = 0; std::vector<float> hf(HC_DIM), lg(VOCAB);
+            for (int r = 0; r < S; ++r) {
+                for (int k = 0; k < HC_DIM; ++k) hf[k] = bf(rh.as<uint16_t>()[(size_t)r * HC_DIM + k]);
+                CK(cudaMemcpy(s.h, hf.data(), HC_DIM * 4, cudaMemcpyHostToDevice));
+                CK(cudaMemcpy(s.pre, rp.as<float>() + (size_t)r * 4, 16, cudaMemcpyHostToDevice));
+                v41m::head_row(G, s, 0, hs); v41m::argmax_logits(s, dt, hs);
+                CK(cudaStreamSynchronize(hs));   // per-thread default stream: cudaMemcpy does not wait for hs
+                int t; CK(cudaMemcpy(&t, dt, 4, cudaMemcpyDeviceToHost));
+                agree += t == am.as<int32_t>()[r];
+                if (r < 4) printf("    %s row %d: cuda %d ref %d\n", nm.c_str(), r, t, am.as<int32_t>()[r]);
+            }
+            CK(cudaMemcpy(lg.data(), s.logits, VOCAB * 4, cudaMemcpyDeviceToHost));
+            double d = 0, a2 = 0, b2 = 0;
+            for (int v = 0; v < VOCAB; ++v) { d += (double)lg[v] * ll.as<float>()[v]; a2 += (double)lg[v] * lg[v]; b2 += (double)ll.as<float>()[v] * ll.as<float>()[v]; }
+            const double ag = (double)agree / S;
+            bad += ag < 0.99;
+            printf("  head %-8s argmax agreement %.4f (%ld/%d), last-row logits cos %.6f\n", nm.c_str(), ag, agree, S, d / std::sqrt(a2 * b2 + 1e-300));
+        }
+        printf("Gate V41 GOLDEN head-only: %s\n", bad ? "FAIL" : "PASS");
+        return bad ? 1 : 0;
+    }
     std::vector<Prompt> P;
     for (auto it = meta["prompts"].begin(); it != meta["prompts"].end(); ++it) {
         Prompt p; p.name = it.key(); p.T = it.value()["T"]; p.from = it.value()["save_from"];
@@ -211,11 +243,13 @@ int main(int argc, char** argv) {
             long agree = 0;
             const int S = p.T - p.from;
             for (int r = 0; r < S; ++r) {
+                CK(cudaStreamSynchronize(st));   // the previous row's head on st still reads p.sc.h
                 CK(cudaMemcpy(p.sc.h, p.Hc + (size_t)(p.from + r) * HC_DIM, HC_DIM * 4, cudaMemcpyDeviceToDevice));
                 CK(cudaMemcpy(p.sc.pre, p.Pc + (size_t)(p.from + r) * 4, 16, cudaMemcpyDeviceToDevice));
                 v41m::head_row(G, p.sc, 0, st);
                 int* dt; CK(cudaMalloc(&dt, 4));
                 v41m::argmax_logits(p.sc, dt, st);
+                CK(cudaStreamSynchronize(st));   // per-thread default stream: cudaMemcpy does not wait for st
                 int t; CK(cudaMemcpy(&t, dt, 4, cudaMemcpyDeviceToHost)); cudaFree(dt);
                 agree += t == am.as<int32_t>()[r];
             }
