@@ -8,7 +8,7 @@ tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
 
 {{ base.repo }} with {{ gguf.n_routed_experts | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer, as a GGUF for a llama.cpp fork, built to run on one machine with 128 GB of memory and an NVMe drive.
 
-**Text only for now.** The vision tower is not in these files (the converter routes it to an mmproj file, which is not built yet) and the llama.cpp fork has no V4.1 vision path. For images use the MXFP4 master in an engine with V4.1 vision support. An mmproj and vision support for the fork are planned.
+**Text only for now.** The vision tower is not in these files (the converter routes it to an mmproj file, which is not built yet) and the llama.cpp fork has no V4.1 vision path. For images use the MXFP4 master in an engine with V4.1 vision support. An mmproj and vision support for the fork are planned and will be added to this repository.
 
 ## Run it in 128 GB: weights in memory, Engram on NVMe
 
