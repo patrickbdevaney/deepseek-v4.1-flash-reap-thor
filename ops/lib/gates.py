@@ -106,6 +106,11 @@ def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift
 def thor_quant(summary: dict, cmp_vs_mxfp4: dict, g: dict, **kw) -> dict:
     t = g["release"]["thor_quant"]
     r = pruned_floor(summary, g, **kw) if t.get("apply_pruned_floor") else {"pass": True, "why": [], "notes": []}
+    wv = t.get("waived_min_top1")
+    if wv:   # owner waiver, recorded with its date: the overall top-1 floor is reported, not enforced, for this build
+        hit = [w for w in r["why"] if w.startswith("top1 ")]
+        r["why"] = [w for w in r["why"] if not w.startswith("top1 ")]
+        r["notes"] += [f"{w} (WAIVED by the owner {wv['date']}, after the result)" for w in hit]
     d = cmp_vs_mxfp4["d_kl32"]["mean"]
     if d > t["max_d_kl32_vs_mxfp4"]:
         r["why"].append(f"quantization adds kl32 {d:.4f} > {t['max_d_kl32_vs_mxfp4']}")

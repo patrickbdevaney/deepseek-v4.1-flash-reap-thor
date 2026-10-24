@@ -62,7 +62,12 @@
     "thor_quant": {
       "why": "the incremental cost of the one requantization over the same keep-set in MXFP4",
       "max_d_kl32_vs_mxfp4": 0.25,
-      "apply_pruned_floor": true
+      "apply_pruned_floor": true,
+      "waived_min_top1": {
+        "date": "2026-10-24",
+        "after_result": true,
+        "why": "Owner decision after the s10 final result. thorA top-1 0.7756 [0.7179, 0.8283] misses the 0.78 sanity floor (borrowed from GLM REAP50 v2's 0.842) by 0.0044, well inside its interval. It is the only 192-expert build that fits Thor; the bit-exact 128-expert alternative is far worse (top-1 0.7092, paired kl32 +0.283 vs thorA). Requantization costs kl32 +0.079 vs the MXFP4 master (limit 0.25) and top-1 -0.022. Every other clause still applies."
+      }
     },
     "overlay": {
       "why": "NVFP4 dense overlay is a speed lever; GLM accepted +1.56% ppl / 0.138% confident flips",

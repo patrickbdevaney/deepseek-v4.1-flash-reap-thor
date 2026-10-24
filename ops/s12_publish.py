@@ -151,6 +151,13 @@ def limitations_text(res: dict, W: Path) -> str:
                    f"After seeing that result, the owner amended the rule to exclude {', '.join(ex)}, whose weakness "
                    f"is already documented above. Without it the difference is {d1['mean']:+.4f} "
                    f"(interval {d1['lo']:+.4f} to {d1['hi']:+.4f}). Reason: {am['why']}")
+    wv = GT.load()[0]["release"]["thor_quant"].get("waived_min_top1")
+    if wv and "thorA" in S:
+        o, m = S["thorA"]["overall"]["top1"], S["mxfp4_A"]["overall"]["top1"]
+        out.append(f"**Thor build: top-1 floor waived ({wv['date']}, after the result).** The low-bit Thor build scored "
+                   f"top-1 {o['mean']:.4f} (interval {o['lo']:.4f} to {o['hi']:.4f}) against a pre-registered floor of "
+                   f"{f['min_top1']}, so it FAILED that floor; the MXFP4 master scores {m['mean']:.4f}. The owner waived "
+                   f"this one clause for the Thor build. Every other clause still applies and passed. Reason: {wv['why']}")
     return "\n\n".join(out)
 
 
