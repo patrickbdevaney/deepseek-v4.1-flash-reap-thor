@@ -54,6 +54,7 @@ struct Prompt {
     float *Hi = nullptr, *Pi = nullptr;            // isolated
     v41m::State sc, si;
     std::vector<double> min_iso, mean_chain;
+    std::vector<double> row_chain;                 // chained per-row cos of the latest layer (saved rows)
 };
 
 int main(int argc, char** argv) {
@@ -231,6 +232,7 @@ int main(int argc, char** argv) {
                     const double c = d / std::sqrt(a2 * b2 + 1e-300);
                     if (const char* rd = getenv("GOLDEN_ROW_COS")) { static FILE* f = fopen(rd, "w"); fprintf(f, "%d %s %d %ld %.7f %.4g\n", L, p.name.c_str(), pass, (long)(p.from + r), c, std::sqrt(a2)); }
                     if (!std::isfinite(c)) { ++nf; if (wr < 0 || mn > -2) { mn = -2; wr = (long)(p.from + r); } continue; }
+                    if (pass == 0) { p.row_chain.resize(S); p.row_chain[r] = c; }
                     if (c < mn) { mn = c; wr = (long)(p.from + r); }
                     sum += c;
                 }
@@ -254,22 +256,42 @@ int main(int argc, char** argv) {
             const Npy am = npy_load(ref + "/" + p.name + "/head_argmax.npy");
             long agree = 0, ties = 0; std::vector<double> gaps;
             const int S = p.T - p.from;
-            for (int r = 0; r < S; ++r) {
+            // diagnostics (not gated): the head also runs on the isolated stream (CUDA layer 39 on the reference's
+            // layer-38 rows), and every confident chained disagreement is listed with its row's chained cos. An
+            // isolated head that agrees where the chained one does not means drift compounded over layers; the
+            // same confident flip in both means the last layer or the head computes that row wrongly.
+            long agree_i = 0, conf_i = 0;
+            auto head_at = [&](const float* H, const float* PM, int r) {
                 CK(cudaStreamSynchronize(st));   // the previous row's head on st still reads p.sc.h
-                CK(cudaMemcpy(p.sc.h, p.Hc + (size_t)(p.from + r) * HC_DIM, HC_DIM * 4, cudaMemcpyDeviceToDevice));
-                CK(cudaMemcpy(p.sc.pre, p.Pc + (size_t)(p.from + r) * 4, 16, cudaMemcpyDeviceToDevice));
+                CK(cudaMemcpy(p.sc.h, H + (size_t)(p.from + r) * HC_DIM, HC_DIM * 4, cudaMemcpyDeviceToDevice));
+                CK(cudaMemcpy(p.sc.pre, PM + (size_t)(p.from + r) * 4, 16, cudaMemcpyDeviceToDevice));
                 v41m::head_row(G, p.sc, 0, st);
                 v41m::argmax_logits(p.sc, dt, st);
                 CK(cudaStreamSynchronize(st));   // per-thread default stream: cudaMemcpy does not wait for st
                 int t; CK(cudaMemcpy(&t, dt, 4, cudaMemcpyDeviceToHost));
-                const int rt = am.as<int32_t>()[r];
-                if (t == rt) { ++agree; continue; }
+                return t;
+            };
+            auto rank_gap = [&](int t, int rt, int* rank) {
                 CK(cudaMemcpy(lg.data(), p.sc.logits, VOCAB * 4, cudaMemcpyDeviceToHost));
-                int rank = 1; for (int v = 0; v < VOCAB; ++v) rank += lg[v] > lg[rt];
-                const double gap = (double)lg[t] - lg[rt];
+                *rank = 1; for (int v = 0; v < VOCAB; ++v) *rank += lg[v] > lg[rt];
+                return (double)lg[t] - lg[rt];
+            };
+            for (int r = 0; r < S; ++r) {
+                const int rt = am.as<int32_t>()[r];
+                const int ti = head_at(p.Hi, p.Pi, r);
+                int rank_i = 0; double gap_i = 0;
+                if (ti == rt) ++agree_i; else { gap_i = rank_gap(ti, rt, &rank_i); conf_i += !(rank_i <= 3 && gap_i <= 1.0); }
+                const int t = head_at(p.Hc, p.Pc, r);
+                if (t == rt) { ++agree; continue; }
+                int rank; const double gap = rank_gap(t, rt, &rank);
                 gaps.push_back(gap);
-                ties += rank <= 3 && gap <= 1.0;
+                const bool tie = rank <= 3 && gap <= 1.0;
+                ties += tie;
+                if (!tie) printf("      confident: %s pos %d ref %d cuda %d rank %d gap %.3f | row cos %.4f | isolated head %s\n",
+                                 p.name.c_str(), p.from + r, rt, t, rank, gap, p.row_chain[r],
+                                 ti == rt ? "agrees" : (rank_i <= 3 && gap_i <= 1.0 ? "near-tie" : "confident flip"));
             }
+            printf("      isolated head (diagnostic): agreement %ld/%d, confident disagreements %ld\n", agree_i, S, conf_i);
             const double ag = (double)agree / S;
             n_dis += S - agree; n_tie += ties;
             std::sort(gaps.begin(), gaps.end());
