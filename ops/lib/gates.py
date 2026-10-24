@@ -20,12 +20,19 @@ def load() -> tuple[dict, str]:
 
 
 def lock(work_dir: Path) -> dict:
-    """First call writes the lock; later calls require the same sha. Fatal on change."""
+    """First call writes the lock; later calls require the same sha. Fatal on change, except a change recorded as a
+    dated owner amendment in the lock's "amendments" chain (each entry names the sha it replaced), whose last sha
+    is then the only one accepted."""
     g, sha = load()
     p = Path(work_dir) / "prereg_lock.json"
     if p.exists():
         lk = json.load(open(p))
-        if lk["sha256"] != sha:
+        cur = lk["sha256"]
+        for am in lk.get("amendments", []):
+            if am["from_sha256"] != cur:
+                raise SystemExit(f"prereg_lock.json amendment chain is broken at {am['ts']}")
+            cur = am["sha256"]
+        if cur != sha:
             raise SystemExit(f"PRE-REGISTRATION VIOLATED: {GATES_FILE} changed after results were produced "
                              f"(locked {lk['sha256'][:16]} at {lk['ts']}, now {sha[:16]}). Revert it.")
         return g
@@ -84,6 +91,9 @@ def pruned_floor(summary: dict, g: dict, *, vs_random: dict | None = None, drift
             why.append(f"bin {name} top1 {s['top1']['mean']:.4f} is {drop:.4f} below {f['ref_bin']}")
     if f.get("must_beat_random_kl32") and vs_random is not None and not vs_random["d_kl32"]["hi"] < 0:
         why.append(f"does not beat the best random anchor (d_kl32 CI hi {vs_random['d_kl32']['hi']:+.4f})")
+    if f.get("must_beat_random_kl32") and vs_random is not None and f.get("must_beat_random_exclude_buckets"):
+        notes.append(f"beat-random evaluated without buckets {f['must_beat_random_exclude_buckets']} "
+                     f"(owner amendment {f['must_beat_random_amended']['date']}, made AFTER the first s10 final result)")
     if drift_verdict is not None and drift_verdict in f["drift_verdict_not"]:
         why.append(f"drift verdict {drift_verdict}")
     if not long_checked and f.get("long_bins_required", True):

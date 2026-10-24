@@ -6,7 +6,7 @@ Every number below comes from `s10/final/results.json` of the build pipeline. It
 - **top-1 agreement** is the share of tokens where this model's argmax equals the teacher's.
 - **dNLL** is this model's next-token NLL minus the teacher's.
 
-The pass/fail thresholds were pre-registered before any result existed (`ops/s10_gates.json`, sha256 `{{ s10.gates_sha256 | short }}`).
+The pass/fail thresholds were pre-registered before any result existed (`ops/s10_gates.json`, sha256 `{{ s10.gates_sha256 | short }}`). Any threshold amended after a result is listed below with its date, and the result under the original rule is shown beside it.
 
 {{ table_arms:control,mxfp4_A,thorA,b128 }}
 

@@ -102,6 +102,12 @@ def summarize(a: dict, *, n_draws: int = 2000, seed: int = 0, min_tokens: int = 
     return out
 
 
+def without_buckets(a: dict, buckets: list[str]) -> dict:
+    """The same arm restricted to tokens outside `buckets` (every per-token column filtered alike)."""
+    keep = ~np.isin(a["bucket"], list(buckets))
+    return {k: v[keep] for k, v in a.items()}
+
+
 def compare(a: dict, b: dict, *, n_draws: int = 2000, seed: int = 0) -> dict:
     """Paired arm a vs arm b on identical tokens (same rows): KL / dNLL differences (a - b, cluster
     bootstrap) and McNemar on top-1 agreement (z > 0: a agrees more)."""

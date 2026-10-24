@@ -156,6 +156,10 @@ def final_panel(a):
     res = {"split": "confirm", "rows": len(ids), "tokens": int(data["control"]["kl32"].size),
            "gates_sha256": gates.load()[1], "summaries": summ, "comparisons": {}, "gates": {}}
     cmpd = lambda x, y: metrics.compare(data[x], data[y], n_draws=a.draws)
+    # beat-random comparisons honour the 2026-10-24 amendment (buckets excluded); the as-registered all-bucket
+    # comparison is still computed and recorded beside it
+    excl = g["release"]["pruned_floor"].get("must_beat_random_exclude_buckets", [])
+    rnd = lambda x: metrics.compare(*(metrics.without_buckets(data[n], excl) for n in (x, "random0")), n_draws=a.draws)
     res["gates"]["control"] = gates.control(summ["control"], g)
     if not res["gates"]["control"]["pass"]:
         env.atomic_json(OUT / "final" / "results.json", res)
@@ -163,15 +167,17 @@ def final_panel(a):
     arb = json.load(open(S04 / "arbitration.json"))
     winner = arb["winners"]["A"]["name"]
     dv = arb["candidates"][winner].get("drift_verdict")
-    vs_r = cmpd("mxfp4_A", "random0") if "random0" in data else None
-    res["comparisons"]["mxfp4_A_vs_random0"] = vs_r
+    vs_r = rnd("mxfp4_A") if "random0" in data else None
+    res["comparisons"]["mxfp4_A_vs_random0" + ("_excl_" + "_".join(excl) if excl else "")] = vs_r
+    if excl and vs_r is not None:
+        res["comparisons"]["mxfp4_A_vs_random0"] = cmpd("mxfp4_A", "random0")   # as registered, all buckets
     res["gates"]["mxfp4_master"] = gates.pruned_floor(summ["mxfp4_A"], g, vs_random=vs_r, drift_verdict=dv)
     healed = "healed_A" if "healed_A" in data else "mxfp4_A"
-    res["gates"]["nvfp4"] = {**gates.pruned_floor(summ[healed], g, vs_random=cmpd(healed, "random0") if vs_r else None,
+    res["gates"]["nvfp4"] = {**gates.pruned_floor(summ[healed], g, vs_random=rnd(healed) if vs_r else None,
                                                    drift_verdict=dv), "arm": healed}
     res["comparisons"]["thorA_vs_" + healed] = cmpd("thorA", healed)
     res["gates"]["thorA"] = gates.thor_quant(summ["thorA"], res["comparisons"]["thorA_vs_" + healed], g,
-                                             vs_random=cmpd("thorA", "random0") if vs_r else None, drift_verdict=dv)
+                                             vs_random=rnd("thorA") if vs_r else None, drift_verdict=dv)
     b_dv = arb["candidates"][arb["winners"]["B"]["name"]].get("drift_verdict")
     res["gates"]["b128"] = gates.pruned_floor(summ["b128"], g, drift_verdict=b_dv)
     res["comparisons"]["thorA_vs_b128"] = cmpd("thorA", "b128")

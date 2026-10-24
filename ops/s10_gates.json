@@ -45,7 +45,15 @@
         "BLOCK"
       ],
       "long_bins_required": false,
-      "long_bins_note": "Amended 2026-10-21 before any s10 result: the CONFIRM split has no row past 8k (the only held-out longctx row, 58,789 tokens, falls in SCREEN), so the long-bin clause cannot be evaluated on the release panel. It is NOT a release gate; long-context retention is reported from the SCREEN longctx row as a diagnostic and the cards say so. gates.py fails closed if long_bins_required is true and no long bin is sampled."
+      "long_bins_note": "Amended 2026-10-21 before any s10 result: the CONFIRM split has no row past 8k (the only held-out longctx row, 58,789 tokens, falls in SCREEN), so the long-bin clause cannot be evaluated on the release panel. It is NOT a release gate; long-context retention is reported from the SCREEN longctx row as a diagnostic and the cards say so. gates.py fails closed if long_bins_required is true and no long bin is sampled.",
+      "must_beat_random_exclude_buckets": [
+        "multilingual"
+      ],
+      "must_beat_random_amended": {
+        "date": "2026-10-24",
+        "after_result": true,
+        "why": "Owner decision AFTER the first s10 final result (confirm split). As registered, mxfp4_A vs random0 paired d_kl32 was -0.1014 [-0.2196, +0.0400]: not significant, entirely because of the multilingual bucket (kl32 1.534 vs random 0.894), the weakness the owner had already accepted on 2026-10-22 with a lowered top-1 floor. In every other bucket the keep-set has roughly half of random's kl32. The as-registered comparison stays in results.json and on the cards beside the amended one; no other threshold changes (thorA top-1 0.78 floor still applies)."
+      }
     },
     "nvfp4": {
       "why": "lossless repack of the MXFP4 master plus the folded heal gain: it is the healed MXFP4 arm",

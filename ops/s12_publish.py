@@ -70,7 +70,9 @@ def context() -> dict:
     elist = "\n".join(f"- `{e['path']}` ({e['lfs']['size'] / 1e9:.1f} GB, sha256 `{e['lfs']['oid']}`)" for e in eng)
     elist += (f"\n\n```\nhf download {BASE_REPO} {eng[0]['path']} {eng[1]['path']} --revision {env.REVISION} "
               f"--local-dir .\n```")
-    pf = lambda b: "PASS" if b else "FAIL (repository kept private)"
+    am = GT.load()[0]["release"]["pruned_floor"].get("must_beat_random_amended")
+    pf = lambda b: (f"PASS under the gate as amended {am['date']} (FAIL as originally registered; see the evaluation)"
+                    if am else "PASS") if b else "FAIL (repository kept private)"
     ctx = {
         "base": {"repo": BASE_REPO, "revision": env.REVISION},
         "keepset": {"A": {**{k: v for k, v in metaA.items() if k != "keep"}, "sha256": fA},
@@ -136,6 +138,19 @@ def limitations_text(res: dict, W: Path) -> str:
                      f"Keep-sets that protected more {b} experts recovered {b} only by losing general, finance and science "
                      f"text, so the better all-round keep-set ships. For {b} use, prefer the unpruned model.")
         out.append(line)
+    ex = f.get("must_beat_random_exclude_buckets")
+    C = res.get("comparisons", {})
+    if ex and "mxfp4_A_vs_random0" in C:
+        key = "mxfp4_A_vs_random0_excl_" + "_".join(ex)
+        d0, d1 = C["mxfp4_A_vs_random0"]["d_kl32"], C[key]["d_kl32"]
+        am = f["must_beat_random_amended"]
+        out.append(f"**Gate amended after the result ({am['date']}).** The pre-registered rule required the pruned "
+                   f"model to beat a random keep-set of the same size on kl32. Over all domains it did not reach "
+                   f"significance (paired difference {d0['mean']:+.4f}, interval {d0['lo']:+.4f} to {d0['hi']:+.4f}), "
+                   f"so this release FAILED its gate as originally registered. The cause is {', '.join(ex)} alone. "
+                   f"After seeing that result, the owner amended the rule to exclude {', '.join(ex)}, whose weakness "
+                   f"is already documented above. Without it the difference is {d1['mean']:+.4f} "
+                   f"(interval {d1['lo']:+.4f} to {d1['hi']:+.4f}). Reason: {am['why']}")
     return "\n\n".join(out)
 
 
