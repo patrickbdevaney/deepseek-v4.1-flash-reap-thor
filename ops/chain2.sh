@@ -361,11 +361,19 @@ if [ "$ST11" = blocked ]; then      # a decision for the owner, not a crash: the
   echo "$(date -Is) s11 end-to-end gate BLOCKED: no verified DSpark draft+verify path in cuda/ (see $WORK/s11/decision.json)" >> $FOLLOW
 fi
 # ------------------------------------------------------------------------------------------------ trellis sub-arm (soft, last)
-if [ -f $L/done.s08_gemv_bench ]; then
+# Owner 2026-10-24: if the Thor build is public AND its 1M-context state run passed (quantized KV fits), trellis is
+# PARKED as a theoretical follow-on, not run; it runs only when the K-quant Thor build did not make it.
+if step_done s12_thor && [ -f $L/done.s08_ctx1m_$ARM ]; then
+  log "trellis sub-arm PARKED: Thor build $ARM is public and its 1M-context state fits (owner 2026-10-24)"
+  grep -q "trellis PARKED" $FOLLOW 2>/dev/null || echo "$(date -Is) trellis PARKED as a theoretical follow-on (Thor build public, ctx1m passed)" >> $FOLLOW
+elif [ -f $L/done.s08_gemv_bench ]; then
   soft trellis trellis || true
   if $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json')).get('trellis_adopted'))" 2>/dev/null; then
     echo "$(date -Is) trellis ADOPTED: s10/gates.json now serves $($PY -c "import json;print(json.load(open('$WORK/s10/gates.json'))['thor_build_dir'])"); re-run chain2 (rm done.c2_s12_thor done.c2_s12_final) to gate and publish it as an extra release" >> $FOLLOW
   fi
 else log "trellis sub-arm skipped: no s08 gemv_bench"; fi
 # leafllm stays paused while OWNER_FOLLOWUP lists Thor work (ops/sd/watchdog.py checks it)
+# Owner 2026-10-24: after the DeepSeek release + s11 (step 5), the MiniMax-M3.1-Flash REAP is next on the GPU
+# (~/minimax-m3.1-flash-reap-thor). This marker is its go signal; the mm31 chain refuses to start GPU work without it.
+date -Is > $L/MINIMAX_GO; echo "$(date -Is) DeepSeek chain2 done: MiniMax-M3.1 REAP may take the GPU (ops/logs/MINIMAX_GO)" >> $FOLLOW
 log "chain2 reached the end: s11 decision $ST11, CUDA_OK=$CUDA_OK, follow-ups: $( [ -f $FOLLOW ] && wc -l < $FOLLOW || echo 0)"
