@@ -158,8 +158,16 @@ gemv_bench)
 golden_ref)
   : ${ARM:?ARM}; done_ golden_ref_$ARM && exit 0; quiet
   extra=""; [ "$ARM" = src ] || extra="--keepset $(keepf $ARM) --thor $WORK/thor/$ARM"
-  gpu golden_ref_$ARM $PY -I cuda/tests/golden/ref_dump.py --out $WORK/golden/$ARM --long $extra || die "ref_dump $ARM"
-  reclaim golden_ref_$ARM; mark golden_ref_$ARM ;;
+  # 5 layers per process: host memory grows ~7 GiB/layer inside one process (ref_dump.py --layers-per-proc)
+  for i in $(seq 1 12); do
+    gpu golden_ref_$ARM $PY -I cuda/tests/golden/ref_dump.py --out $WORK/golden/$ARM --long --layers-per-proc 5 $extra \
+      || die "ref_dump $ARM"
+    reclaim golden_ref_$ARM
+    [ -f $WORK/golden/$ARM/_carry.pt ] || break
+  done
+  [ -f $WORK/golden/$ARM/_carry.pt ] && die "ref_dump $ARM did not finish in 12 processes"
+  $PY -c "import json,sys;sys.exit('finished' not in json.load(open('$WORK/golden/$ARM/meta.json')))" || die "ref_dump $ARM: meta.json not finished"
+  mark golden_ref_$ARM ;;
 golden)
   : ${ARM:?ARM}; done_ golden_$ARM && exit 0; quiet
   done_ golden_ref_$ARM || die "run golden_ref $ARM first"

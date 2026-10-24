@@ -66,6 +66,11 @@ def main():
     ap.add_argument("--keepset", default=None)
     ap.add_argument("--thor", default=None)
     ap.add_argument("--token-chunk", type=int, default=4096)
+    # Host memory grows ~7 GiB per layer in one process (native, not Python-visible; malloc_trim does not return it,
+    # measured 2026-10-24), so a 40-layer run hits the memfence near L8. --layers-per-proc N saves the carried state
+    # (residual streams + published attention states) to <out>/_carry.pt after N layers and exits 0; the next run
+    # resumes from it. The caller loops while _carry.pt exists (cuda/CHAIN_STEPS.sh golden_ref).
+    ap.add_argument("--layers-per-proc", type=int, default=0)
     a = ap.parse_args()
     import torch
     from transformers import AutoTokenizer
@@ -94,12 +99,21 @@ def main():
 
     # ---- hashes, Engram rows, embeddings: per prompt
     import engram as E   # inference/engram.py (import_reference put inference/ on sys.path)
-    layout = E.EngramLayout.from_args(args)
-    hstate = E.NgramHashState(args, layout, tok)
     idx = shards.ShardIndex()
-    W = idx.get("embed.weight").cuda()
-    streams = {}
-    for name, ids in P.items():
+    carry_p = out / "_carry.pt"
+    carry = torch.load(carry_p, weights_only=False) if carry_p.exists() else None
+    if carry is not None:
+        if carry["args"] != [a.layers, a.keepset, a.thor, a.long, a.save_rows]:
+            raise SystemExit(f"{carry_p} was written by a run with different arguments; remove it to start over")
+        streams, state, meta, lo = carry["streams"], carry["state"], carry["meta"], carry["next"]
+        print(f"[golden] resuming at L{lo} from {carry_p}", flush=True)
+    P_items = [] if carry is not None else P.items()
+    if carry is None:
+        layout = E.EngramLayout.from_args(args)
+        hstate = E.NgramHashState(args, layout, tok)
+        W = idx.get("embed.weight").cuda()
+        streams = {}
+    for name, ids in P_items:
         T = len(ids); d = out / name; d.mkdir(exist_ok=True)
         np.save(d / "tokens.npy", np.asarray(ids, np.int32))
         hstate.cache.zero_()
@@ -115,8 +129,15 @@ def main():
         streams[name] = [H.cpu(), PM.cpu()]
         S = min(T, a.save_rows)
         meta["prompts"][name] = {"T": T, "save_from": T - S}
-    del W
-    state = {name: {} for name in P}                                    # (kind, src) -> array, per prompt
+    if carry is None:
+        del W
+        state = {name: {} for name in P}                                # (kind, src) -> array, per prompt
+    n_done = 0
+    if carry is not None:
+        # A single run sets the CUDA default device during its first layer, so every later block (and its RoPE
+        # tables, rebuilt by shards._reinit_buffers with torch.arange) is built under it. Match that, or the
+        # resumed run's freqs come from CPU math and drift with position (measured 2026-10-24).
+        torch.set_default_device("cuda")
 
     for L in range(lo, hi + 1):
         t0 = time.time()
@@ -183,6 +204,15 @@ def main():
         torch.cuda.empty_cache()
         print(f"[golden] L{L} {time.time() - t0:.0f}s", flush=True)
         json.dump(meta, open(out / "meta.json", "w"), indent=1)
+        n_done += 1
+        if a.layers_per_proc and n_done >= a.layers_per_proc and L < hi:
+            tmp = carry_p.with_suffix(".tmp")
+            torch.save({"args": [a.layers, a.keepset, a.thor, a.long, a.save_rows], "next": L + 1,
+                        "streams": streams, "state": state, "meta": meta}, tmp)
+            os.replace(tmp, carry_p)
+            print(f"[golden] carried state saved after L{L}; re-run to continue", flush=True)
+            idx.close()
+            return
 
     if hi == 39:                                                      # head, as s03 unit_head does
         norm_w = idx.get("norm.weight").float().cuda()
@@ -197,6 +227,7 @@ def main():
             np.save(out / name / "head_argmax.npy", logits.argmax(-1).int().cpu().numpy())
             np.save(out / name / "head_last_logits.npy", logits[-1].cpu().numpy())
     idx.close()
+    carry_p.unlink(missing_ok=True)
     meta["finished"] = time.strftime("%F %T")
     json.dump(meta, open(out / "meta.json", "w"), indent=1)
     print(f"[golden] done -> {out}")
