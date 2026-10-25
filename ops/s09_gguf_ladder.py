@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -294,8 +295,30 @@ def quant(level: str, p: dict, ef_hessians: Path | None, threads: int) -> Path:
     if not kv.done("split"):
         for f in d.glob(f"{NAME}-{level}-0*-of-*.gguf"):
             f.unlink()
+        # a level on the USB disk splits onto NVMe and is copied back: gguf-split reading and writing the same
+        # ntfs-3g disk ran L2's last split at ~1.5 MB/s. The splits go home to d, so NVMe stays free for rowfile/stage.
+        sd = d
+        if str(d.resolve()).startswith("/media/"):
+            sd = OUT / "splitwork" / level
+            sd.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(sd).free
+            if free < whole.stat().st_size + 20 * 2**30:
+                log(f"split {level}: only {free / 2**30:.0f} GiB free on NVMe, splitting in place")
+                sd = d
+        for f in sd.glob(f"{NAME}-{level}-0*-of-*.gguf"):
+            f.unlink()
         subprocess.run([str(BIN / "llama-gguf-split"), "--split", "--split-max-size", SPLIT_MAX,
-                        str(whole), str(d / f"{NAME}-{level}")], check=True)
+                        str(whole), str(sd / f"{NAME}-{level}")], check=True)
+        if sd != d:
+            verify_splits(level, sd)
+            for f in sorted(sd.glob(f"{NAME}-{level}-0*-of-*.gguf")):
+                shutil.copyfile(f, d / f".{f.name}.part")
+                if (d / f".{f.name}.part").stat().st_size != f.stat().st_size:
+                    raise SystemExit(f"FATAL: {f.name}: size differs after the copy to {d}")
+                (d / f".{f.name}.part").rename(d / f.name)
+                f.unlink()
+                log(f"split {level}: {f.name} -> {d}")
+            sd.rmdir()
         kv.finish("split")
     verify_splits(level)
     return d
@@ -341,8 +364,8 @@ def verify_whole(level: str, path: Path, p: dict) -> None:
         f"({path.stat().st_size / 2**30:.2f} GiB, predicted {p['predicted_gib']})")
 
 
-def verify_splits(level: str) -> None:
-    d = OUT / level
+def verify_splits(level: str, d: Path | None = None) -> None:
+    d = d or OUT / level
     parts = sorted(d.glob(f"{NAME}-{level}-0*-of-*.gguf"))
     if not parts:
         raise SystemExit(f"FATAL: no splits in {d}")
