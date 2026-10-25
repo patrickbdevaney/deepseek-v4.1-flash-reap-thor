@@ -81,3 +81,11 @@ it hits a certain measurement or not. so the cuda thor build deploys, the ggufs 
   2026-10-24 drift amendment; A192: 41/46, 89.1%, waived by the owner) and links this file.
 - Caveat on the 2026-10-24 golden_src amendment: its diagnostic ran with the racy head harness (fixed in 60ef2c8),
   so the "isolated head agrees" column there is not fully reliable. The per-row hidden-state cosines are unaffected.
+
+### ops/diag_route_flip.py: stopped unfinished (2026-10-25 08:37), no result
+
+It loads each layer from the source checkpoint, whose backbone chain2 had already moved to the USB Seagate
+(move_backbone, after golden_ref_A192). Layer 0 alone took more than 13 minutes (ntfs-3g reads), so 40 layers would
+take about 10 hours. Golden A192 is waived, so the diagnostic decides nothing, and it was stopped to let Thor proceed.
+The routing near-tie hypothesis for doc1k pos 850 at L6 is untested. To test it later, run it after the release
+(cheapest as `--targets 6:850 9:877`, i.e. layers 0..9).
