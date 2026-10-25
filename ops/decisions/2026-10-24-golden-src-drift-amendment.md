@@ -23,3 +23,25 @@ the unchanged 1c54996 rule.
 Even under the amendment the release still requires every downstream gate unchanged: golden A192, golden_store,
 decode determinism/consistency, server, ctx1m. The Thor card states that golden_src failed the near-tie rule as
 registered and passed under this owner amendment, with the diagnostic numbers.
+
+## Result (diagnostic finished 2026-10-24 19:24, gate commit 793b5af): DRIFT, amendment applies
+
+doc1k re-run: chained agreement 987/1024 (0.9639), final mean cos 0.9658; 37 disagreements, 31 near-ties (84% < 90%,
+still FAIL as registered). Isolated head: agreement 1017/1024.
+
+All 6 confident chained disagreements, checked against both conditions:
+
+| pos  | ref   | cuda  | rank | gap   | isolated head | min isolated row cos (layer) |
+|------|-------|-------|------|-------|---------------|------------------------------|
+| 593  | 67    | 68    | 2    | 1.547 | agrees        | 0.99839 (L5)                 |
+| 639  | 40267 | 25730 | 3    | 2.990 | agrees        | 0.99150 (L5)                 |
+| 937  | 4739  | 4364  | 5    | 0.482 | agrees        | 0.99917 (L37)                |
+| 971  | 2574  | 5863  | 9    | 0.142 | agrees        | 0.99455 (L10)                |
+| 996  | 1173  | 1477  | 4    | 0.180 | agrees        | 0.99728 (L11)                |
+| 1028 | 4739  | 1683  | 4    | 0.109 | agrees        | 0.99718 (L9)                 |
+
+Both conditions hold at every confident row: every layer reproduces the reference row given the reference input
+(>= 0.9915), and the head agrees on the reference's L38 rows, so the disagreements come from bf16/fp32 accumulation
+drift compounding through the chained stream (chained min row cos falls from 0.99 at L1 to ~0.03 at L39 on a few
+rows while the isolated stream stays >= 0.97 per layer), not from a wrong layer. golden_src is marked passed under
+this amendment (soft_fail moved to soft_fail.golden_src.drift-amended); every downstream gate stays unchanged.
