@@ -42,3 +42,21 @@ this pattern (no D2D `cudaMemcpy` in `cuda/src` V4.1 code or `cuda/server`). Fix
 Action: no amendment applies. `soft_fail.golden_arm` is renamed with the fix commit and chain2 re-runs golden A192
 exactly as registered (rule 1c54996, all three prompts, same reference). Its result decides; if it fails, it is
 escalated again with this harness bug ruled out.
+
+## Owner decision 2026-10-25 ~08:30, recorded before ops/diag_route_flip.py reports
+
+Golden A192 (fixed harness) fails condition 2 only on doc1k pos 850 (isolated 0.9765 at L6). Owner: "if its a near
+tie failing the floor, probably still upload it; else debug then upload".
+
+A failing row counts as a **routing near-tie** when all of these hold in `ops/logs/diag_route_flip/result.json`:
+1. sanity: the torch rerun reproduces the saved reference row (cos >= 0.999), so the test measures the reference;
+2. the biased router scores' 6th-vs-7th margin is <= 0.02 (a flip a small input perturbation can cause);
+3. counterfactual: swapping the 6th expert for the 7th on that row gives cos-to-reference within 0.005 of the
+   CUDA isolated cos (the swap explains the CUDA row).
+
+- Pos 850 at L6 satisfies 1-3 -> NEAR-TIE: golden A192 passes under this amendment (condition 2 waived for routing
+  near-ties); continue golden_store, decode, ctx1m, server unchanged, then Thor publish and overlay. The card states
+  the registered gate failed (89.1% vs 90%) and passed under this amendment.
+- Otherwise -> BUG: debug, fix, re-run golden A192 as registered, then upload.
+The other low rows (L9/877, L33/988, L39) are reported but do not decide: none is a confident chained disagreement.
+The GGUF ladder is not touched by either outcome.
