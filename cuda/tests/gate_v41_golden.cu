@@ -262,9 +262,11 @@ int main(int argc, char** argv) {
             // same confident flip in both means the last layer or the head computes that row wrongly.
             long agree_i = 0, conf_i = 0;
             auto head_at = [&](const float* H, const float* PM, int r) {
-                CK(cudaStreamSynchronize(st));   // the previous row's head on st still reads p.sc.h
-                CK(cudaMemcpy(p.sc.h, H + (size_t)(p.from + r) * HC_DIM, HC_DIM * 4, cudaMemcpyDeviceToDevice));
-                CK(cudaMemcpy(p.sc.pre, PM + (size_t)(p.from + r) * 4, 16, cudaMemcpyDeviceToDevice));
+                // on st, ordered with the head: a D2D cudaMemcpy may return before the copy lands, and the
+                // per-thread default stream does not order it against st -- the head then read part of the
+                // previous row (the other stream's), which flipped isolated-head argmaxes run to run (2026-10-25)
+                CK(cudaMemcpyAsync(p.sc.h, H + (size_t)(p.from + r) * HC_DIM, HC_DIM * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(p.sc.pre, PM + (size_t)(p.from + r) * 4, 16, cudaMemcpyDeviceToDevice, st));
                 v41m::head_row(G, p.sc, 0, st);
                 v41m::argmax_logits(p.sc, dt, st);
                 CK(cudaStreamSynchronize(st));   // per-thread default stream: cudaMemcpy does not wait for st
