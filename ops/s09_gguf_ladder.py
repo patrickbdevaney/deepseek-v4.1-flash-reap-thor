@@ -317,8 +317,10 @@ def verify_whole(level: str, path: Path, p: dict) -> None:
         elif "_shexp" in t.name and typ != "Q6_K":
             bad.append(f"{t.name}: {typ} != Q6_K")
         elif re.search(r"\.(attn_|indexer)", t.name) and t.name.endswith(".weight") and "_norm" not in t.name \
-                and "_ape" not in t.name and typ != "Q8_0":
+                and "_ape" not in t.name and "_sinks" not in t.name and typ != "Q8_0":
             bad.append(f"{t.name}: {typ} != Q8_0")
+        elif "_sinks" in t.name and typ != "F32":     # 1-D: llama-quantize keeps them F32 (design: sinks kept)
+            bad.append(f"{t.name}: {typ} != F32")
         elif "engram_embd" in t.name:
             bad.append(f"{t.name}: engram tables must not be in the GGUF (row files)")
     kv = gguf_kv(path)
