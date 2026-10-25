@@ -45,6 +45,11 @@ quiet_nogpu() { local b; b=$(gpu_busy); [ -n "$b" ] && stop "another model-loadi
 cpu() { "$@" || stop "$*"; }
 s08() { bash cuda/CHAIN_STEPS.sh "$@"; }
 FOLLOW=$L/OWNER_FOLLOWUP
+# publish WHAT LOG: s12_publish --only WHAT, 3 whole-run attempts 30 min apart (per-file retries live inside s12), so an
+# HF outage longer than s12's own backoff does not cost a release (owner 2026-10-25: Thor and GGUF uploads must happen)
+publish() { local what=$1 lg=$2 k; for k in 1 2 3; do
+  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only $what >> $lg 2>&1 && return 0
+  log "s12 $what publish attempt $k failed (see $lg)"; [ $k -lt 3 ] && sleep 1800; done; return 1; }
 soft_failed() { [ -f $L/soft_fail.$1 ]; }
 soft() {          # soft NAME CMD...: a CUDA/s11 step whose failure must not block the release
   local name=$1; shift; step_done soft_$name && return 0; soft_failed $name && return 1
@@ -197,8 +202,9 @@ if [ $CUDA_OK = 1 ]; then
     && soft server s08 server $ARM; } || CUDA_OK=0
 fi
 if [ $CUDA_OK = 1 ] && ! step_done s12_thor; then   # the served Thor build + runtime, now that s08 decoded it
-  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only thor > $L/s12_thor.log 2>&1 || stop "s12 thor publish"
-  mark s12_thor
+  # a failed Thor upload goes to the owner but never blocks the GGUF ladder below
+  if publish thor $L/s12_thor.log; then mark s12_thor
+  else log "s12 thor publish FAILED after 3 attempts; GGUF ladder continues"; echo "$(date -Is) s12 thor publish failed 3x (see $L/s12_thor.log); rerun: ops/s12_publish.py --only thor" >> $FOLLOW; fi
 fi
 
 # ------------------------------------------------------------------------------------------------ NVFP4 dense overlay (soft)
@@ -210,8 +216,8 @@ if [ $CUDA_OK = 1 ] && step_done s12_thor && [ -f $OVL/overlay.json ] \
    && $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json'))['overlay_adopted'])"; then
   { soft overlay_decode env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh decode $ARM \
     && soft overlay_server env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh server $ARM; } && ! step_done s12_overlay && {
-    env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only overlay > $L/s12_overlay.log 2>&1 || stop "s12 overlay publish"
-    mark s12_overlay; }
+    if publish overlay $L/s12_overlay.log; then mark s12_overlay
+    else log "s12 overlay publish FAILED after 3 attempts; GGUF ladder continues"; echo "$(date -Is) s12 overlay publish failed 3x (see $L/s12_overlay.log)" >> $FOLLOW; fi; }
 fi
 
 
@@ -279,7 +285,7 @@ wait_c1
 if [ -n "$PASS" ]; then
   step_done s09_manifest || { $PY ops/s09_gguf_ladder.py manifest --levels $PASS > $L/s09_manifest.log 2>&1 || stop "s09 manifest"; mark s09_manifest; }
   if ! step_done s12_gguf; then
-    env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only gguf > $L/s12_gguf.log 2>&1 || stop "s12 gguf publish"
+    publish gguf $L/s12_gguf.log || stop "s12 gguf publish (3 attempts)"
     mark s12_gguf
   fi
 else
@@ -288,7 +294,7 @@ else
 fi
 # The release (MXFP4 master from chain 1 + the GGUF) is out; refresh its cards now, before any soft work.
 if ! step_done s12_release; then
-  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only mxfp4,nvfp4,gguf > $L/s12_release.log 2>&1 || stop "s12 release re-render"
+  publish mxfp4,nvfp4,gguf $L/s12_release.log || stop "s12 release re-render (3 attempts)"
   mark s12_release
 fi
 log "RELEASE DONE: REAP + GGUF published per their gates; CUDA server and s11 follow (soft)"

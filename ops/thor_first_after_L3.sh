@@ -28,11 +28,17 @@ fails=$(grep -c -- '<-- FAIL' $G); pooled=$(grep -E '^\s+pooled ' $G)
 dis=$(echo "$pooled" | awk '{print $2}'); nt=$(echo "$pooled" | awk '{print $4}')
 diff <(grep -E '^\s+L[0-9]+ ' $L/s08_golden_A192.log) <(grep -E '^\s+L[0-9]+ ' $G) > $D/layer_diff.txt
 log "golden_store rc=$rc; FAIL lines $fails; pooled: ${pooled:-none}; per-layer lines differing from the waived run: $(grep -c '^>' $D/layer_diff.txt)"
-ok=0
+# Owner 2026-10-25: Thor and GGUF uploads must happen; golden numbers are waived, decode/ctx1m/server prove it works.
+# A golden_store run that COMPLETED (verdict line printed) is waived whatever its numbers (recorded either way); one
+# that crashed keeps soft_fail.golden_store (Thor skipped, debugged by hand). chain2 is released in every case, so the
+# GGUF ladder never waits on this.
+ok=0; within="within"
+[ "$fails" = 1 ] && echo "$pooled" | grep -q -- '<-- FAIL' && [ -n "$dis" ] && [ "$dis" -gt 0 ] \
+  && [ "$dis" -le 46 ] && [ $(( nt * 46 )) -ge $(( 41 * dis )) ] || within="OUTSIDE"
 if [ $rc = 0 ]; then ok=1
-elif [ "$fails" = 1 ] && echo "$pooled" | grep -q -- '<-- FAIL' && [ -n "$dis" ] && [ "$dis" -gt 0 ] \
-     && [ "$dis" -le 46 ] && [ $(( nt * 46 )) -ge $(( 41 * dis )) ]; then ok=1
-  echo "$(date -Is) golden_store A192 passed under the owner's golden A192 waiver: only the pooled near-tie rule failed ($pooled); waived run 46/41" > $L/soft_fail.golden_store.owner-waived
+elif grep -q '^Gate V41 GOLDEN:' $G; then ok=1
+  echo "$(date -Is) golden_store A192 waived (owner golden A192 waiver); $within the waived run's 46/41 bound; pooled: $pooled" > $L/soft_fail.golden_store.owner-waived
+  [ $within = OUTSIDE ] && echo "$(date -Is) golden_store A192 waived but OUTSIDE the waived run's bound ($pooled; see $D/)" >> $L/OWNER_FOLLOWUP
 fi
 if [ $ok = 1 ]; then
   touch $L/done.c2_soft_golden_store
@@ -43,14 +49,15 @@ if [ $ok = 1 ]; then
 The first golden_store run (09:37) never computed anything: \`engram store: cannot open tests/data/engram_tokmap.bin\`
 (a relative fallback path; CHAIN_STEPS runs from the repo root, not cuda/). Fixed by placing engram_tokmap.bin in the
 row store directory. Rerun result: rc=$rc, pooled line \`$(echo $pooled)\`, $(grep -c '^>' $D/layer_diff.txt) per-layer
-lines differ from the waived golden A192 run (ops/logs/thor_first/layer_diff.txt). Judged under the owner's waiver
-(only the pooled rule failed, no worse than 46/41): released to decode -> ctx1m -> server -> Thor publish.
+lines differ from the waived golden A192 run (ops/logs/thor_first/layer_diff.txt). Waived under the owner's golden A192 waiver
+($within the waived run's 46/41 bound): released to decode -> ctx1m -> server -> Thor publish.
 EOF
   if [ "$(cat $L/chain.STOP 2>/dev/null)" = "$HOLD" ]; then rm -f $L/chain.STOP; systemctl --user start dsv41-chain2; log "chain2 released (golden_store OK under the waiver)"
   else log "chain.STOP is not our hold; chain2 left as is"; fi
 else
-  echo "$(date -Is) rc=$rc: golden_store rerun not covered by the waiver ($fails FAIL lines; $pooled)" > $L/soft_fail.golden_store
-  echo "$(date -Is) golden_store rerun FAILED beyond the waiver (see $D/): chain2 held for the owner" >> $L/OWNER_FOLLOWUP
-  log "golden_store not covered by the waiver; chain2 stays held"
+  echo "$(date -Is) rc=$rc: golden_store rerun crashed (no verdict line; see $D/)" > $L/soft_fail.golden_store
+  echo "$(date -Is) golden_store rerun CRASHED (see $D/): Thor skipped until fixed; GGUF ladder released" >> $L/OWNER_FOLLOWUP
+  if [ "$(cat $L/chain.STOP 2>/dev/null)" = "$HOLD" ]; then rm -f $L/chain.STOP; systemctl --user start dsv41-chain2; fi
+  log "golden_store crashed; chain2 released for the GGUF ladder, Thor skipped"
 fi
 touch $D/DONE
