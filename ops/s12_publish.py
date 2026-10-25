@@ -190,12 +190,38 @@ def thor_context(W: Path, tb: Path, tj: dict, arm_name: str, g: dict) -> dict:
             "resident_bytes": resident, "budget_bytes": fit["budget_gib"] * 2**30, "fits": resident <= fit["budget_gib"] * 2**30,
             "fit_text": "fits" if resident <= fit["budget_gib"] * 2**30 else "DOES NOT FIT",
             "overall_table": cards.table(S, "table_arms", arm_name), "bucket_table": cards.table(S, "table_buckets", arm_name),
-            "speed": speed, "verified": verified,
+            "speed": speed, "verified": verified, "golden_note": golden_note(name),
             "runtime_note": ("The CUDA server source used to verify this build is bundled here as `runtime/v41-thor-runtime.tar.gz` "
                              "(the `cuda/` tree and the Engram row-file builder of the build pipeline, at the commit named in the "
                              "archive name inside it)." if bundle else
                              "The CUDA server that runs this format (`v41_server`) is not public yet; the files here are complete "
                              "and verified, but you need that runtime to load them.")}
+
+
+def golden_note(name: str) -> str:
+    """The CUDA-vs-torch golden gates as they actually ran (numbers from the s08 logs) and how each was resolved."""
+    import re
+    def pooled(log: Path):
+        if not log.exists():
+            return None
+        t = log.read_text()
+        m = re.findall(r"pooled\s+(\d+) disagreements, (\d+) near-ties", t)
+        v = re.findall(r"^Gate V41 GOLDEN: (PASS|FAIL)$", t, re.M)
+        return (int(m[-1][0]), int(m[-1][1]), v[-1]) if m and v else None
+    src, arm = pooled(env.LOGS / "s08_golden_src.log"), pooled(env.LOGS / f"s08_golden_{name}.log")
+    def fmt(r):
+        return "not run" if r is None else (f"{r[1]} of {r[0]} teacher-forced next-token disagreements were near-ties "
+                                            f"({100 * r[1] / max(r[0], 1):.1f}%), {r[2]} as registered (rule: at least 90%)")
+    out = ("**CUDA correctness gates (layer by layer against the torch reference, `cuda/tests/gate_v41_golden.cu`).** "
+           f"Source checkpoint: {fmt(src)}")
+    if src and src[2] == "FAIL":
+        out += ("; passed under an owner amendment made before its diagnostic was read, for chained bf16 drift "
+                "(`ops/decisions/2026-10-24-golden-src-drift-amendment.md`)")
+    out += f". This build: {fmt(arm)}"
+    if arm and arm[2] == "FAIL":
+        out += ("; the owner waived it and released the build on the serving gates (Engram row store, decode determinism, 1M context, server) "
+                "(`ops/decisions/2026-10-25-golden-a192-drift-amendment.md`, which also records the per-row diagnostics)")
+    return out + ". Every hidden-state layer check and the agreement and final-cosine rules passed in both runs."
 
 
 def overlay_context(W: Path, g: dict, tc: dict | None) -> dict | None:

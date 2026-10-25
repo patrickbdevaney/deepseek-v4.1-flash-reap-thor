@@ -187,7 +187,33 @@ if ! step_done move_backbone; then
 fi
 
 # ------------------------------------------------------------------------------------------------ phase B: rows + serving gates
-# (the Engram row files are built after the source GGUF is dropped: see phase C)
+# Owner 2026-10-25 (ops/decisions/2026-10-25-golden-a192-drift-amendment.md): the Thor build deploys first, the
+# GGUF ladder follows. The row files fit beside the source GGUF (189 of 210 GiB free); the serving gates need them.
+step_done s09_rowfile_ || { [ -f $L/done.s09_rowfile ] || need / 200 "s09 Engram row files (~189 GiB)"; cpu s09 rowfile; mark s09_rowfile_; }
+
+# ------------------------------------------------------------------------------------------------ CUDA serving gates (soft)
+if [ $CUDA_OK = 1 ]; then
+  { soft golden_store s08 golden_store $ARM && soft decode s08 decode $ARM && soft ctx1m s08 ctx1m $ARM \
+    && soft server s08 server $ARM; } || CUDA_OK=0
+fi
+if [ $CUDA_OK = 1 ] && ! step_done s12_thor; then   # the served Thor build + runtime, now that s08 decoded it
+  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only thor > $L/s12_thor.log 2>&1 || stop "s12 thor publish"
+  mark s12_thor
+fi
+
+# ------------------------------------------------------------------------------------------------ NVFP4 dense overlay (soft)
+# Owner 2026-10-24: an extra release on top of the Thor build. s10 gated its accuracy (overlay_adopted); here the CUDA
+# server must decode and serve with it loaded (DSV4_NVFP4_OVERLAY), and s12 publishes it as its own repo with the
+# measured tok/s beside the base build's.
+OVL=$WORK/thor/overlay_nvfp4
+if [ $CUDA_OK = 1 ] && step_done s12_thor && [ -f $OVL/overlay.json ] \
+   && $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json'))['overlay_adopted'])"; then
+  { soft overlay_decode env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh decode $ARM \
+    && soft overlay_server env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh server $ARM; } && ! step_done s12_overlay && {
+    env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only overlay > $L/s12_overlay.log 2>&1 || stop "s12 overlay publish"
+    mark s12_overlay; }
+fi
+
 
 # ------------------------------------------------------------------------------------------------ phase C: GGUF ladder
 MASTER="$SEAW/master_REAP$NKEEP"
@@ -307,29 +333,6 @@ dspark() { local lv rc
   $PY ops/s09_dspark.py gate >> $L/s09_dspark.log 2>&1 || return 1
   env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only gguf > $L/s12_gguf_dspark.log 2>&1; }
 if [ -n "$PASS" ]; then soft dspark dspark; fi
-
-# ------------------------------------------------------------------------------------------------ CUDA serving gates (soft)
-if [ $CUDA_OK = 1 ]; then
-  { soft golden_store s08 golden_store $ARM && soft decode s08 decode $ARM && soft ctx1m s08 ctx1m $ARM \
-    && soft server s08 server $ARM; } || CUDA_OK=0
-fi
-if [ $CUDA_OK = 1 ] && ! step_done s12_thor; then   # the served Thor build + runtime, now that s08 decoded it
-  env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only thor > $L/s12_thor.log 2>&1 || stop "s12 thor publish"
-  mark s12_thor
-fi
-
-# ------------------------------------------------------------------------------------------------ NVFP4 dense overlay (soft)
-# Owner 2026-10-24: an extra release on top of the Thor build. s10 gated its accuracy (overlay_adopted); here the CUDA
-# server must decode and serve with it loaded (DSV4_NVFP4_OVERLAY), and s12 publishes it as its own repo with the
-# measured tok/s beside the base build's.
-OVL=$WORK/thor/overlay_nvfp4
-if [ $CUDA_OK = 1 ] && step_done s12_thor && [ -f $OVL/overlay.json ] \
-   && $PY -c "import json,sys;sys.exit(not json.load(open('$WORK/s10/gates.json'))['overlay_adopted'])"; then
-  { soft overlay_decode env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh decode $ARM \
-    && soft overlay_server env DSV4_NVFP4_OVERLAY=$OVL bash cuda/CHAIN_STEPS.sh server $ARM; } && ! step_done s12_overlay && {
-    env -u HF_XET_HIGH_PERFORMANCE $PY ops/s12_publish.py --only overlay > $L/s12_overlay.log 2>&1 || stop "s12 overlay publish"
-    mark s12_overlay; }
-fi
 
 # ------------------------------------------------------------------------------------------------ s11: the speculative head
 quiet; s11 traces_eval traces --set eval;   reclaim s11_traces_eval

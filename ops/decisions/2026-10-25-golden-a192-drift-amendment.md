@@ -60,3 +60,24 @@ A failing row counts as a **routing near-tie** when all of these hold in `ops/lo
 - Otherwise -> BUG: debug, fix, re-run golden A192 as registered, then upload.
 The other low rows (L9/877, L33/988, L39) are reported but do not decide: none is a confident chained disagreement.
 The GGUF ladder is not touched by either outcome.
+
+## Owner decision 2026-10-25 ~08:40: Thor ships; golden A192 waived; Thor before the GGUF ladder
+
+Owner, verbatim: "realistically we aren't redoing the thor cuda build at a weights/benchmark level from here so in
+practice we are uploading it; most likely the model loads and works its just a gate quibble and scalar quibble of how
+it hits a certain measurement or not. so the cuda thor build deploys, the ggufs follow on"
+
+- Golden A192 is WAIVED by the owner, whatever ops/diag_route_flip.py reports. It failed as registered: 46 pooled
+  disagreements, 41 near-ties (89.1% < 90%), and condition 2 failed at doc1k pos 850 (L6 isolated 0.9765). The
+  diagnostic still runs to completion, and its result is recorded here and summarised on the Thor card as the
+  explanation, not as a gate.
+- The "loads and works" gates still run unchanged and must pass before upload: golden_store (Engram row store),
+  decode determinism/consistency, ctx1m, server. If one fails, Thor is not uploaded and the failure goes to the
+  owner.
+- Order: chain2 builds the Engram row files (fits now: 210 GiB free on NVMe vs 200 needed), runs those serving gates,
+  publishes Thor and the NVFP4 overlay, then resumes the GGUF ladder unchanged (quant L3 -> drop_source -> stage L2 ->
+  kld/smoke -> s09 gate -> GGUF publish -> L3 add-on).
+- The Thor card states that both golden gates failed as registered (src: 33/41 near-ties, 80%, passed under the
+  2026-10-24 drift amendment; A192: 41/46, 89.1%, waived by the owner) and links this file.
+- Caveat on the 2026-10-24 golden_src amendment: its diagnostic ran with the racy head harness (fixed in 60ef2c8),
+  so the "isolated head agrees" column there is not fully reliable. The per-row hidden-state cosines are unaffected.
