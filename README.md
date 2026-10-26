@@ -159,7 +159,8 @@ reported numbers. Pull requests are not being accepted yet.
 - **Model weights:** MIT, inherited from
   [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017).
 - **llama.cpp fork:** MIT.
-- **Code in this repository:** no license has been granted yet. One is pending.
+- **Code in this repository:** MIT ([`LICENSE`](LICENSE)). Vendored third-party code keeps its own license
+  (`cuda/include/third_party/httplib.h` and `json.hpp`, both MIT).
 - **Calibration data:** licence-filtered to exclude non-commercial and share-alike sources. Per-source licences are in
   the corpus provenance under [`results/`](results/).
 
