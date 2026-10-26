@@ -89,3 +89,11 @@ It loads each layer from the source checkpoint, whose backbone chain2 had alread
 take about 10 hours. Golden A192 is waived, so the diagnostic decides nothing, and it was stopped to let Thor proceed.
 The routing near-tie hypothesis for doc1k pos 850 at L6 is untested. To test it later, run it after the release
 (cheapest as `--targets 6:850 9:877`, i.e. layers 0..9).
+
+## golden_store rerun (2026-10-25T23:01:54-04:00)
+
+The first golden_store run (09:37) never computed anything: `engram store: cannot open tests/data/engram_tokmap.bin`
+(a relative fallback path; CHAIN_STEPS runs from the repo root, not cuda/). Fixed by placing engram_tokmap.bin in the
+row store directory. Rerun result: rc=1, pooled line `pooled 46 disagreements, 41 near-ties (rank <= 3, gap <= 1.0) <-- FAIL`, 0 per-layer
+lines differ from the waived golden A192 run (ops/logs/thor_first/layer_diff.txt). Waived under the owner's golden A192 waiver
+(within the waived run's 46/41 bound): released to decode -> ctx1m -> server -> Thor publish.
