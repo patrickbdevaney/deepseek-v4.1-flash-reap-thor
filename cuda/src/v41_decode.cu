@@ -144,8 +144,10 @@ int main(int argc, char** argv) {
            repeat > 1 ? (deterministic ? "  -- greedy output identical across runs" : "  -- NONDETERMINISTIC (FAIL)") : "");
     int incons = 0, near_tie = 0;
     if (consistency > 0 && gp.temperature <= 0.f && !first.empty()) {
-        for (int j = 0; j < consistency; ++j) {
-            const int k = (int)((long)(j + 1) * (first.size() - 1) / consistency);
+        // k = 0 included: the first token comes from the prefill's argmax, not a decode step (a stale
+        // d_tok there once made every run start from the previous run's last token)
+        for (int j = 0; j <= consistency; ++j) {
+            const int k = (int)((long)j * (first.size() - 1) / consistency);
             std::vector<int> pre(ids); pre.insert(pre.end(), first.begin(), first.begin() + k);
             eng.reset();
             const std::vector<float> lg = eng.debug_prefix_logits(pre);
@@ -158,7 +160,7 @@ int main(int argc, char** argv) {
                 tie ? ++near_tie : ++incons;
             }
         }
-        printf("[v41] consistency over %d positions: %d gross, %d near-tie mismatches -> %s\n", consistency, incons, near_tie,
+        printf("[v41] consistency over %d positions: %d gross, %d near-tie mismatches -> %s\n", consistency + 1, incons, near_tie,
                incons ? "FAIL" : "PASS");
     }
     // speculation sweep: no-spec reference, then each K on the same prompt, same process

@@ -105,7 +105,10 @@ struct Engine::Impl {
             v41m::embed_rows(m, s, M, st);
             reap();                                    // flags go to 1 as the reads land; stream waits on them
             v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, n, c0, eg, st, hook_for(M), dec_margin);
-            if (c0 + M == n) v41m::head_row(m, s, M - 1, st);
+            if (c0 + M == n) {                        // greedy sample() reads d_tok: without the argmax here the
+                v41m::head_row(m, s, M - 1, st);       // first token after a prefill was the previous step's
+                v41m::argmax_logits(s, d_tok, st);
+            }
         }
         // window of a row restarted at k reaches k-127; layer 39 kept rows >= n - 128 - dec_margin
         if (k < n - v41::WINDOW - dec_margin) reuse_floor = std::max(reuse_floor, n - 1 - dec_margin);
