@@ -120,6 +120,7 @@ def boot(per_row: np.ndarray, weights: np.ndarray, n: int = 2000) -> list[float]
 
 
 def summarize(level: str, gguf: Path, run_dir: Path) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "llamacpp" / "llama.cpp" / "gguf-py"))   # not pip-installed in .venv
     from gguf import GGUFReader
     meta = json.loads((PREP / "meta.json").read_text())
     if meta.get("split") != gguf_split():
