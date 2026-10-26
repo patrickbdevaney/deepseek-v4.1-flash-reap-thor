@@ -15,7 +15,7 @@ the unpruned model: agreement with it is about 80% top-1 on held-out text, and m
 |---|---|---|
 | [`REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) | Safetensors, MXFP4 experts (bit-exact subset of the source) | Public. The master every other build is made from |
 | [`REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | Thor-native layout, Q2_K/Q3_K experts, FP8 dense, 106.9 GiB | Public. Served by the CUDA engine in [`cuda/`](cuda/) |
-| `REAP192-GGUF` | GGUF for llama.cpp, Engram from NVMe | Being scored against its release gate; publishes when the gate resolves |
+| [`REAP192-GGUF`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF) | GGUF level L3 for llama.cpp, 85.6 GiB in 3 splits, Engram from NVMe | Public, as a near-miss release: KL 0.508 passes (≤ 0.8), top-1 0.7725 is just under the 0.78 floor (95% CI 0.712–0.829); smoke passed. L2 failed both bars and is not published |
 | llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text decode, Engram row store, DSpark drafter. No vision; context capped at 16,384 tokens |
 | NVFP4 dense overlay | — | Held: the V4.1 engine cannot load it yet |
 
@@ -87,8 +87,8 @@ DeepSeek-V4.1-Flash-1017 (384 experts/layer, MXFP4 experts, 763B)
 
 ## Getting started
 
-**llama.cpp (GGUF).** Requires a CUDA GPU or unified-memory system with about 110 GB for the L2 GGUF and its
-runtime. You also need about 200 GB of NVMe for the Engram row files.
+**llama.cpp (GGUF).** Requires a CUDA GPU or unified-memory system with enough memory for the 85.6 GiB L3 GGUF and
+its runtime. You also need about 200 GB of NVMe for the Engram row files.
 
 ```bash
 git clone -b deepseek-v4.1-reap-thor https://github.com/patrickbdevaney/llama.cpp
