@@ -146,6 +146,10 @@ struct Engine::Impl {
     }
     void step(int tok, int pos) {
         stage_rows(&tok, 1, pos);
+        // Eager (no graph, or before the first capture): ~40 layers of single launches overrun the launch
+        // queue while the stream sits on the layer-1 flag wait, so cudaLaunchKernel blocks before reap()
+        // can set the flag -- a deadlock (--no-graph hung forever). Land the rows first; reap() is then a no-op.
+        if (!cfg.graph || !gexec) reap();
         launch(&gexec, [&] { step_body(); });
         reap();
         hi_written = std::max(hi_written, pos);
@@ -170,6 +174,7 @@ struct Engine::Impl {
         rows[0] = tok;
         for (int i = 1; i < M; ++i) rows[i] = h_draft[i];
         stage_rows(rows.data(), M, pos);
+        if (!cfg.graph || !vexec[M]) reap();          // eager: see step()
         launch(&vexec[M], [&] {
             v41m::embed_rows(m, s, M, st);
             v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, 0, 0, eg, st, hook_for(M));

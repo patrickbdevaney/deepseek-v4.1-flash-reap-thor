@@ -364,7 +364,10 @@ def gguf_context(m: dict, gate: dict, root: Path | None = None, heal: dict | Non
             "run_level": min(m["levels"]),
             "run_file": _run_file(m),
             "run_gib": cards.fmt(m["levels"][min(m["levels"])]["bytes"], "gib"),
-            "gate_status": "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
+            "gate_status": (f"FAIL on the pre-registered floor ({'; '.join(gate['owner_release']['why_failed'])}); "
+                            f"{gate['owner_release']['level']} released by owner decision (llama-server smoke passed)")
+                           if gate.get("owner_release") else
+                           "PASS (" + ", ".join(gate["passing"]) + ")" if gate["passing"] else "FAIL (repository kept private)"}
 
 
 def _run_file(m: dict) -> str:

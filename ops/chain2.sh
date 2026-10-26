@@ -197,9 +197,23 @@ fi
 step_done s09_rowfile_ || { [ -f $L/done.s09_rowfile ] || need / 200 "s09 Engram row files (~189 GiB)"; cpu s09 rowfile; mark s09_rowfile_; }
 
 # ------------------------------------------------------------------------------------------------ CUDA serving gates (soft)
+# Owner 2026-10-26: "make sure that we proceed for certain to thor cuda upload and gguf release" (agent budget ending).
+# Every serving gate is time-bounded (a hang becomes a soft fail, never a blocked chain). decode is the hard requirement
+# for the Thor upload (it proves the build generates, deterministically); ctx1m failing only drops the measured 1M
+# number from the card; a failed server gate is recorded and the build still ships on decode (owner instruction).
+s08t() { timeout -k 120 $1 bash cuda/CHAIN_STEPS.sh "${@:2}"; }
 if [ $CUDA_OK = 1 ]; then
-  { soft golden_store s08 golden_store $ARM && soft decode s08 decode $ARM && soft ctx1m s08 ctx1m $ARM \
-    && soft server s08 server $ARM; } || CUDA_OK=0
+  { soft golden_store s08 golden_store $ARM && soft decode s08t 14400 decode $ARM; } || CUDA_OK=0
+fi
+if [ $CUDA_OK = 1 ]; then
+  soft ctx1m s08t 14400 ctx1m $ARM || log "ctx1m failed/timed out: Thor ships without the measured 1M number"
+  pkill -x v41_server; sleep 5
+  if ! soft server s08t 7200 server $ARM; then
+    pkill -x v41_server; sleep 5
+    touch $L/done.s08_server_$ARM
+    echo "$(date -Is) server gate FAILED (see $L/s08_server_$ARM.log, soft_fail.server); Thor published on golden_store+decode per owner 2026-10-26 'proceed for certain to thor cuda upload'" >> $FOLLOW
+    log "server gate failed: Thor ships on decode (owner instruction); recorded in OWNER_FOLLOWUP"
+  fi
 fi
 if [ $CUDA_OK = 1 ] && ! step_done s12_thor; then   # the served Thor build + runtime, now that s08 decoded it
   # a failed Thor upload goes to the owner but never blocks the GGUF ladder below
@@ -279,6 +293,11 @@ gate L2 $L3M
 if [ -z "$PASS" ]; then
   log "GGUF L2 failed its gate; evaluating the L3 fallback"; evaluate L3
   gate L2 L3
+fi
+if [ -z "$PASS" ]; then   # owner rule: a near-miss on the floor still ships (smoke must pass); see ops/s09_owner_release.py
+  PASS=$($PY ops/s09_owner_release.py 2>>$L/c2_s09_gate.log) && {
+    log "no level passed s09: owner near-miss release of $PASS (gates.json owner_release)"
+    echo "$(date -Is) GGUF $PASS released under the owner near-miss rule (failed only the KL/top-1 floor; smoke passed); see $G/gates.json" >> $FOLLOW; } || PASS=""
 fi
 log "s09 gate: passing levels [${PASS}]"
 wait_c1
