@@ -48,7 +48,7 @@ Conversion: from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha2
 
 ## Levels
 
-Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on the pre-registered confirm split of the held-out documents, which no pruning, healing or quantization decision ever looked at ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals. Only levels that passed the pre-registered GGUF gate are in this repository.
+Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on the pre-registered confirm split of the held-out documents, which no pruning, healing or quantization decision ever looked at ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals.
 
 {{ gguf.levels_table }}
 

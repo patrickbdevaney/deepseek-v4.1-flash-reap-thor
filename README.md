@@ -1,62 +1,180 @@
-# DeepSeek-V4.1-Flash-1017 REAP-192 for Jetson AGX Thor
+# DeepSeek-V4.1-Flash-1017 REAP-192 for a single Jetson AGX Thor
 
-Run `deepseek-ai/DeepSeek-V4.1-Flash-1017` (a ~763B MoE) memory-resident on one Jetson AGX Thor: 122 GiB unified
-memory with about 117 GiB usable, on sm_110a. The method keeps 192 of 384 routed experts per layer, selected with
-HOPE/REAP on a balanced nine-bucket calibration corpus. Expert deletion is bit-exact on the MXFP4 master. The quantized
-builds are made from that master, and the 189 GiB Engram tables are served from NVMe as O_DIRECT row files.
+Expert-pruned DeepSeek-V4.1-Flash-1017 that runs memory-resident on one 128 GB NVIDIA Jetson AGX Thor.
+It keeps 192 of 384 routed experts per layer and quantizes the survivors to about 2.85 bits per weight. The
+189 GiB Engram tables are read from NVMe per token, so they need no memory. This repository is the full pipeline and
+the record of every measurement and decision behind the released weights.
 
 ## Status (2026-10-26)
 
-| Release | State |
+Research release. The weights are usable for evaluation and experimentation. They are not a drop-in replacement for
+the unpruned model: agreement with it is about 80% top-1 on held-out text, and multilingual quality drops the most
+(see [Limitations](#limitations)).
+
+| Artifact | Format | State |
+|---|---|---|
+| [`REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) | Safetensors, MXFP4 experts (bit-exact subset of the source) | Public. The master every other build is made from |
+| [`REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | Thor-native layout, Q2_K/Q3_K experts, FP8 dense, 106.9 GiB | Public. Served by the CUDA engine in [`cuda/`](cuda/) |
+| `REAP192-GGUF` | GGUF for llama.cpp, Engram from NVMe | Being scored against its release gate; publishes when the gate resolves |
+| llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text decode, Engram row store, DSpark drafter. No vision; context capped at 16,384 tokens |
+| NVFP4 dense overlay | — | Held: the V4.1 engine cannot load it yet |
+
+The roadmap is GGUF and llama.cpp first. See [`llamacpp/NEXT.md`](llamacpp/NEXT.md) for long context and vision.
+Speed work on the CUDA engine is parked.
+
+## Results
+
+The evaluation is a teacher-forced comparison against the unpruned model. It runs on a pre-registered confirm split
+of held-out documents that no pruning or quantization decision saw: 26 documents, 185,565 scored tokens. Top-1 is
+agreement with the teacher's argmax. kl32 is KL(teacher ‖ model) over the teacher's top 32 tokens. Brackets are 95%
+document-cluster bootstrap intervals.
+
+| Model (vs the unpruned teacher) | Experts | top-1 | kl32 | Release gate |
+|---|---|---|---|---|
+| Teacher (control) | 384 | 1.000 | 0.000 | pass |
+| **REAP-192 MXFP4 master** | 192 | **0.798** | **0.441** | pass (amended, see below) |
+| **REAP-192 Thor build** (Q2_K/Q3_K) | 192 | **0.776** | **0.519** | pass |
+| Random 192-expert keep-set (baseline) | 192 | 0.751 | 0.542 | — |
+| REAP-128 (rejected) | 128 | 0.709 | 0.803 | fail |
+
+- **The selection criterion beats random.** Against a uniform random keep-set of the same size, the master has
+  +4.7 points of top-1 (McNemar z = 48.4, 185,565 tokens). The paired kl32 difference is −0.10 [−0.22, +0.04],
+  which does not exclude zero.
+- **Quantization costs less than pruning.** Going from MXFP4 to the Thor build's ~2.85 bpw K-quants costs
+  2.2 points of top-1. Pruning 384 → 192 costs about 20.
+- **Healing did not ship.** A per-layer heal lowered NLL (−0.056 [−0.123, −0.022]) but moved the argmax away from
+  the teacher (McNemar z −3.73). The released weights are unhealed. See [`RESULTS.md`](RESULTS.md).
+
+**Selection.** Fourteen candidate keep-sets were replayed through the full model on a separate screen split
+(177,810 tokens). They included HOPE at several protection levels, REAP-sum, routing mass, frequency, three random
+draws, multilingual-protected variants and 128-expert variants. The shipped `hope_sum_pf0` had the best overall
+kl32 (0.298). All 14 arms are in [`RESULTS.md`](RESULTS.md).
+
+**Serving on Thor** (CUDA engine, greedy, no speculative decoding):
+
+| Context | Decode | Prefill |
+|---|---|---|
+| Short prompt | 8.10 tok/s, identical across runs | ~20 tok/s |
+| 64k tokens | 6.59 tok/s | ~30 min for 64k tokens |
+
+This is a first-pass engine at about 40% of the memory-bandwidth limit (11.45 GB read per token, about 20 tok/s
+at 230 GB/s). [`docs/DECODE_PARITY_0731.md`](docs/DECODE_PARITY_0731.md) maps the gap and the levers.
+
+## Method
+
+```
+DeepSeek-V4.1-Flash-1017 (384 experts/layer, MXFP4 experts, 763B)
+  │  s02  balanced calibration corpus, 9 domain buckets, licence-filtered
+  │  s03  teacher pass on Thor: per-expert REAP saliency + HOPE interaction banks + teacher top-32 cache
+  │  s04  14 candidate keep-sets → full-model replay vs teacher → hope_sum_pf0
+  │  s05  bit-exact expert deletion on MXFP4                     → REAP192-MXFP4
+  │  s06  heal candidate (rejected at s10)
+  │  s07  GPTQ K-quant requant, per-layer Q2_K/Q3_K mix           → REAP192-Thor
+  │  s09  llama.cpp GGUF ladder (imatrix, L2/L3), Engram row files → REAP192-GGUF
+  │  s10  pre-registered gates on the confirm split
+  └  s12  publish only what passed
+```
+
+- **Selection: HOPE.** Each expert gets a REAP-sum saliency score, and HOPE adds pairwise expert interactions
+  (pᵀFp). The criterion is measured against random and frequency anchors, not assumed.
+- **Pre-registration.** The gates in [`ops/s10_gates.json`](ops/s10_gates.json) were sha256-locked before the first
+  evaluation. Any later change is a dated, attributed amendment in [`DECISIONS.md`](DECISIONS.md).
+- **Engram on NVMe.** The Engram n-gram tables (189 GiB) are repacked into O_DIRECT row files of 48 rows per token.
+  They are read with io_uring while layer 0 runs, so they never occupy unified memory
+  ([`llamacpp/ENGRAM_ROWFILE.md`](llamacpp/ENGRAM_ROWFILE.md)).
+- **Execution.** One Thor ran every stage unattended under systemd, one model-loading process at a time
+  ([`ops/chain.sh`](ops/chain.sh), [`ops/chain2.sh`](ops/chain2.sh)).
+
+## Getting started
+
+**llama.cpp (GGUF).** Requires a CUDA GPU or unified-memory system with about 110 GB for the L2 GGUF and its
+runtime. You also need about 200 GB of NVMe for the Engram row files.
+
+```bash
+git clone -b deepseek-v4.1-reap-thor https://github.com/patrickbdevaney/llama.cpp
+cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON && cmake --build llama.cpp/build -j --target llama-server
+# Engram row files: build once from two source shards (see the GGUF model card for the exact commands)
+LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llama.cpp/build/bin/llama-server \
+    -m <first split of the GGUF level> -ngl 999 -c 8192 --jinja --port 8080
+```
+
+The GGUF model card carries the full, gate-tested commands. Those include downloading the GGUF, building and
+verifying the row files, and the optional DSpark drafter (`--spec-type draft-dspark`).
+
+**Thor CUDA engine.** The engine builds for `sm_110a` ([`cuda/scripts/build_v41.sh`](cuda/scripts/build_v41.sh)) and
+loads the `REAP192-Thor` build together with the row files. The engine's source is not yet part of the published
+Thor repository. See [`cuda/README.md`](cuda/README.md).
+
+## Compatibility
+
+| Platform | State |
 |---|---|
-| [MXFP4 master](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) | **Public.** The bit-exact REAP-192 master that every other build is made from. Its s10 final gate failed as registered and was amended by the owner to exclude multilingual (see [`DECISIONS.md`](DECISIONS.md)) |
-| [Thor CUDA build](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | **Public** (106.9 GiB, 49 files). Routed experts are K-quants (Q2_K on 31 layers, Q3_K on 9, GPTQ, ~2.85 bpw); attention and dense weights FP8; Engram rows served from NVMe. Passed the serving gates: decode determinism + consistency, 1M-context state with a 64k prefill, OpenAI-style server. The golden layer-by-layer gate failed its pooled near-tie rule (46 disagreements, 41 near-ties) and was waived by the owner, see [`ops/decisions/2026-10-25-golden-a192-drift-amendment.md`](ops/decisions/2026-10-25-golden-a192-drift-amendment.md) |
-| GGUF (llama.cpp) | **In progress.** L2 is being scored against the teacher; L3 is the fallback level. A level ships if it passes the s09 gate; if every level misses only the KL/top-1 floor while its llama-server smoke passes, the closest one ships under an owner near-miss rule and its card says so ([`ops/s09_owner_release.py`](ops/s09_owner_release.py)) |
-| NVFP4 dense overlay | **Held.** The V4.1 engine does not load the overlay yet (`DSV4_NVFP4_OVERLAY` is read only by the older V4 engine), so it cannot be gated on Thor |
-| DSpark speculative decoding | Not measured yet. The checkpoint's own `mtp.*` drafter is wired into the CUDA engine; the chain benchmarks it after the GGUF release |
+| Jetson AGX Thor (128 GB, `sm_110a`), CUDA 13 | Tested: CUDA engine and llama.cpp |
+| Other CUDA GPUs with ≥ 110 GB combined GPU memory, or partial offload | Expected to work with llama.cpp (`CUDA_ARCH=<sm>`); not tested |
+| vLLM, SGLang, upstream llama.cpp | Not supported. V4.1 support in upstream llama.cpp is an unmerged PR ([#28696](https://github.com/ggml-org/llama.cpp/pull/28696)); this fork adds six patches on top of it |
 
-**Thor CUDA performance (measured, greedy, no speculation):** 8.10 tok/s decode at short context, 6.59 tok/s at 64k
-context; a 64k-token prefill takes about 30 min. This is the first-pass engine at about 40% of the memory-bandwidth
-ceiling (~20 tok/s for 11.45 GB read per token). [`docs/DECODE_PARITY_0731.md`](docs/DECODE_PARITY_0731.md) compares it
-with the DeepSeek-V4-Flash-0731 server (13.8 tok/s plain, 28.4 tok/s with a tuned DSpark head) and ranks the levers:
-the K-quant expert GEMV (27–37% of streaming bandwidth), router/sparse-attention kernels, and the speculative verify
-pass. These are engine changes; the published weights do not change.
+## Limitations
 
-Engine bugs fixed on the way to the Thor release: the first token after a prefill was read from a stale buffer (wrong
-first token, runs disagreed; the consistency gate now checks position 0), and `--no-graph` decoding deadlocked against
-the Engram row-store flag wait.
+- **Multilingual.** At 192 experts, multilingual agreement drops the most of any domain: top-1 0.52 on the screen
+  split, against 0.75–0.99 elsewhere. The keep-set trades it for general and finance text. The s10 gate passed only
+  after a dated owner amendment that evaluates beat-random without the multilingual bucket
+  ([`DECISIONS.md`](DECISIONS.md) §1).
+- **Long context is untested for quality.** No confirm-split bin past 8k tokens was adequately sampled. The CUDA
+  engine runs a 64k prefill correctly, but retention at long context is unmeasured. llama.cpp is capped at 16,384
+  tokens until the candidate-block mask ([`llamacpp/patches-pending/`](llamacpp/patches-pending/)) passes its GPU gate.
+- **Vision.** The source model has a vision tower. It was used for vision-aware expert selection, but no runtime here
+  serves images yet.
+- **Golden layer gate.** The Thor build's layer-by-layer golden gate failed its pooled near-tie rule
+  (46 disagreements, 41 of them near-ties). The owner waived it, and the build shipped on its serving gates
+  ([decision record](ops/decisions/2026-10-25-golden-a192-drift-amendment.md)).
+- **Evaluation scope.** All quality numbers are agreement with the teacher, not downstream task benchmarks. The
+  confirm split rests on 26 documents, so per-domain figures are directional.
 
-This repo is the complete record of the run, not only its code:
+## Repository map
 
-| | |
+| Path | Contents |
 |---|---|
-| [`RESULTS.md`](RESULTS.md) | every measured result: each candidate keep-set against the teacher per domain, the heal decision, release gates, GGUF ladder, DSpark sidecar. Rendered from the artifacts, so no number is typed by hand |
-| [`DECISIONS.md`](DECISIONS.md) | the choices made and who made them, including why the shipped keep-set favours general and finance over multilingual |
-| [`results/`](results/) | the intermediate data: every JSON result, ledger, keep-set, mask, drift check and gate decision, the run logs, and the calibration corpus provenance (sources, revisions, licences, per-row token counts). [`results/MANIFEST.json`](results/MANIFEST.json) has the sha256 of each file |
-| HF dataset (see [`results/DATASET.json`](results/DATASET.json) once published) | the bulk arrays: per-layer expert saliency and HOPE interaction banks, the teacher routing trace and top-32 cache, heal measurements, and the per-token metrics of every arm |
-| [`pipeline-plan/PLAN.md`](pipeline-plan/PLAN.md) | the end-to-end plan the run executed (2026-10-19) and its research notes |
-| [`ops/`](ops/) | the pipeline: stages `s00`–`s13`, the pre-registered gates ([`ops/s10_gates.json`](ops/s10_gates.json), sha256-locked before the first evaluation), the systemd units that ran it unattended ([`ops/sd/`](ops/sd/)) |
-| [`cuda/`](cuda/) | the purpose-built CUDA engine and server for the Thor build (K-quant experts, FP8 dense, Engram NVMe row store, DSpark drafter) |
-| [`llamacpp/`](llamacpp/) | the pinned llama.cpp fork and patches for the GGUF release (V4.1 graph, Engram row store, DSpark sidecar export, context clamp) |
-| [`REPORT.md`](REPORT.md), [`notes/`](notes/) | the 2026-10-17 research that chose this model and recipe. Superseded by `PLAN.md` wherever they disagree |
+| [`RESULTS.md`](RESULTS.md) | Every measured result, rendered from artifacts by `ops/s13_results.py`; no hand-typed numbers |
+| [`DECISIONS.md`](DECISIONS.md), [`ops/decisions/`](ops/decisions/) | Each choice, who made it, when, and the evidence |
+| [`results/`](results/) | Intermediate data: JSON results, ledgers, keep-sets, masks, gate decisions, logs, corpus provenance; sha256 in [`results/MANIFEST.json`](results/MANIFEST.json) |
+| [`ops/`](ops/) | Pipeline stages `s00`–`s13`, pre-registered gates, systemd units |
+| [`cuda/`](cuda/) | CUDA engine and OpenAI-compatible server for the Thor build |
+| [`llamacpp/`](llamacpp/) | llama.cpp patches, REAP-aware converter, Engram row-file tools, GGUF ladder, follow-on plan |
+| [`docs/`](docs/) | Engineering analyses (decode parity with the V4-Flash-0731 engine) |
+| [`pipeline-plan/PLAN.md`](pipeline-plan/PLAN.md), [`REPORT.md`](REPORT.md), [`notes/`](notes/) | The 2026-10-19 plan and the research that chose model and recipe; `PLAN.md` wins where they disagree |
 
-## How it ran
+## Reproducing
 
-The stages are `s02` corpus, `s03` teacher calibration pass (saliency banks), `s04` candidate keep-sets and full-model
-arbitration against the teacher, `s05` bit-exact expert surgery on MXFP4, `s06` heal, `s10` evaluation panels, `s07`
-native Thor build, `s09` GGUF ladder, `s11` speculative head and `s12` publish. Each stage is resumable. Model-loading
-work runs one process at a time, with a page-cache reclaim and a memory check between units. A repo is made public
-only if its pre-registered gate passed. [`ops/chain.sh`](ops/chain.sh) and [`ops/chain2.sh`](ops/chain2.sh) are the
-exact sequence.
+Every stage is resumable and writes its artifacts under `$V41_WORK`. `bash ops/chain.sh` followed by
+`bash ops/chain2.sh` runs the exact sequence used for this release. The teacher pass needs the 475 GiB source
+checkpoint on local storage. The per-stage logs in [`results/`](results/) record each stage's wall-clock time.
 
-Every decision is measured as agreement with the unpruned teacher (top-1 and top-32 KL, with row-clustered bootstrap
-CIs and paired McNemar tests). Perplexity is not used. Calibration and evaluation rows are disjoint, and the gates were
-fixed before results existed.
+## Contributing and contact
 
-## Known limitation
+This is a single-maintainer research repository. Issues are welcome for reproducibility problems and errors in
+reported numbers. Pull requests are not being accepted yet.
 
-At 192 of 384 experts, multilingual text loses more agreement with the teacher than any other domain does. This was
-an explicit trade-off: see [`DECISIONS.md`](DECISIONS.md) §1 and the s04 table in [`RESULTS.md`](RESULTS.md).
+## License
 
-Prior work this builds on: [glm-5.3-reap](https://github.com/patrickbdevaney/glm-5.3-reap) (GLM-5.3-Flash 321B →
-REAP50 + NVFP4, 93.6 GiB).
+- **Model weights:** MIT, inherited from
+  [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017).
+- **llama.cpp fork:** MIT.
+- **Code in this repository:** no license has been granted yet. One is pending.
+- **Calibration data:** licence-filtered to exclude non-commercial and share-alike sources. Per-source licences are in
+  the corpus provenance under [`results/`](results/).
+
+## Citation
+
+```bibtex
+@misc{devaney2026dsv41reap,
+  title  = {DeepSeek-V4.1-Flash-1017 REAP-192 for a single Jetson AGX Thor},
+  author = {Devaney, Patrick},
+  year   = {2026},
+  url    = {https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor}
+}
+```
+
+This work builds on REAP (router-weighted expert activation pruning, Lasby et al., 2025, arXiv:2510.13999) and HOPE
+(interaction-aware expert pruning, arXiv:2609.18916). It also builds on DeepSeek's V4.1-Flash release and on the
+llama.cpp V4.1 port in PR #28696. Prior work by the same author:
+[glm-5.3-reap](https://github.com/patrickbdevaney/glm-5.3-reap) (GLM-5.3-Flash 321B → 144 experts + NVFP4, 93.6 GiB).
