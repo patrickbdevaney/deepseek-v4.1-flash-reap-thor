@@ -359,7 +359,8 @@ hashes refer to this repository.
 | decode == prefill (M-independent split-K), kq 16-lane down pass | 20.16 | T1, then bitwise decode/prefill | 4e0478c |
 | fp8 tensor-core Q2_K/Q3_K experts (`v41_kq_mma.cuh`); 8-token prefill units | 21.15 | T1 (KL to exact 0.018 vs half2 0.021) | 335135c |
 | hc_mixes on its own stream beside collapse/norm/attention and MoE; hc_partial x reuse; rmsnorm loads batched | 21.71 (paired: 21.07 → 21.71, +3.0%) | bitwise (teacher-forced logits identical) | 63a9a45 |
-| shared expert forked before the router; attention KV branch on its own stream (per-stream split-K scratch) | **22.08** (paired: 21.61 → 22.08, +2.2%) | bitwise | (this commit) |
+| shared expert forked before the router; attention KV branch on its own stream (per-stream split-K scratch) | **22.08** (paired: 21.61 → 22.08, +2.2%) | bitwise | 8cfe5b7 |
+| NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
@@ -427,4 +428,31 @@ Two other findings from the same profile:
   - Shared-expert NVFP4 launches run at 87 GB/s in the trace only because they overlap the routed
     experts on the side stream. The same shape in `bench_dense` runs at 203 GB/s.
 - **A trap:** single runs swing ±0.5 tok/s between loads, so judge sub-5% levers by paired A/B only.
+
+**NVFP4 dense on tensor cores (2026-10-29).** An e2m1 nibble rewritten as the e4m3 byte
+`sign<<7 | magnitude<<2` is exactly the e2m1 value × 2^-6, subnormals included. So the overlay's
+codes feed `mma.m16n8k16.e4m3` against the act-quantized x after about 3 bit ops per 4 weights.
+`k_nvm` serves every M with the same per-element arithmetic, and its K split is chosen from the
+shape, so decode, verify and prefill still match bit for bit.
+
+Speed, by row count:
+
+- **M=3 (the verify width):** about 1.1–1.4x in `gate_nvm` (L2-cold, rotating weight copies).
+- **M=8:** 2.4–4.5x.
+- **Engine:**
+
+  | | before | after |
+  |---|---|---|
+  | plain decode | 22.16 tok/s | 21.98 (paired, −0.8%) |
+  | spec K=3 | | 25.93 tok/s (1.19x) |
+  | 8k prefill | 63.8 tok/s | 80.0 tok/s |
+  | 8k decode | 18.71 tok/s | 19.09 tok/s |
+
+**Layout trap.** A lane reading 64 contiguous bytes means each 16-byte load instruction strides
+lanes 64 bytes apart and half-fills every 32-byte sector. That capped DRAM reads at about 118 GB/s
+on every shape. The fix was to interleave the layout so each instruction reads 512 contiguous bytes.
+The first gate timed L2-hot weights and hid the problem completely, so `gate_nvm` now rotates more
+than 100 MB of copies.
+
+New ids reference: `ops/logs/bench/nvm2_arm0.json`. `V41_NV_MMA=0` restores `k_dense<DecNVFP4>`.
 

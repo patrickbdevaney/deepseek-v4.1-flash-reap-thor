@@ -26,3 +26,6 @@ D1	2	draft_ft	-	H6	TODO	draft_ft	0	1	3	-	acceptance baseline: per-position alpha
 D2	2	draft_ft	-	D1	TODO	draft_ft	0	1	12	-	trace corpus: target generations on licence-clean prompts with hidden-state taps at the drafter target layers (37,38,39 inputs) + top-k logits; no transcripts published
 D3	2	draft_ft	T0	D2	TODO	draft_ft	0	0.7	24	held-out alpha	fine-tune drafter (3 MTP blocks + Markov head) on D2: KD to target top-k + tap targets; bf16 master, requantize experts to MXFP4 for serving; GPU lane exclusive
 D4	2	draft_ft	T0	D3	TODO	draft_ft	15	0.6	3	spec identity + alpha +0.10	ship: load fine-tuned drafter, spec sweep 128/8k; output stays exact (verify), so the gate is speed + identity
+A7	1	nvfp4_dense	T1	-	DONE	spec	5.0	0.6	8	bench_dense + score KL	NVFP4 dense on fp8 mma for ALL M (x is already e4m3; e2m1*2 exact in e4m3; per-16 scale per mma like k_kqm): verify MT=3 dense costs 1.2-1.85x AR at the same bytes (issue-bound); also prefill dense
+A7b	1	nvfp4_dense	T1	A7	TODO	ar_ceiling	1.0	0.5	3	gate_nvm	k_nvm M=1 on long-K shapes (wo_a/wo_b ~0.9x old) and wkv (0.86x): 2 tiles per warp, split-K by warps inside the CTA
+A1c	1	kquant_experts	T1	A1	TODO	ar_ceiling	1.0	0.6	2	gate_kq_fast	k_kqm codes layout has the same 32-B lane stride as k_nvm had (half-filled sectors per instruction): interleave per 512 B

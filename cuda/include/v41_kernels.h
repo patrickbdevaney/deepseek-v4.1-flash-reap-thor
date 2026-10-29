@@ -86,7 +86,8 @@ void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float*
 size_t router_scratch_bytes(int M, int E);
 // NVFP4 dense overlay: after overlay_register(codes, g), fp8_linear(.., W = codes, Ws = e4m3/16 scales, ..)
 // decodes NVFP4 instead of FP8 (DecNVFP4). overlay_count() = registered tensors.
-void overlay_register(const uint8_t* codes, float g);
+// N rows, K columns; force_mma -1 = env (V41_NV_MMA), 0 = row-major k_dense, 1 = repack for k_nvm
+void overlay_register(const uint8_t* codes, const uint8_t* scales, float g, int N, int K, int force_mma = -1);
 // Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
 // bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
 void kq_fast_set(bool on);

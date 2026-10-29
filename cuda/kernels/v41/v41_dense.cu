@@ -4,6 +4,7 @@
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_gemv.cuh"
+#include "v41_nv_mma.cuh"
 #include <cuda_fp4.h>
 #include <cstring>
 #include <algorithm>
@@ -46,6 +47,10 @@ void v41k_stream_scratch(cudaStream_t st) {
     d.cap = g_part_cap;
     if (g_kcnt && cudaMalloc(&d.kcnt, KS_TILES * sizeof(int)) == cudaSuccess) cudaMemset(d.kcnt, 0, KS_TILES * sizeof(int));
     g_scr[g_nscr++] = d;
+}
+static void dense_scratch(cudaStream_t st, float*& part, size_t& cap, int*& kcnt) {
+    part = g_part; cap = g_part_cap; kcnt = g_kcnt;
+    for (int i = 0; i < g_nscr; ++i) if (g_scr[i].st == st) { part = g_scr[i].part; cap = g_scr[i].cap; kcnt = g_scr[i].kcnt; }
 }
 static int g_nsm = 0;
 static int nsm() { if (!g_nsm) { int d; cudaGetDevice(&d); cudaDeviceGetAttribute(&g_nsm, cudaDevAttrMultiProcessorCount, d); } return g_nsm; }
@@ -219,8 +224,8 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     // V41_KSPLIT_LEGACY=1 restores the old M-dependent prefill split.
     static const bool legacy = [] { const char* e = getenv("V41_KSPLIT_LEGACY"); return e && *e == '1'; }();
     constexpr int SPEC_M = 8;
-    float* part = g_part; size_t part_cap = g_part_cap; int* kcnt = g_kcnt;
-    for (int i = 0; i < g_nscr; ++i) if (g_scr[i].st == st) { part = g_scr[i].part; part_cap = g_scr[i].cap; kcnt = g_scr[i].kcnt; }
+    float* part; size_t part_cap; int* kcnt;
+    dense_scratch(st, part, part_cap, kcnt);
     int ks = 1;
     static const int want_x = [] { const char* e = getenv("V41_KSPLIT_WANT"); return e ? atoi(e) : 2; }();
     const int ctas = ntile * (legacy && M > SPEC_M ? (M + 3) / 4 : 1), want = want_x * nsm();
@@ -266,9 +271,55 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
 
 // NVFP4 dense overlay registry: a weight pointer registered here is NVFP4 codes (Ws = its e4m3/16
 // scales), not FP8, and fp8_linear serves it with DecNVFP4. Filled at load time (bind_layer).
-struct OvEntry { float g; };
+struct OvEntry { float g; bool mma; };
 static std::unordered_map<const void*, OvEntry>& ov_map() { static std::unordered_map<const void*, OvEntry> m; return m; }
-void overlay_register(const uint8_t* codes, float g) { ov_map()[codes] = OvEntry{g}; }
+// V41_NV_MMA=0 keeps the row-major layout and k_dense<DecNVFP4>; otherwise shapes that tile (N % 16, K % 256)
+// are repacked in place for k_nvm (v41_nv_mma.cuh). Load time only (cudaMalloc of a temporary).
+static bool nv_mma_on() { static const bool on = [] { const char* e = getenv("V41_NV_MMA"); return !(e && *e == '0'); }(); return on; }
+void overlay_register(const uint8_t* codes, const uint8_t* scales, float g, int N, int K, int force_mma) {
+    const bool mma = (force_mma >= 0 ? force_mma == 1 : nv_mma_on()) && N % 16 == 0 && K % 256 == 0;
+    if (mma) {
+        const size_t cb = (size_t)N * K / 2, sbytes = (size_t)N * K / 16;
+        uint8_t* tmp = nullptr;
+        if (cudaMalloc(&tmp, cb) != cudaSuccess) { fprintf(stderr, "overlay_register: tmp alloc\n"); abort(); }
+        const size_t th = (size_t)(N / 16) * (K / 256) * 32;
+        v41g::k_nv_mma_repack_codes<<<(unsigned)((th + 255) / 256), 256>>>(tmp, codes, N, K);
+        cudaMemcpy((void*)codes, tmp, cb, cudaMemcpyDeviceToDevice);
+        const size_t ts = (size_t)(N / 16) * (K / 256) * 16;
+        v41g::k_nv_mma_repack_scales<<<(unsigned)((ts + 255) / 256), 256>>>(tmp, scales, N, K);
+        cudaMemcpy((void*)scales, tmp, sbytes, cudaMemcpyDeviceToDevice);
+        if (cudaDeviceSynchronize() != cudaSuccess) { fprintf(stderr, "overlay_register: repack failed\n"); abort(); }
+        cudaFree(tmp);
+    }
+    ov_map()[codes] = OvEntry{g, mma};
+}
+static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, int G,
+                       bool round, cudaStream_t st) {
+    const int Ng = N / G;
+    if (G > 1 && Ng % v41g::NVM_ROWS_PER_CTA) { fprintf(stderr, "k_nvm: group of %d rows straddles CTAs\n", Ng); abort(); }
+    const int mt = M == 1 ? 1 : M == 2 ? 2 : M <= 4 ? 4 : 8;
+    const int ntile = (N + v41g::NVM_ROWS_PER_CTA - 1) / v41g::NVM_ROWS_PER_CTA, nsb = K / 256;
+    // K split from the shape alone (decode == verify == prefill): >= 3 CTAs per SM, >= 4 superblocks each
+    static const int want_x = [] { const char* e = getenv("V41_NVM_WANT"); return e ? atoi(e) : 3; }();
+    int ks = 1;
+    if (ntile < want_x * nsm()) ks = std::min((want_x * nsm() + ntile - 1) / ntile, std::max(1, nsb / 4));
+    float* part; size_t cap; int* kcnt; dense_scratch(st, part, cap, kcnt);
+    if (ks > 1 && (size_t)ks * std::max(M, 8) * N > cap) {
+        fprintf(stderr, "[k_nvm] split-K partials M=%d N=%d ks=%d exceed capacity\n", M, N, ks); abort();
+    }
+    const int nk_max = ((nsb + ks - 1) / ks) * 256;
+    const size_t smem = (size_t)mt * ((v41g::nvm_stage_bytes(nk_max) + 15) & ~(size_t)15);
+    dim3 grid(ntile, (M + mt - 1) / mt, ks);
+    #define V41_NVM(MTV) do { auto kf = v41g::k_nvm<MTV>; \
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
+        kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part); } while (0)
+    switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; default: V41_NVM(8); }
+    #undef V41_NVM
+    if (ks > 1) {
+        const size_t MN = (size_t)M * N;
+        k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, part, ks, MN, 1.0f, round ? 1 : 0);
+    }
+}
 size_t overlay_count() { return ov_map().size(); }
 void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, const uint8_t* Ws,
                 int M, int N, int K, bool round_bf16, cudaStream_t st, int G) {
@@ -276,6 +327,7 @@ void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, 
     if (!ov_map().empty()) {
         auto it = ov_map().find(W);
         if (it != ov_map().end()) {
+            if (it->second.mma) { launch_nvm(y, X, W, Ws, it->second.g, M, N, K, G, round_bf16, st); return; }
             DecNVFP4 d{W, Ws, it->second.g, K};
             launch_dense(y, X, d, M, N, K, G, round_bf16, 1.0f, st);
             return;

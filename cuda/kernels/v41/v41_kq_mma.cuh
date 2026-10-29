@@ -205,7 +205,7 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
 }
 
 // ggml AoS blocks -> the layout above; one thread per (tile, superblock, lane)
-__global__ void k_kq_mma_repack(uint8_t* dst, const uint8_t* src, int rows, int nsb, int bits) {
+static __global__ void k_kq_mma_repack(uint8_t* dst, const uint8_t* src, int rows, int nsb, int bits) {
     const size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x, cnt = (size_t)(rows / 16) * nsb;
     if (i >= cnt * 32) return;
     const int l = (int)(i & 31), g = l >> 2, t = l & 3;

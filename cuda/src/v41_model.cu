@@ -228,7 +228,8 @@ void bind_layer(Model& m, int L, bool hw) {
             W = O->p<uint8_t>(p + n + ".weight"); Ws = O->p<uint8_t>(p + n + ".weight_scale");
             float g = 0.f;
             CK(cudaMemcpy(&g, O->p<float>(p + n + ".weight_scale_2"), sizeof(float), cudaMemcpyDefault));
-            v41k::overlay_register(W, g);
+            const auto& sh = O->get(p + n + ".weight").shape;
+            v41k::overlay_register(W, Ws, g, (int)sh[0], (int)sh[1] * 2);
         } else { W = u8(n + ".weight"); Ws = u8(n + ".scale"); }
     };
     auto f32 = [&](const std::string& n) { return S.p<float>(p + n); };

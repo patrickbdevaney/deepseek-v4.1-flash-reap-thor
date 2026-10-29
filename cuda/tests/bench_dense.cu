@@ -41,7 +41,7 @@ int main() {
         CK(cudaMalloc(&W, cb)); CK(cudaMalloc(&Sc, sb)); CK(cudaMalloc(&xq, (size_t)s.K * s.G)); CK(cudaMalloc(&xs, s.K * s.G / 32 * 4));
         CK(cudaMalloc(&y, s.N * 4)); CK(fill(W, cb)); CK(fill(Sc, sb)); CK(fill(xq, (size_t)s.K * s.G));
         std::vector<float> hs(s.K * s.G / 32, 1.f); CK(cudaMemcpy(xs, hs.data(), hs.size() * 4, cudaMemcpyHostToDevice));
-        v41k::overlay_register(W, 1.f);
+        v41k::overlay_register(W, Sc, 1.f, s.N, s.K);
         float ms = time_it([&] { v41k::fp8_linear(y, xq, xs, W, Sc, 1, s.N, s.K, true, 0, s.G); });
         printf("%-5s nvfp4 %6dx%5d  %8.1f us  %6.1f GB/s\n", s.n, s.N, s.K, 1000 * ms, (double)(cb + sb) / ms / 1e6);
         // verify widths: M rows of distinct x; row m must equal the M=1 result on x_m bitwise

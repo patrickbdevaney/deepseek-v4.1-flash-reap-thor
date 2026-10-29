@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
                 std::vector<uint8_t> sc((size_t)s.N * s.K / 16); for (auto& v : sc) v = 0x30 + rng() % 16;
                 uint8_t *dw, *ds; cudaMalloc(&dw, w.size()); cudaMalloc(&ds, sc.size());
                 cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice); cudaMemcpy(ds, sc.data(), sc.size(), cudaMemcpyHostToDevice);
-                v41k::overlay_register(dw, 0.01f);
+                v41k::overlay_register(dw, ds, 0.01f, s.N, s.K, 0);
                 v41k::fp8_linear(dy, xq, xs, dw, ds, M, s.N, s.K, true, 0, s.G);
                 cudaDeviceSynchronize(); cudaFree(dw); cudaFree(ds);
             }
