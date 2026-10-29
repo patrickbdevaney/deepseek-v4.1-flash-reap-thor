@@ -335,3 +335,49 @@ Step 5 has an owner-adopted quality gate (`OWNER_FOLLOWUP` 2026-10-24: d_kl32 +0
 where the "about 26" lives. Rank by `bytes × (1 − efficiency)`, not by deficit alone (the 0731
 lesson from Opt #2). On that measure the experts (3.0 GB at about 35%) and MLA (5.1 GB at an
 assumed 80%) dominate.
+
+---
+
+## 10. Results after the plan ran (2026-10-29) [M]
+
+Every row below was measured with `ops/bench/ab_decode.sh` on the A192 build with the NVFP4 dense
+overlay (printing-press prompt, 256 tokens, 3 repeats). Every row passed the consistency gate. Commit
+hashes refer to this repository.
+
+| step | tok/s | exactness | commit |
+|---|---:|---|---|
+| audit baseline | 8.09 | — | — |
+| exact rewrites (router, sparse attn, hc_finish, side-stream shared, MT8) | 10.91 | bitwise | 4627951 |
+| half2 Q2_K/Q3_K experts | 12.60 | gated tolerance | 4627951 |
+| NVFP4 dense overlay | 14.02 | accuracy-gated | 4627951 |
+| split sparse attention, M ≤ 8 | 15.94 | bitwise | 62d3f27 |
+| coalesced bf16 head + NVFP4 2-row loads | 17.59 | bitwise | 088198b |
+| block-scan top-k | 18.43 | bitwise | 06679db |
+| planar K-quant experts, Q3 4 blocks/SM | 18.71 | bitwise | bffc364 |
+| verify-width fixes (spec only); AR re-measured | 19.07 | bitwise | 96819b5 |
+| dense 8 lanes/row where K/32 underfills the warp | 19.82 | T1 reassociation | cab548a |
+| decode == prefill (M-independent split-K), kq 16-lane down pass | **20.16** | T1, then bitwise decode/prefill | 4e0478c |
+
+The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
+FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
+(`docs/zenith/LEDGER.md`). Today's step is 49.6 ms, which is **76% of roofline**. The best of our
+other servers, the 0731, reached 67%.
+
+**Speculative decoding (DSpark, 128 context).** A K=2 round cost 171 ms before this work and costs
+about 112 ms now:
+
+- The draft fell from 24 ms to 12 ms. The head and the Markov chain now run over K slots only, and
+  the draft uses an NVFP4 copy of the head.
+- The verify fell from 146 ms to about 100 ms. The fused multi-row dense dot fixed the dense
+  layers, and the dual kq launch keeps 1-row expert units off the MT=4 kernel.
+
+K=2 now runs at 1.017x plain decode. At 8k context with highly predictable input it reaches 1.05x at
+K=3. The verify's routed experts are the remaining wall. Three rows hit about 2.6x the unique experts
+of one row, so the verify reads 2.6x the expert bytes, and no exact kernel can avoid that. Spec decode
+therefore pays only when acceptance is high.
+
+**Exactness contract.** Split-K is now chosen from the weight shape alone, so a decode step, a
+verify row and a prefill row sum every row in the same order. `--consistency 32` therefore expects
+zero mismatches, near-ties included, and any mismatch is a bug. Before this change the split depended
+on M. Prefill rows then summed in a different order from decode, and that rounding noise flipped MoE
+routing often enough to produce logit gaps of up to 1.47 (found in commit 4e0478c's investigation).
