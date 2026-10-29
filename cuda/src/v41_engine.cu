@@ -289,6 +289,7 @@ void Engine::load() {
         I.D.reset(new v41m::Drafter);
         v41m::load_drafter(*I.D, I.cfg.ckpt_dir, I.cfg.draft_dir, I.cfg.mxfp4_hw);
         v41m::alloc_drafter(*I.D, I.s.max_rows);
+        v41m::prepare_draft_head(I.m, *I.D, I.st);
         I.active_k = I.cfg.spec_k;
         if (!I.cfg.quiet)
             printf("[engine] DSpark drafter %s, K=%d, state %.2f GiB, %.0f s\n", I.D->desc.c_str(), I.cfg.spec_k,

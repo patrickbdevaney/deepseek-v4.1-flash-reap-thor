@@ -34,6 +34,11 @@ void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, 
 // same product because their weights are bf16 values.
 // Reorder W in place for coalesced loads (DecBF16P) and route bf16_linear(W) through it. Exact.
 bool bf16_permute(uint16_t* W, int N, int K, cudaStream_t st);
+bool bf16_permuted(const void* W);   // W was registered by bf16_permute
+// NVFP4 copy (DecNVFP4 layout: W N*K/2 codes, S N*K/16 e4m3 scales) of a bf16 [N,K] matrix, permuted = it went
+// through bf16_permute; returns the global scale g. nvfp4_linear_f32: y[M,N] = x[M,K] (fp32) . W^T.
+float nvfp4_from_bf16(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K, bool permuted, cudaStream_t st);
+void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, cudaStream_t st);
 void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int K,
                  bool round_bf16, cudaStream_t st, float out_scale = 1.0f);
 // y = bf16(w * x * rsqrt(mean(x^2) + eps)); w bf16 or null. rows independent.
@@ -87,6 +92,7 @@ void kq_fast_set(bool on);
 // vector-load fast kernel. tmp >= rows*(K/256)*block bytes. kq_soa(): the loader should repack.
 void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st);
 bool kq_soa();
+int units_selftest();   // k_units_par vs serial k_units on random routings: mismatches (-1 = CUDA error)
 size_t overlay_count();
 
 // MXFP4(_HW): thor-v1 MXFP4_SRC / the HF checkpoint. KQ: thor-v1 Q2_K/Q3_K/Q4_K (bits = 2/3/4).

@@ -23,11 +23,21 @@
 #include <random>
 #include <algorithm>
 #include <cstring>
+// GATE_KQ=lpr,rpl: every k_kq launch uses that variant (default 32,8)
+static int g_lpr = 32, g_rpl = 8;
+static const bool g_init = [] { if (const char* e = getenv("GATE_KQ")) sscanf(e, "%d,%d", &g_lpr, &g_rpl); return true; }();
+#define KQ_RPC kq_rows_per_cta(g_lpr, g_rpl)
 
 using namespace v41g;
 #define CU(x) do { cudaError_t e_ = (x); if (e_) { printf("CUDA %s @%d\n", cudaGetErrorString(e_), __LINE__); exit(1); } } while (0)
 
 struct Unit { int e, start, cnt; };
+template <int QT, int MT, bool SOA> static auto kqk() {
+    if (g_lpr == 16 && g_rpl == 4) return k_kq<QT, MT, Unit, SOA, 16, 4>;
+    if (g_lpr == 16 && g_rpl == 8) return k_kq<QT, MT, Unit, SOA, 16, 8>;
+    return k_kq<QT, MT, Unit, SOA>;
+}
+#define KQK(QT, MT, SOA) kqk<QT, MT, SOA>()
 
 // ---- the shipping fp32-decode kernel, verbatim from v41_moe.cu (for the speed baseline)
 template <int QT> struct KQDecT : DecKQ<QT> {
@@ -159,11 +169,11 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     CU(cudaMemcpy(ptok, id.data(), P * 4, cudaMemcpyHostToDevice));
     CU(cudaMemcpy(du, hu.data(), nu * sizeof(Unit), cudaMemcpyHostToDevice)); CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice));
     float* dout; double* dref; CU(cudaMalloc(&dout, (size_t)P * N * 4)); CU(cudaMalloc(&dref, (size_t)P * N * 8));
-    dim3 grid((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, nu);
+    dim3 grid((N + KQ_RPC - 1) / KQ_RPC, nu);
     const size_t smem = (size_t)MT_units * kq_stage_bytes(K);
     auto launch_new = [&](const Unit* units) {
-        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit>; kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K, 1, 1 << 30); }
-        else { auto kf = k_kq<QT, 4, Unit>; CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+        if (MT_units == 1) { auto kf = KQK(QT, 1, false); kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K, 1, 1 << 30); }
+        else { auto kf = KQK(QT, 4, false); CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
                kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K, 1, 1 << 30); }
     };
     launch_new(du); CU(cudaGetLastError());
@@ -183,8 +193,8 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     bool ok = bad == 0;
     {   // SOA layout must give the AoS fast kernel's output bit for bit
         float* so; CU(cudaMalloc(&so, (size_t)P * N * 4));
-        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K, 1, 1 << 30); }
-        else { auto kf = k_kq<QT, 4, Unit, true>; CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+        if (MT_units == 1) { auto kf = KQK(QT, 1, true); kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K, 1, 1 << 30); }
+        else { auto kf = KQK(QT, 4, true); CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
                kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K, 1, 1 << 30); }
         CU(cudaDeviceSynchronize());
         std::vector<float> os((size_t)P * N); CU(cudaMemcpy(os.data(), so, os.size() * 4, cudaMemcpyDeviceToHost));
@@ -201,7 +211,7 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
             CU(cudaMalloc(&sets[s], 6 * sizeof(Unit))); CU(cudaMemcpy(sets[s], u.data(), 6 * sizeof(Unit), cudaMemcpyHostToDevice));
         }
         int six = 6; CU(cudaMemcpy(dnu, &six, 4, cudaMemcpyHostToDevice));
-        dim3 g6((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, 6);
+        dim3 g6((N + KQ_RPC - 1) / KQ_RPC, 6);
         cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); float ms;
         const double bytes = 6.0 * wbytes_per_expert * REPS;
         const size_t smem_old = (size_t)K * 4;
@@ -213,13 +223,13 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         const double old_gbs = bytes / ms / 1e6;
         for (int w = 0; w < 2; ++w) {
             cudaEventRecord(a);
-            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tab, N, K, 1, 1 << 30); }
+            for (int i = 0; i < REPS; ++i) { auto kf = KQK(QT, 1, false); kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tab, N, K, 1, 1 << 30); }
             cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
         }
         const double new_gbs = bytes / ms / 1e6;
         for (int w = 0; w < 2; ++w) {
             cudaEventRecord(a);
-            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tabs, N, K, 1, 1 << 30); }
+            for (int i = 0; i < REPS; ++i) { auto kf = KQK(QT, 1, true); kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tabs, N, K, 1, 1 << 30); }
             cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
         }
         printf("  bench SOA: %.1f GB/s\n", bytes / ms / 1e6);
@@ -233,8 +243,8 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         const int n1 = (int)h1.size(); Unit* d1u; CU(cudaMalloc(&d1u, n1 * sizeof(Unit)));
         CU(cudaMemcpy(d1u, h1.data(), n1 * sizeof(Unit), cudaMemcpyHostToDevice)); CU(cudaMemcpy(dnu, &n1, 4, cudaMemcpyHostToDevice));
         float* d1o; CU(cudaMalloc(&d1o, (size_t)P * N * 4));
-        auto kf = k_kq<QT, 1, Unit>;
-        kf<<<dim3((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, n1), 256, kq_stage_bytes(K)>>>(d1o, N, X, true, d1u, dnu, ptok, tab, N, K, 1, 1 << 30);
+        auto kf = KQK(QT, 1, false);
+        kf<<<dim3((N + KQ_RPC - 1) / KQ_RPC, n1), 256, kq_stage_bytes(K)>>>(d1o, N, X, true, d1u, dnu, ptok, tab, N, K, 1, 1 << 30);
         CU(cudaDeviceSynchronize());
         std::vector<float> o1((size_t)P * N); CU(cudaMemcpy(o1.data(), d1o, o1.size() * 4, cudaMemcpyDeviceToHost));
         long diff = 0; for (size_t i = 0; i < o1.size(); ++i) diff += o1[i] != o[i];
@@ -247,6 +257,7 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
 }
 
 int main() {
+    printf("[gate] k_kq LPR %d RPL %d\n", g_lpr, g_rpl); (void)g_init;
     std::mt19937 g(1234);
     bool ok = true;
     for (int pass = 0; pass < 2; ++pass) {

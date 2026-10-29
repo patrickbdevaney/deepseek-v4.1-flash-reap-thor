@@ -4,6 +4,9 @@
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_gemv.cuh"
+#include <cuda_fp4.h>
+#include <cstring>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -20,7 +23,12 @@ namespace v41k {
 // is illegal while capturing). A call that would need more falls back to no split rather than
 // allocating.
 static float* g_part = nullptr; static size_t g_part_cap = 0;
+// split-K tile arrival counters (k_dense's last CTA per tile reduces); each is back to 0 after its launch
+static constexpr int KS_TILES = 1 << 16;
+static int* g_kcnt = nullptr;
 void v41k_init(size_t part_floats) {
+    static const bool kcnt_on = [] { const char* e = getenv("V41_KCNT"); return !(e && *e == '0'); }();
+    if (kcnt_on && !g_kcnt && cudaMalloc(&g_kcnt, KS_TILES * sizeof(int)) == cudaSuccess) cudaMemset(g_kcnt, 0, KS_TILES * sizeof(int));
     if (g_part_cap >= part_floats) return;
     if (g_part) cudaFree(g_part);
     if (cudaMalloc(&g_part, part_floats * sizeof(float)) != cudaSuccess) { g_part = nullptr; g_part_cap = 0; return; }
@@ -38,7 +46,7 @@ static int nsm() { if (!g_nsm) { int d; cudaGetDevice(&d); cudaDeviceGetAttribut
 // the chunks. For K where K/32 is not a multiple of 32 (wq_b K=1280: 40 chunks, shared/expert down
 // K=2304: 72) the 32-lane stride leaves 37.5% / 25% of lanes idle on the last trip; 8 lanes fill it.
 // It sums a row in a different order than LPR = 32, so the choice is a function of K alone (never M):
-// AR and verify rows of one weight agree (prefill above SPEC_M may split K differently, as before).
+// AR, verify and prefill rows of one weight agree.
 template <class Dec, int MT, int RB, int LPR>
 __device__ __forceinline__ void dense_lpr8(float* __restrict__ y, const float4* xs4, const Dec& dec, int M, int N,
                                            int row0, int m0, int c_lo, int c_hi, int nch, int ksplit, float out_scale,
@@ -88,9 +96,32 @@ __device__ __forceinline__ void dense_lpr8(float* __restrict__ y, const float4* 
             }
         }
 }
+// Split-K: the last CTA of a (row tile, m tile) to arrive sums the ksplit partials in z order -- the
+// order k_ksum used -- so the reduction needs no second launch and the sums are unchanged.
+template <int MT>
+__device__ __forceinline__ void ksplit_finish(float* __restrict__ y, const float* part, int* kcnt, int M, int N,
+                                              int row0, int m0, int ksplit, float out_scale, int round) {
+    __shared__ int last;
+    __threadfence();
+    __syncthreads();
+    int* c = kcnt + blockIdx.y * gridDim.x + blockIdx.x;
+    if (threadIdx.x == 0) last = atomicAdd(c, 1) == ksplit - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    for (int i = threadIdx.x; i < ROWS_PER_CTA * MT; i += blockDim.x) {
+        const int row = row0 + (i % ROWS_PER_CTA), m = m0 + i / ROWS_PER_CTA;
+        if (row >= N || m >= M) continue;
+        float s = 0.f;
+        for (int z = 0; z < ksplit; ++z) s += __ldcg(part + ((size_t)z * M + m) * N + row);
+        s *= out_scale; y[(size_t)m * N + row] = round ? bf16r(s) : s;
+    }
+    if (threadIdx.x == 0) *c = 0;
+}
 template <class Dec, int MT, int RB = 1, int LPR = 32>
 __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, Dec dec, int M, int N, int K,
-                                               int Ng, int ksplit, float out_scale, int round, float* __restrict__ part) {
+                                               int Ng, int ksplit, float out_scale, int round, float* __restrict__ part,
+                                               int* __restrict__ kcnt) {
     extern __shared__ float4 xs4[];
     const int row0 = blockIdx.x * ROWS_PER_CTA;
     const int m0 = blockIdx.y * MT;
@@ -105,6 +136,7 @@ __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, De
     __syncthreads();
     if constexpr (LPR == 8) {
         dense_lpr8<Dec, MT, RB, LPR>(y, xs4, dec, M, N, row0, m0, c_lo, c_hi, nch, ksplit, out_scale, round, part);
+        if (ksplit > 1 && kcnt) ksplit_finish<MT>(y, part, kcnt, M, N, row0, m0, ksplit, out_scale, round);
         return;
     }
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -148,6 +180,7 @@ __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, De
                 else { float o = v * out_scale; y[(size_t)m * N + row] = round ? bf16r(o) : o; }
             }
         }
+    if (ksplit > 1 && kcnt) ksplit_finish<MT>(y, part, kcnt, M, N, row0, m0, ksplit, out_scale, round);
 }
 __global__ void k_ksum(float* y, const float* part, int ks, size_t MN, float out_scale, int round) {
     size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; if (i >= MN) return;
@@ -165,17 +198,23 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     int mt = (M <= 6) ? M : 8;
     while (mt > 1 && (size_t)mt * K * sizeof(float) > 160 * 1024) mt >>= 1;   // smem cap (K=8192 stays at 4)
     const int ntile = (N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, mtile = (M + mt - 1) / mt;
-    // Split-K changes the summation order, so it is chosen independently of M for M <= SPEC_M: a
-    // speculative verify (M = K+1) then sums every row exactly as the M = 1 decode step does, and
-    // greedy speculation emits the same ids as plain decode (cuda/CHAIN_STEPS.sh spec_identity).
+    // Split-K (and the lane mapping below, which follows the split) changes a row's summation order, so
+    // both are chosen from the weight's shape alone, never from M: decode, a speculative verify and a
+    // prefill chunk then sum every row identically, and decode == prefill holds bit for bit. When the
+    // split depended on M, prefill rows summed in a different order, and the extra rounding noise
+    // flipped MoE routing often enough to show GROSS consistency gaps (up to 1.47 logits).
+    // V41_KSPLIT_LEGACY=1 restores the old M-dependent prefill split.
+    static const bool legacy = [] { const char* e = getenv("V41_KSPLIT_LEGACY"); return e && *e == '1'; }();
     constexpr int SPEC_M = 8;
     int ks = 1;
-    // Above SPEC_M, ks follows the MT = 4 tiling it always had (MT itself does not change a row's
-    // sum, the split does), so prefill keeps its old summation order whatever MT it launches with.
-    const int ctas = ntile * (M <= SPEC_M ? 1 : (M + 3) / 4), want = 2 * nsm();
+    const int ctas = ntile * (legacy && M > SPEC_M ? (M + 3) / 4 : 1), want = 2 * nsm();
     if (ctas < want) {
         ks = std::min((want + ctas - 1) / ctas, std::max(1, nch / 8));
-        if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) ks = 1;
+        if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) {
+            static bool warned = false;          // rows would then sum differently from decode: say so once
+            if (!warned) { fprintf(stderr, "[k_dense] split-K partials M=%d N=%d ks=%d exceed v41k_init capacity: unsplit\n", M, N, ks); warned = true; }
+            ks = 1;
+        }
     }
     dim3 grid(ntile, mtile, ks);
     const size_t smem = (size_t)mt * K * sizeof(float);
@@ -184,6 +223,9 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     // MT > 1 shares each x read across RB rows (V41_DENSE_RBM overrides)
     static const int rbm_env = [] { const char* e = getenv("V41_DENSE_RBM"); return e ? atoi(e) : 0; }();
     const int rb = mt > 1 ? (rbm_env ? rbm_env : (mt <= 3 ? 4 : 2)) : rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
+    static const bool check_launch = [] { const char* e = getenv("V41_CHECK_LAUNCH"); return e && *e == '1'; }();
+    static const bool ks_fuse_env = [] { const char* e = getenv("V41_KSUM_FUSE"); return !(e && *e == '0'); }();
+    const bool fuse = ks > 1 && ks_fuse_env && g_kcnt && (size_t)ntile * mtile <= (size_t)KS_TILES;
     // 8 lanes per row where the 32-lane stride wastes > 10% of the last trip (a function of K only)
     static const int lpr_env = [] { const char* e = getenv("V41_DENSE_LPR"); return e ? atoi(e) : -1; }();
     const int cpr = ks > 1 ? (nch + ks - 1) / ks : nch;     // chunks a row's split covers
@@ -191,14 +233,18 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
                                  : (cpr % 8 == 0 && (double)cpr / (32.0 * ((cpr + 31) / 32)) < 0.9);
     #define V41_LAUNCH(MTV) do { auto kf = l8 ? ((rb >= 2) ? k_dense<Dec, MTV, 2, 8> : k_dense<Dec, MTV, 1, 8>) : \
         (rb >= 4 && MTV <= 4) ? k_dense<Dec, MTV, 4> : rb >= 2 ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
-        if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
-        kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part); } while (0)
+        /* opt in above 48 KB minus the kernel's own static smem (ksplit_finish's flag): at exactly 48 KB */ \
+        /* dynamic (wo_a K=4096 at MT=3) the launch otherwise fails silently and y keeps stale values */ \
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
+        kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part, fuse ? g_kcnt : nullptr); \
+        if (check_launch) { const cudaError_t e_ = cudaPeekAtLastError(); if (e_ != cudaSuccess) { \
+            fprintf(stderr, "[k_dense] launch M=%d N=%d K=%d mt=%d smem=%zu: %s\n", M, N, K, MTV, smem, cudaGetErrorString(e_)); abort(); } } } while (0)
     switch (mt) { case 1: V41_LAUNCH(1); break; case 2: V41_LAUNCH(2); break; case 3: V41_LAUNCH(3); break;
                   case 4: V41_LAUNCH(4); break; case 5: V41_LAUNCH(5); break; case 6: V41_LAUNCH(6); break; default: V41_LAUNCH(8); }
     #undef V41_LAUNCH
     if (ks > 1) {
         size_t MN = (size_t)M * N;
-        k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, g_part, ks, MN, out_scale, round ? 1 : 0);
+        if (!fuse) k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, g_part, ks, MN, out_scale, round ? 1 : 0);
     }
 }
 
@@ -233,6 +279,7 @@ __global__ void k_bf16_permute(uint4* W, int K) {
     g[n] = t[4 * (n & 31) + (n >> 5)];
 }
 static std::unordered_map<const void*, int>& perm_map() { static std::unordered_map<const void*, int> m; return m; }
+bool bf16_permuted(const void* W) { return perm_map().count(W) > 0; }
 bool bf16_permute(uint16_t* W, int N, int K, cudaStream_t st) {
     if (K % 1024 || perm_map().count(W)) return false;
     k_bf16_permute<<<dim3(N, K / 1024), 128, 0, st>>>(reinterpret_cast<uint4*>(W), K);
@@ -516,4 +563,53 @@ void swiglu(float* act, const float* gate, const float* up, const float* w_row, 
     k_swiglu<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(act, gate, up, w_row, M, inter, limit, ld);
 }
 
+} // namespace v41k
+
+namespace v41k {
+// --------------------------------------------------------------------------- NVFP4 copy of a bf16 matrix
+// For the drafter's head only (drafts change acceptance, never the emitted ids). DecNVFP4 layout: codes
+// row-major K/2 bytes (low nibble first), E4M3 scale per 16, one global g = amax / (448 * 6).
+// `permuted`: src was reordered in place by bf16_permute (DecBF16P); logical piece p of a 1024-wide
+// group (uint4 of 8 values) sits at slot (p % 4) * 32 + p / 4.
+__device__ __forceinline__ float bf16_at(const uint16_t* src, int K, int row, int k, bool permuted) {
+    if (!permuted) return bf16f(src[(size_t)row * K + k]);
+    const int grp = k >> 10, p = (k & 1023) >> 3, slot = (p & 3) * 32 + (p >> 2);
+    return bf16f(src[(size_t)row * K + grp * 1024 + slot * 8 + (k & 7)]);
+}
+__global__ void k_absmax_bf16(unsigned* out, const uint16_t* src, size_t n) {
+    float m = 0.f;
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x)
+        m = fmaxf(m, fabsf(bf16f(src[i])));
+    m = warp_max(m);
+    if ((threadIdx.x & 31) == 0) atomicMax(out, __float_as_uint(m));    // non-negative floats order as uints
+}
+__global__ void k_nvfp4_quant(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K, const unsigned* amax, bool permuted) {
+    const size_t gi = blockIdx.x * (size_t)blockDim.x + threadIdx.x;     // one thread per 16-group
+    if (gi >= (size_t)N * (K / 16)) return;
+    const int row = (int)(gi / (K / 16)), k0 = (int)(gi % (K / 16)) * 16;
+    const float g = fmaxf(__uint_as_float(*amax), 1e-30f) / (448.f * 6.f);
+    float v[16], m = 0.f;
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) { v[i] = bf16_at(src, K, row, k0 + i, permuted); m = fmaxf(m, fabsf(v[i])); }
+    const uint8_t sc = f2e4m3(m / 6.f / g);
+    const float s = e4m3f(sc) * g, inv = s > 0.f ? 1.f / s : 0.f;
+    #pragma unroll
+    for (int i = 0; i < 16; i += 2)
+        W[(size_t)row * (K / 2) + (k0 + i) / 2] = (uint8_t)__nv_cvt_float2_to_fp4x2(make_float2(v[i] * inv, v[i + 1] * inv), __NV_E2M1, cudaRoundNearest);
+    S[gi] = sc;
+}
+float nvfp4_from_bf16(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K, bool permuted, cudaStream_t st) {
+    unsigned* d; cudaMalloc(&d, 4); cudaMemsetAsync(d, 0, 4, st);
+    k_absmax_bf16<<<512, 256, 0, st>>>(d, src, (size_t)N * K);
+    const size_t ng = (size_t)N * (K / 16);
+    k_nvfp4_quant<<<(unsigned)((ng + 255) / 256), 256, 0, st>>>(W, S, src, N, K, d, permuted);
+    unsigned h; cudaMemcpyAsync(&h, d, 4, cudaMemcpyDeviceToHost, st); cudaStreamSynchronize(st); cudaFree(d);
+    float a; std::memcpy(&a, &h, 4);
+    return std::max(a, 1e-30f) / (448.f * 6.f);
+}
+void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, cudaStream_t st) {
+    XSrc X; X.xf = x; X.ldx = K;
+    DecNVFP4 d{W, S, g, K};
+    launch_dense(y, X, d, M, N, K, 1, false, 1.0f, st);
+}
 } // namespace v41k

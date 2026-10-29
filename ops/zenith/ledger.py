@@ -34,6 +34,8 @@ def family(name: str) -> str:
         if "DecBF16" in name:
             return "bf16_head"
         return "dense_other"
+    if "k_kq_soa" in name:
+        return "load"
     if "k_kq" in name or "k_experts" in name:
         return "kquant_experts"
     if "k_sa_" in name or "k_sparse_attn" in name:
@@ -43,14 +45,32 @@ def family(name: str) -> str:
     return "glue"
 
 
+def template_args(name: str) -> list:
+    """top-level template arguments of the kernel name (k_dense<Dec, MT, RB, LPR> -> [Dec, MT, RB, LPR])"""
+    i = name.find("<")
+    if i < 0:
+        return []
+    out, depth, cur = [], 0, ""
+    for ch in name[i + 1:]:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            if depth == 0:
+                out.append(cur.strip())
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(cur.strip()); cur = ""; continue
+        cur += ch
+    return out
+
+
 def is_prefill(name: str, grid_y: int) -> bool:
-    # MT>1 instantiations serve M>1 (prefill or verify); M=1 decode uses MT=1
-    for tag in ("(int)2,", "(int)4,", "(int)8,"):
-        if ("k_dense" in name or "k_kq" in name) and f"v41g::Dec" in name and f", {tag}" in name:
-            return True
-    if "k_kq<(int)2, (int)4" in name or "k_kq<(int)3, (int)4" in name:
-        return True
-    return False
+    # MT > 1 instantiations of k_dense / k_kq / k_experts serve M > 1 (prefill or verify); decode uses MT = 1
+    if not any(k in name for k in ("k_dense<", "k_kq<", "k_experts<")):
+        return False
+    a = template_args(name)
+    return len(a) >= 2 and a[1].replace("(int)", "").strip() != "1"
 
 
 def main() -> int:
@@ -72,7 +92,9 @@ def main() -> int:
     t = collections.defaultdict(float)
     pre = collections.defaultdict(float)
     for n, gx, gy, d, s, e in rows:
-        (pre if is_prefill(n, gy) else t)[family(n)] += d / 1e6
+        f = family(n)
+        if f != "load":
+            (pre if is_prefill(n, gy) else t)[f] += d / 1e6
     # wall: first to last M=1 head launch spans the decode
     heads = [(s, e) for n, gx, gy, d, s, e in rows if "DecBF16" in n and gx == 2020 and gy == 1]
     wall_ms = (heads[-1][1] - heads[0][1]) / 1e6 / max(1, steps - 1)

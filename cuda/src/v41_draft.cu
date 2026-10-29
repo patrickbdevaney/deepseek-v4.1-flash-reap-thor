@@ -240,6 +240,14 @@ void alloc_drafter(Drafter& D, int max_rows) {
     v41k::sparse_attn_reserve(R);
     CK(cudaDeviceSynchronize());
 }
+void prepare_draft_head(const Model& m, Drafter& D, cudaStream_t st) {
+    const char* e = getenv("V41_DRAFT_HEAD_FP4");
+    if (!(e && *e == '1')) return;
+    D.head4 = dal<uint8_t>(D, (size_t)VOCAB * DIM / 2);
+    D.head4s = dal<uint8_t>(D, (size_t)VOCAB * DIM / 16);
+    D.head4g = v41k::nvfp4_from_bf16(D.head4, D.head4s, m.head, VOCAB, DIM, v41k::bf16_permuted(m.head), st);
+    printf("[draft] head NVFP4 copy for drafting: %.2f GiB, g %.3g\n", (double)VOCAB * DIM * (0.5 + 1.0 / 16) / (1 << 30), D.head4g);
+}
 void reset_drafter(Drafter& D, cudaStream_t st) {
     for (int i = 0; i < N_MTP; ++i) cudaMemsetAsync(D.ring[i], 0, (size_t)Drafter::RING * HEAD_DIM * 4, st);
 }
@@ -330,7 +338,8 @@ void draft_body(const Model& m, Drafter& D, cudaStream_t st, int K) {
     v41k::hc_collapse(D.x, D.h, D.pre, NB, st);
     v41k::rmsnorm(D.x, D.x, D.norm, NB, DIM, NORM_EPS, st);
     // slot i's logits depend only on trunk row i and d_out[0..i], so the head and the chain stop at K
-    v41k::bf16_linear(D.logits, D.x, m.head, K, VOCAB, DIM, false, st);
+    if (D.head4) v41k::nvfp4_linear_f32(D.logits, D.x, D.head4, D.head4s, D.head4g, K, VOCAB, DIM, st);
+    else v41k::bf16_linear(D.logits, D.x, m.head, K, VOCAB, DIM, false, st);
     for (int i = 0; i < K; ++i) {                        // the Markov chain, greedy
         k_mk_gather<<<1, DSPARK_MARKOV_RANK, 0, st>>>(D.mk_e, D.mk_embed, D.d_out, i);
         v41k::bf16_linear(D.mk_bias, D.mk_e, D.mk_head, 1, VOCAB, DSPARK_MARKOV_RANK, false, st);

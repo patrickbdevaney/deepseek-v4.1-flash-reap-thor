@@ -12,9 +12,11 @@
 #include "v41_config.h"
 #include "v41_gemv.cuh"
 #include "v41_kq_fast.cuh"
+#include <cub/block/block_scan.cuh>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 using namespace v41d;
 using namespace v41g;
@@ -150,6 +152,39 @@ __global__ void k_units(Unit* units, int* units_n, int* pair_tok, int* pair_slot
         units[u++] = Unit{e, p, q - p}; p = q;
     }
     *units_n = u;
+}
+
+// Same output as k_units for P <= UNITS_PAR_MAX, one thread per pair: a pair's sorted position is the
+// count of pairs ordered before it by (expert, token, pair index) -- the serial sort is stable, so this
+// is its order -- and units start at every mt-th pair of an expert's run (prefix-counted by BlockScan).
+// The serial kernel sat at 14 us per layer of pure single-thread latency at M = 1.
+static constexpr int UNITS_PAR_MAX = 1024;
+using UScan = cub::BlockScan<int, UNITS_PAR_MAX>;
+__global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_par(Unit* units, int* units_n, int* pair_tok, int* pair_slot,
+                                                              int* inv, const int* idx, int M, int topk, int mt) {
+    __shared__ typename UScan::TempStorage ts;
+    __shared__ int se[UNITS_PAR_MAX], so_e[UNITS_PAR_MAX], so_left[UNITS_PAR_MAX], so_off[UNITS_PAR_MAX];
+    const int P = M * topk, p = threadIdx.x;
+    if (p < P) se[p] = idx[p];
+    __syncthreads();
+    if (p < P) {                                         // pass 1, by pair: sorted position r
+        const int e = se[p], t = p / topk;
+        int r = 0, s = 0, run = 0;
+        for (int q = 0; q < P; ++q) {
+            const int eq = se[q], tq = q / topk;
+            s += eq < e; run += eq == e;
+            r += eq < e || (eq == e && (tq < t || (tq == t && q < p)));
+        }
+        pair_tok[r] = t; pair_slot[r] = p % topk; inv[p] = r;
+        so_e[r] = e; so_off[r] = r - s; so_left[r] = run - (r - s);
+    }
+    __syncthreads();
+    // pass 2, by sorted position: units start at every mt-th pair of a run, numbered in sorted order
+    const int start = p < P && so_off[p] % mt == 0;
+    int u, total;
+    UScan(ts).ExclusiveSum(start, u, total);
+    if (start) units[u] = Unit{so_e[p], p, min(mt, so_left[p])};
+    if (p == 0) *units_n = total;
 }
 
 // --------------------------------------------------------------------------- expert GEMV
@@ -345,8 +380,13 @@ static void launch_kq(float* out, int ldo, const XSrc& X, bool by_pair, const Un
                       const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin = 1, int cmax = 1 << 30) {
     dim3 grid((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, max_units);
     const size_t smem = (size_t)MT * kq_stage_bytes(K);
-    auto kf = k_kq<QT, MT, Unit, SOA>;
-    if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    // 16 lanes x 4 rows per lane where K/32 leaves a 32-lane stride underfilled (the down pass, K = 2304:
+    // Q2 126 -> 136, Q3 112 -> 115 GB/s in gate_kq_fast). Same 64-row CTA. Chosen by K only (AR == verify).
+    static const int lpr_env = [] { const char* e = getenv("V41_KQ_LPR"); return e ? atoi(e) : 0; }();
+    const bool l16 = lpr_env ? lpr_env == 16 : (K / 32) % 32 != 0;
+    static_assert(kq_rows_per_cta(16, 4) == ROWS_PER_CTA, "grid below assumes 64-row CTAs");
+    auto kf = l16 ? k_kq<QT, MT, Unit, SOA, 16, 4> : k_kq<QT, MT, Unit, SOA>;
+    if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
 }
 // Verify widths (M <= KQ_DUAL_M): most experts are hit by one row, and a 1-row unit in the MT = 4
@@ -430,7 +470,9 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     float* wp = (float*)b; b += al((size_t)P * 4);
     float* xr13 = (float*)b; b += al((size_t)M * v41::DIM * 4);
     float* xr2 = (float*)b;
-    k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    static const bool units_serial = [] { const char* e = getenv("V41_UNITS_SERIAL"); return e && *e == '1'; }();
+    if (P <= UNITS_PAR_MAX && !units_serial) k_units_par<<<1, UNITS_PAR_MAX, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    else k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
     g_kq_m = M;
     k_pair_w<<<(P + 127) / 128, 128, 0, st>>>(wp, w, ptok, pslot, P, topk);
     XSrc X; X.xq = xq; X.xs = xs; X.ldx = v41::DIM;
@@ -478,4 +520,55 @@ void moe_shared_add(float* y, const uint8_t* xq, const float* xs, const uint8_t*
     add_bf16(y, o, (size_t)M * v41::DIM, st);
 }
 
+} // namespace v41k
+
+namespace v41k {
+// k_units_par vs k_units on random routings (tests/gate_units.cu): mismatching cases, -1 on CUDA error
+int units_selftest() {
+    int bad = 0;
+    unsigned seed = 12345;
+    auto rnd = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+    for (int topk : {6, 3})
+        for (int mt : {1, 4})
+            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128}) {
+                const int P = M * topk; if (P > UNITS_PAR_MAX) continue;
+                for (int rep = 0; rep < 20; ++rep) {
+                    const int E = rep % 2 ? 16 : 192;               // few experts: long runs
+                    std::vector<int> h(P);
+                    for (int m = 0; m < M; ++m)
+                        for (int j = 0; j < topk; ++j) {             // distinct experts per token
+                            int e; bool dup;
+                            do { e = rnd() % E; dup = false; for (int k = 0; k < j; ++k) dup |= h[m * topk + k] == e; } while (dup);
+                            h[m * topk + j] = e;
+                        }
+                    int* d; cudaMalloc(&d, (size_t)(P * 8 + 4) * 4 + 2 * (size_t)P * sizeof(Unit));
+                    int* idx = d; int* buf[2][4]; Unit* un[2];
+                    char* b = (char*)(d + P);
+                    for (int k = 0; k < 2; ++k) { for (int i = 0; i < 4; ++i) { buf[k][i] = (int*)b; b += (i == 3 ? 4 : P * 4); }
+                                                  un[k] = (Unit*)b; b += P * sizeof(Unit); }
+                    cudaMemcpy(idx, h.data(), P * 4, cudaMemcpyHostToDevice);
+                    k_units<<<1, 1>>>(un[0], buf[0][3], buf[0][0], buf[0][1], buf[0][2], idx, M, topk, mt);
+                    k_units_par<<<1, UNITS_PAR_MAX>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
+                    if (cudaDeviceSynchronize() != cudaSuccess) { cudaFree(d); return -1; }
+                    std::vector<int> a(3 * P + 1), c(3 * P + 1);
+                    for (int k = 0; k < 2; ++k) {
+                        auto& o = k ? c : a;
+                        for (int i = 0; i < 3; ++i) cudaMemcpy(o.data() + i * P, buf[k][i], P * 4, cudaMemcpyDeviceToHost);
+                        cudaMemcpy(o.data() + 3 * P, buf[k][3], 4, cudaMemcpyDeviceToHost);
+                    }
+                    bool diff = a != c;
+                    if (!diff) {
+                        const int nu = a[3 * P];
+                        std::vector<Unit> ua(nu), uc(nu);
+                        cudaMemcpy(ua.data(), un[0], nu * sizeof(Unit), cudaMemcpyDeviceToHost);
+                        cudaMemcpy(uc.data(), un[1], nu * sizeof(Unit), cudaMemcpyDeviceToHost);
+                        for (int i = 0; i < nu; ++i) diff |= ua[i].e != uc[i].e || ua[i].start != uc[i].start || ua[i].cnt != uc[i].cnt;
+                    }
+                    if (diff && bad < 5) printf("units mismatch: topk %d mt %d M %d rep %d\n", topk, mt, M, rep);
+                    bad += diff;
+                    cudaFree(d);
+                }
+            }
+    return bad;
+}
 } // namespace v41k

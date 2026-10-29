@@ -27,6 +27,7 @@
 #include "v41_gemv.cuh"
 
 namespace v41g {
+__host__ __device__ constexpr int kq_rows_per_cta(int lpr, int rpl) { return 8 * rpl * (32 / lpr); }
 
 // one staged x row: K halves (pair order; chunk c's four 16-byte granules XOR-swizzled by c&3),
 // K/16 fp32 sub-block sums of the unscaled e4m3 values, K/32 fp32 scales
@@ -107,7 +108,9 @@ struct KQTab { const uint8_t* const* w1; const uint8_t* const* w3; const uint8_t
 // lane's 32 code bytes are two 16-byte loads; the values reaching each lane are the same.
 // Blocks/SM at M=1 from gate_kq_fast (ncu: issue-bound, 0.66 eligible warps at 2): Q3_K gains 12% at 4
 // despite ~140 B of spills; Q2_K loses at 3 or 4, so it stays at 2.
-template <int QT, int MT, class UnitT, bool SOA = false>
+// LPR lanes per row (32: one row per warp-trip; 16: two rows, for K = 2304 whose 72 chunks leave 25% of
+// a 32-lane stride idle), RPL rows per lane (x reuse). A CTA covers kq_rows_per_cta(LPR, RPL) rows.
+template <int QT, int MT, class UnitT, bool SOA = false, int LPR = 32, int RPL = ROWS_PER_WARP>
 __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                             const UnitT* units, const int* units_n, const int* pair_tok,
                                             KQTab tab, int N, int K, int cmin = 1, int cmax = 1 << 30) {
@@ -129,15 +132,16 @@ __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(flo
     else { W0 = W1 = tab.w2[U.e]; split = 1 << 30; }
     const int nch = K / 32, nsb = K / 256;
     const int mrows = tab.pass == 0 ? split : N;          // rows of the one matrix a row index points into
-    const int row0 = blockIdx.x * ROWS_PER_CTA;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    float acc[ROWS_PER_WARP][MT];
+    constexpr int NG = 32 / LPR;                          // lane groups per warp
+    const int row0 = blockIdx.x * kq_rows_per_cta(LPR, RPL);
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, lc = lane % LPR, grp = lane / LPR;
+    float acc[RPL][MT];
     #pragma unroll
-    for (int r = 0; r < ROWS_PER_WARP; ++r)
+    for (int r = 0; r < RPL; ++r)
         #pragma unroll
         for (int t = 0; t < MT; ++t) acc[r][t] = 0.f;
-    for (int cb = 0; cb < nch; cb += 32) {
-        const int c = cb + lane, cc = min(c, nch - 1);
+    for (int cb = 0; cb < nch; cb += LPR) {
+        const int c = cb + lc, cc = min(c, nch - 1);
         const bool live = c < nch;
         uint32_t xr[MT][16]; float xs16[MT][2], xsc[MT];
         #pragma unroll
@@ -155,8 +159,8 @@ __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(flo
         }
         const int j = cc & 7, sh = 2 * (j & 3);
         #pragma unroll
-        for (int r = 0; r < ROWS_PER_WARP; ++r) {
-            int row = min(row0 + warp * ROWS_PER_WARP + r, N - 1);
+        for (int r = 0; r < RPL; ++r) {
+            int row = min(row0 + (warp * RPL + r) * NG + grp, N - 1);
             const uint8_t* W = W0;
             if (row >= split) { W = W1; row -= split; }
             const size_t bi = (size_t)row * nsb + (cc >> 3), cnt = (size_t)mrows * nsb;
@@ -224,12 +228,14 @@ __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(flo
         }
     }
     #pragma unroll
-    for (int r = 0; r < ROWS_PER_WARP; ++r)
+    for (int r = 0; r < RPL; ++r)
         #pragma unroll
         for (int t = 0; t < MT; ++t) {
-            const float v = warp_sum(acc[r][t]);
-            const int row = row0 + warp * ROWS_PER_WARP + r;
-            if (lane == 0 && row < N && t < U.cnt) out[(size_t)(U.start + t) * ldo + row] = bf16r(v);
+            float v = acc[r][t];
+            #pragma unroll
+            for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            const int row = row0 + (warp * RPL + r) * NG + grp;
+            if (lc == 0 && row < N && t < U.cnt) out[(size_t)(U.start + t) * ldo + row] = bf16r(v);
         }
 }
 
@@ -241,6 +247,8 @@ __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(flo
 //  * 8 lanes per row for the down pass (K=2304 leaves 25% of a 32-lane stride idle; k_dense gains 37% from
 //    it): 4 groups x 2 rows each cut x reuse 8 -> 2 (Q2 down 126 -> 108, Q3 110 -> 86 GB/s); 4 groups x 8
 //    rows (256-row CTAs) keep reuse but lose coalescing and CTAs (73-98 GB/s, every pass). (2026-10-29)
+//    16 lanes x 4 rows (x reuse 4, 64-row CTAs) is the one that pays on the down pass: shipped there.
+//    16 x 8 (128-row CTAs) loses (Q2 down 121, Q3 101).
 // What mattered: this kernel at 100 registers ran at 33% occupancy with nothing saturated (latency
 // bound); capping it to 2 CTAs/SM (64 regs, no spills) took it from ~110 to 122-150 GB/s.
 

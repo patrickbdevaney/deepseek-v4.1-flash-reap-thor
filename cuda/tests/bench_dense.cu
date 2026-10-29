@@ -6,6 +6,8 @@
 #include <vector>
 #include <random>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
 #include "v41_kernels.h"
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { printf("CUDA %s line %d\n", cudaGetErrorString(e_), __LINE__); return 1; } } while (0)
 static float time_it(auto f, int it = 30) {
@@ -43,7 +45,7 @@ int main() {
         float ms = time_it([&] { v41k::fp8_linear(y, xq, xs, W, Sc, 1, s.N, s.K, true, 0, s.G); });
         printf("%-5s nvfp4 %6dx%5d  %8.1f us  %6.1f GB/s\n", s.n, s.N, s.K, 1000 * ms, (double)(cb + sb) / ms / 1e6);
         // verify widths: M rows of distinct x; row m must equal the M=1 result on x_m bitwise
-        const int MM = 6; uint8_t* xm; float *xsm, *ym, *y1;
+        const int MM = 20; uint8_t* xm; float *xsm, *ym, *y1;
         CK(cudaMalloc(&xm, (size_t)MM * s.K * s.G)); CK(cudaMalloc(&xsm, (size_t)MM * s.K * s.G / 32 * 4));
         CK(cudaMalloc(&ym, (size_t)MM * s.N * 4)); CK(cudaMalloc(&y1, (size_t)s.N * 4)); CK(fill(xm, (size_t)MM * s.K * s.G));
         std::vector<float> hsm((size_t)MM * s.K * s.G / 32); for (auto& v : hsm) v = 0.5f + (rng() & 3) * 0.25f;
@@ -56,8 +58,12 @@ int main() {
         for (int M = 2; M <= MM; ++M) {
             float msm = time_it([&] { v41k::fp8_linear(ym, xm, xsm, W, Sc, M, s.N, s.K, true, 0, s.G); });
             CK(cudaMemcpy(got.data(), ym, (size_t)M * s.N * 4, cudaMemcpyDeviceToHost));
-            printf("      M=%d  %8.1f us  (x%.2f of M=1)  rows %s\n", M, 1000 * msm, msm / ms,
-                   memcmp(got.data(), ref.data(), (size_t)M * s.N * 4) ? "DIFF" : "bitwise");
+            double worst = 0, rms = 0;
+            for (size_t i = 0; i < (size_t)M * s.N; ++i) { rms += (double)ref[i] * ref[i]; worst = std::max(worst, (double)fabsf(got[i] - ref[i])); }
+            rms = sqrt(rms / ((size_t)M * s.N));
+            if (M <= 6 || M == 8 || M == 9 || M == 16 || M == 20)
+                printf("      M=%d  %8.1f us  (x%.2f of M=1)  rows %s  max|d|/rms %.2e\n", M, 1000 * msm, msm / ms,
+                       memcmp(got.data(), ref.data(), (size_t)M * s.N * 4) ? "DIFF" : "bitwise", worst / rms);
         }
         cudaFree(xm); cudaFree(xsm); cudaFree(ym); cudaFree(y1);
         cudaFree(W); cudaFree(Sc); cudaFree(xq); cudaFree(xs); cudaFree(y);
