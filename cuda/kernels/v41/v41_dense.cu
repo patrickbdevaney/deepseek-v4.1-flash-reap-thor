@@ -298,7 +298,9 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
                        bool round, cudaStream_t st) {
     const int Ng = N / G;
     if (G > 1 && Ng % v41g::NVM_ROWS_PER_CTA) { fprintf(stderr, "k_nvm: group of %d rows straddles CTAs\n", Ng); abort(); }
-    const int mt = M == 1 ? 1 : M == 2 ? 2 : M <= 4 ? 4 : 8;
+    // M > 8 (prefill): 16 or 32 tokens per CTA (k_nvm_big), bit-identical rows; V41_NVM_BIG=0 keeps 8
+    static const int big_env = [] { const char* e = getenv("V41_NVM_BIG"); return e ? atoi(e) : 32; }();
+    const int mt = M == 1 ? 1 : M == 2 ? 2 : M <= 4 ? 4 : (M <= 8 || big_env < 16) ? 8 : (M <= 16 || big_env < 32) ? 16 : 32;
     const int ntile = (N + v41g::NVM_ROWS_PER_CTA - 1) / v41g::NVM_ROWS_PER_CTA, nsb = K / 256;
     // K split from the shape alone (decode == verify == prefill): >= 3 CTAs per SM, >= 4 superblocks each
     static const int want_x = [] { const char* e = getenv("V41_NVM_WANT"); return e ? atoi(e) : 3; }();
@@ -316,8 +318,13 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     #define V41_NVM(MTV) do { auto kf = v41g::k_nvm<MTV>; \
         if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part, fuse ? kcnt : nullptr); } while (0)
-    switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; default: V41_NVM(8); }
+    #define V41_NVMB(NTV) do { auto kf = v41g::k_nvm_big<NTV>; \
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
+        kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part, fuse ? kcnt : nullptr); } while (0)
+    switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; case 8: V41_NVM(8); break;
+                  case 16: V41_NVMB(2); break; default: V41_NVMB(4); }
     #undef V41_NVM
+    #undef V41_NVMB
     if (ks > 1 && !fuse) {
         const size_t MN = (size_t)M * N;
         k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, part, ks, MN, 1.0f, round ? 1 : 0);

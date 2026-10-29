@@ -28,7 +28,7 @@ int main() {
         const size_t cb = (size_t)s.N * s.K / 2, sb = (size_t)s.N * s.K / 16, KX = (size_t)s.K * s.G;
         std::vector<uint8_t> hw(cb), hsc(sb); for (auto& v : hw) v = rng() & 0xff; for (auto& v : hsc) v = 0x30 + rng() % 16;
         const float g = 0.0137f;
-        const int MM = 16;
+        const int MM = 256;
         std::vector<uint8_t> hx((size_t)MM * KX); for (auto& v : hx) { uint8_t b; do b = rng() & 0xff; while ((b & 0x7f) == 0x7f); v = b; }
         std::vector<float> hxs((size_t)MM * KX / 32); for (auto& v : hxs) v = ldexpf(1.f, -(int)(rng() % 6));
         uint8_t *Wa, *Sa, *Wb, *Sb, *xq; float *xs, *ya, *yb, *y1;
@@ -64,7 +64,7 @@ int main() {
             CK(cudaMemcpy(r1.data() + (size_t)m * s.N, y1, s.N * 4, cudaMemcpyDeviceToHost));
         }
         long diff = 0;
-        for (int M : {2, 3, 4, 5, 8, 9, 16}) {
+        for (int M : {2, 3, 4, 5, 8, 9, 16, 17, 33, 64, 256}) {
             v41k::fp8_linear(yb, xq, xs, Wb, Sb, M, s.N, s.K, true, 0, s.G);
             std::vector<float> rm((size_t)M * s.N); CK(cudaMemcpy(rm.data(), yb, rm.size() * 4, cudaMemcpyDeviceToHost));
             diff += memcmp(rm.data(), r1.data(), rm.size() * 4) != 0;
@@ -83,7 +83,7 @@ int main() {
             v41k::overlay_register(ca[c], sa[c], g, s.N, s.K, 0); v41k::overlay_register(cbv[c], sbv[c], g, s.N, s.K, 1);
         }
         int rot = 0;
-        for (int M : {1, 3, 8}) {
+        for (int M : {1, 3, 8, 64, 256}) {
             const float ta = time_it([&] { const int c = rot++ % NC; v41k::fp8_linear(ya, xq, xs, ca[c], sa[c], M, s.N, s.K, true, 0, s.G); }, 60);
             const float tb = time_it([&] { const int c = rot++ % NC; v41k::fp8_linear(yb, xq, xs, cbv[c], sbv[c], M, s.N, s.K, true, 0, s.G); }, 60);
             printf("    M=%d  old %7.1f us (%5.0f GB/s)  new %7.1f us (%5.0f GB/s)  %.2fx\n", M, 1e3 * ta, (cb + sb) / ta / 1e6,

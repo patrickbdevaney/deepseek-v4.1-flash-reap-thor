@@ -159,6 +159,124 @@ __global__ void __launch_bounds__(256) k_nvm(float* __restrict__ y, XSrc X, cons
     if (threadIdx.x == 0) *c = 0;
 }
 
+// Prefill form: MT = 8 NT tokens per CTA, NT n-tiles per warp sharing each A fragment (k_nvm<8> re-read
+// the whole weight tile once per 8 tokens: 32x per 256-row chunk). Every output element runs the same
+// mma column, scale and fmaf sequence as k_nvm<1..8> (an mma column does not depend on the others), so
+// rows are bit-identical to decode. x scales are read from smem per 32-chunk instead of kept in regs.
+template <int NT>
+__global__ void __launch_bounds__(256) k_nvm_big(float* __restrict__ y, XSrc X, const uint8_t* __restrict__ W,
+                                                 const uint8_t* __restrict__ S, float g, int M, int N, int K, int Ng,
+                                                 int ks, int round, float* __restrict__ part, int* __restrict__ kcnt) {
+    constexpr int MT = 8 * NT;
+    const int nsb = K / 256, z = blockIdx.z;
+    const int s0 = (int)((long)nsb * z / ks), s1 = (int)((long)nsb * (z + 1) / ks), nk = (s1 - s0) * 256;
+    const int m0 = blockIdx.y * MT, mrows = min(MT, M - m0);
+    const int row0 = blockIdx.x * NVM_ROWS_PER_CTA, gi = row0 / Ng;
+    extern __shared__ __align__(16) uint8_t nvm_smem[];
+    const size_t SB = (nvm_stage_bytes(nk) + 15) & ~(size_t)15;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, gg = lane >> 2, t = lane & 3;
+    const int tile = blockIdx.x * 8 + warp;
+    const bool live = tile * 16 < N;
+    auto load = [&](int s, uint32_t (&cw)[16], uint32_t (&sw)[2]) {
+        const size_t idx = (size_t)tile * nsb + s;
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) { const uint4 v = *reinterpret_cast<const uint4*>(W + idx * 2048 + i * 512 + lane * 16); cw[4 * i] = v.x; cw[4 * i + 1] = v.y; cw[4 * i + 2] = v.z; cw[4 * i + 3] = v.w; }
+        #pragma unroll
+        for (int h = 0; h < 2; ++h) sw[h] = *reinterpret_cast<const uint32_t*>(S + idx * 256 + (gg + 8 * h) * 16 + 4 * t);
+    };
+    uint32_t cw[16], sw[2];
+    if (live) load(s0, cw, sw);
+    for (int n = 0; n < MT; ++n) nvm_stage_row(nvm_smem + n * SB, X, m0 + min(n, mrows - 1), gi * K + s0 * 256, nk);
+    __syncthreads();
+    float acc[NT][2][2];
+    #pragma unroll
+    for (int j = 0; j < NT; ++j) { acc[j][0][0] = acc[j][0][1] = acc[j][1][0] = acc[j][1][1] = 0.f; }
+    if (live) {
+        const int src_q = lane & ~3;
+        for (int s = s0; s < s1; ++s) {
+            uint32_t ncw[16], nsw[2];
+            if (s + 1 < s1) load(s + 1, ncw, nsw);
+            float scf[2][4];
+            #pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                const __half2 lo = __half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(sw[h] & 0xFFFF), __NV_E4M3));
+                const __half2 hi = __half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(sw[h] >> 16), __NV_E4M3));
+                const float2 a = __half22float2(lo), b = __half22float2(hi);
+                scf[h][0] = a.x; scf[h][1] = a.y; scf[h][2] = b.x; scf[h][3] = b.y;
+            }
+            #pragma unroll
+            for (int qd = 0; qd < 4; ++qd) {
+                uint32_t xb[NT][4];
+                #pragma unroll
+                for (int j = 0; j < NT; ++j) {
+                    const uint4 v = *reinterpret_cast<const uint4*>(nvm_smem + (8 * j + gg) * SB + (size_t)((s - s0) * 4 + t) * 64 + qd * 16);
+                    xb[j][0] = v.x; xb[j][1] = v.y; xb[j][2] = v.z; xb[j][3] = v.w;
+                }
+                float xsv[NT][2];
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    const int sb = 4 * qd + i;
+                    if ((sb & 1) == 0) {
+                        #pragma unroll
+                        for (int j = 0; j < NT; ++j)
+                            #pragma unroll
+                            for (int e = 0; e < 2; ++e)
+                                xsv[j][e] = reinterpret_cast<const float*>(nvm_smem + (8 * j + 2 * t + e) * SB + nk + 16)[(s - s0) * 8 + (sb >> 1)];
+                    }
+                    const uint32_t alo = e2m1_lo_e4m3(cw[sb]), ahi = e2m1_hi_e4m3(cw[sb]);
+                    const float c0 = __shfl_sync(0xffffffffu, scf[0][sb & 3], src_q | (sb >> 2));
+                    const float c1 = __shfl_sync(0xffffffffu, scf[1][sb & 3], src_q | (sb >> 2));
+                    #pragma unroll
+                    for (int j = 0; j < NT; ++j) {
+                        float D[4];
+                        mma_e4m3(D, alo, ahi, xb[j][i]);
+                        #pragma unroll
+                        for (int e = 0; e < 2; ++e) {
+                            acc[j][0][e] = fmaf(c0, D[e] * xsv[j][e], acc[j][0][e]);
+                            acc[j][1][e] = fmaf(c1, D[2 + e] * xsv[j][e], acc[j][1][e]);
+                        }
+                    }
+                }
+            }
+            if (s + 1 < s1) {
+                #pragma unroll
+                for (int i = 0; i < 16; ++i) cw[i] = ncw[i];
+                sw[0] = nsw[0]; sw[1] = nsw[1];
+            }
+        }
+        const float og = 64.f * g;
+        #pragma unroll
+        for (int j = 0; j < NT; ++j)
+            #pragma unroll
+            for (int h = 0; h < 2; ++h)
+                #pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    const int n = 8 * j + 2 * t + e, row = tile * 16 + gg + 8 * h;
+                    if (n >= mrows || row >= N) continue;
+                    const float v = acc[j][h][e] * og;
+                    if (ks > 1) part[((size_t)z * M + m0 + n) * N + row] = v;
+                    else y[(size_t)(m0 + n) * N + row] = round ? bf16r(v) : v;
+                }
+    }
+    if (ks == 1 || !kcnt) return;
+    __shared__ int last;
+    __threadfence();
+    __syncthreads();
+    int* c = kcnt + blockIdx.y * gridDim.x + blockIdx.x;
+    if (threadIdx.x == 0) last = atomicAdd(c, 1) == ks - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    for (int i = threadIdx.x; i < NVM_ROWS_PER_CTA * MT; i += blockDim.x) {
+        const int row = row0 + (i % NVM_ROWS_PER_CTA), m = m0 + i / NVM_ROWS_PER_CTA;
+        if (row >= N || m >= M) continue;
+        float v = 0.f;
+        for (int zz = 0; zz < ks; ++zz) v += __ldcg(part + ((size_t)zz * M + m) * N + row);
+        y[(size_t)m * N + row] = round ? bf16r(v) : v;
+    }
+    if (threadIdx.x == 0) *c = 0;
+}
+
 // row-major codes [N][K/2] (low nibble first) + scales [N][K/16] -> the layout above, via tmp
 static __global__ void k_nv_mma_repack_codes(uint8_t* dst, const uint8_t* src, int N, int K) {
     const int nsb = K / 256;
