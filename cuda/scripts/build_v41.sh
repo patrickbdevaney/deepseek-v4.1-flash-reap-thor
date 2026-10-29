@@ -28,6 +28,7 @@ if want "$1" gate_v41_units; then $NVCC tests/gate_v41_units.cu kernels/v41/kt_v
 if want "$1" libkt_viterbi; then $NVCC -shared -Xcompiler -fPIC kernels/v41/kt_viterbi.cu -o build/libkt_viterbi.so; echo "built build/libkt_viterbi.so"; fi
 if want "$1" gate_sa_split; then $NVCC tests/gate_sa_split.cu $KOBJ $LIBS -o build/gate_sa_split; echo "built build/gate_sa_split"; fi
 if want "$1" bench_dense; then $NVCC tests/bench_dense.cu $KOBJ $LIBS -o build/bench_dense; echo "built build/bench_dense"; fi
+if want "$1" gate_topk; then $NVCC tests/gate_topk.cu $KOBJ $LIBS -o build/gate_topk; echo "built build/gate_topk"; fi
 if want "$1" gate_v41_golden; then $NVCC tests/gate_v41_golden.cu $KOBJ $LIBS -o build/gate_v41_golden; echo "built build/gate_v41_golden"; fi
 if want "$1" gemv_format_bench; then $NVCC tools/gemv_format_bench.cu $LIBS -o build/gemv_format_bench; echo "built build/gemv_format_bench"; fi
 

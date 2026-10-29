@@ -7,6 +7,7 @@
 // (vs 1 KiB bf16) and 68 B per 128-dim index key. At 1M context that is the difference between
 // ~2.1 GiB and ~7 GiB of cache (docs/V41_DELTA.md has the table).
 #include <cstdlib>
+#include <cub/block/block_scan.cuh>
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_dev.cuh"
@@ -153,7 +154,12 @@ __device__ __forceinline__ uint32_t fkey(float f) {
 // One CTA per row: 3 passes of 11 bits find the k-th largest key T, then an ordered compaction
 // emits every index with key > T plus the lowest-index ties at T. Ascending output order.
 static constexpr int TK_THREADS = 1024;
-__device__ void radix_threshold(const float* v, int n, int k, uint32_t& T, int& need_eq, uint32_t* hist) {
+using TKScan = cub::BlockScan<int, TK_THREADS>;
+static int g_topk_serial = -1;                  // V41_TOPK_OLD=1: thread-0 scans (the reference form)
+bool topk_serial() { if (g_topk_serial < 0) { const char* e = getenv("V41_TOPK_OLD"); g_topk_serial = (e && *e == '1') ? 1 : 0; } return g_topk_serial; }
+void topk_serial_set(bool on) { g_topk_serial = on ? 1 : 0; }
+__device__ void radix_threshold(const float* v, int n, int k, uint32_t& T, int& need_eq, uint32_t* hist,
+                                bool serial, typename TKScan::TempStorage* scan) {
     uint32_t prefix = 0, pmask = 0; int remaining = k;
     const int shifts[3] = {21, 10, 0}, widths[3] = {11, 11, 10};
     for (int pass = 0; pass < 3; ++pass) {
@@ -165,11 +171,27 @@ __device__ void radix_threshold(const float* v, int n, int k, uint32_t& T, int& 
             if ((key & pmask) == prefix) atomicAdd(&hist[(key >> sh) & (nb - 1)], 1u);   // integer: deterministic
         }
         __syncthreads();
-        if (threadIdx.x == 0) {
-            int acc = 0, b = nb - 1;
-            for (; b > 0; --b) { if (acc + (int)hist[b] >= remaining) break; acc += hist[b]; }
-            remaining -= acc;
-            hist[nb] = (uint32_t)b; hist[nb + 1] = (uint32_t)remaining;
+        if (serial) {
+            if (threadIdx.x == 0) {
+                int acc = 0, b = nb - 1;
+                for (; b > 0; --b) { if (acc + (int)hist[b] >= remaining) break; acc += hist[b]; }
+                remaining -= acc;
+                hist[nb] = (uint32_t)b; hist[nb + 1] = (uint32_t)remaining;
+            }
+        } else {
+            // the same search as a block scan: bins in descending order, `per` per thread; the bin
+            // where the running count first reaches `remaining` (b >= 1), else b = 0
+            const int per = nb / TK_THREADS;
+            int loc[2] = {0, 0}, sum = 0;
+            for (int q = 0; q < per; ++q) { loc[q] = (int)hist[nb - 1 - (threadIdx.x * per + q)]; sum += loc[q]; }
+            int acc;
+            TKScan(*scan).ExclusiveSum(sum, acc);
+            for (int q = 0; q < per; ++q) {
+                const int b = nb - 1 - (threadIdx.x * per + q);
+                if (b > 0 && acc < remaining && acc + loc[q] >= remaining) { hist[nb] = (uint32_t)b; hist[nb + 1] = (uint32_t)(remaining - acc); }
+                if (b == 0 && acc < remaining) { hist[nb] = 0u; hist[nb + 1] = (uint32_t)(remaining - acc); }
+                acc += loc[q];
+            }
         }
         __syncthreads();
         const uint32_t b = hist[nb];
@@ -180,16 +202,24 @@ __device__ void radix_threshold(const float* v, int n, int k, uint32_t& T, int& 
     T = prefix; need_eq = remaining;               // elements equal to T still to take
 }
 __device__ void ordered_emit(int* out, const float* v, int n, int k, uint32_t T, int need_eq, int offset,
-                             uint32_t* sm) {
+                             uint32_t* sm, bool serial, typename TKScan::TempStorage* scan) {
     // per-thread contiguous segments -> exclusive scans of (gt, eq) -> write
     const int seg = (n + blockDim.x - 1) / blockDim.x, lo = threadIdx.x * seg, hi = min(n, lo + seg);
     int gt = 0, eq = 0;
     for (int i = lo; i < hi; ++i) { const uint32_t key = fkey(v[i]); gt += key > T; eq += key == T; }
     sm[threadIdx.x] = gt; sm[blockDim.x + threadIdx.x] = eq;
     __syncthreads();
-    if (threadIdx.x == 0) {
-        uint32_t a = 0, b = 0;
-        for (int t = 0; t < (int)blockDim.x; ++t) { uint32_t x = sm[t], y = sm[blockDim.x + t]; sm[t] = a; sm[blockDim.x + t] = b; a += x; b += y; }
+    if (serial) {
+        if (threadIdx.x == 0) {
+            uint32_t a = 0, b = 0;
+            for (int t = 0; t < (int)blockDim.x; ++t) { uint32_t x = sm[t], y = sm[blockDim.x + t]; sm[t] = a; sm[blockDim.x + t] = b; a += x; b += y; }
+        }
+    } else {
+        int a, b;
+        TKScan(*scan).ExclusiveSum(gt, a);
+        __syncthreads();
+        TKScan(*scan).ExclusiveSum(eq, b);
+        sm[threadIdx.x] = a; sm[blockDim.x + threadIdx.x] = b;
     }
     __syncthreads();
     int eq_before = sm[blockDim.x + threadIdx.x];
@@ -203,24 +233,30 @@ __device__ void ordered_emit(int* out, const float* v, int n, int k, uint32_t T,
     __syncthreads();
 }
 __global__ void __launch_bounds__(TK_THREADS) k_topk(int* idxs, const float* score, const int* d_pos, int ratio, int ld,
-                                                     int kmax, int offset) {
+                                                     int kmax, int offset, bool serial) {
     const int m = blockIdx.x;
     __shared__ uint32_t sm[2 * TK_THREADS + 2050];
     const int n = (d_pos[m] + 1) / ratio;
     const int k = min(kmax, n);
     int* out = idxs + (size_t)m * kmax;
     if (k <= 0) { for (int i = threadIdx.x; i < kmax; i += blockDim.x) out[i] = -1; return; }
+    if (k == n && !serial) {                       // every candidate is taken: ascending 0..n-1
+        for (int i = threadIdx.x; i < n; i += blockDim.x) out[i] = i + offset;
+        for (int i = k + threadIdx.x; i < kmax; i += blockDim.x) out[i] = -1;
+        return;
+    }
+    __shared__ typename TKScan::TempStorage scan;
     uint32_t T; int need;
-    radix_threshold(score + (size_t)m * ld, n, k, T, need, sm);
+    radix_threshold(score + (size_t)m * ld, n, k, T, need, sm, serial, &scan);
     __syncthreads();
-    ordered_emit(out, score + (size_t)m * ld, n, k, T, need, offset, sm);
+    ordered_emit(out, score + (size_t)m * ld, n, k, T, need, offset, sm, serial, &scan);
     for (int i = k + threadIdx.x; i < kmax; i += blockDim.x) out[i] = -1;
 }
 size_t topk_scratch_bytes(int M) { (void)M; return 0; }
 void topk_rows(int* idxs, const float* score, const int* d_pos, int ratio, int M, int ld_score, int k, int offset,
                void* scratch, cudaStream_t st) {
     (void)scratch;
-    k_topk<<<M, TK_THREADS, 0, st>>>(idxs, score, d_pos, ratio, ld_score, k, offset);
+    k_topk<<<M, TK_THREADS, 0, st>>>(idxs, score, d_pos, ratio, ld_score, k, offset, topk_serial());
 }
 
 // --------------------------------------------------------------------------- candidate blocks
@@ -238,7 +274,7 @@ __global__ void k_block_max(float* bs, const float* score, const int* d_pos, int
     bs[(size_t)m * ldb + b] = v;
 }
 __global__ void __launch_bounds__(TK_THREADS) k_cand_select(uint8_t* cand, const float* bs, const int* d_pos, int ratio,
-                                                            int ldb) {
+                                                            int ldb, bool serial) {
     const int m = blockIdx.x;
     __shared__ uint32_t sm[2 * TK_THREADS + 2050];
     const int n = (d_pos[m] + 1) / ratio, nb = (n + v41::CAND_BLOCK - 1) / v41::CAND_BLOCK;
@@ -248,14 +284,19 @@ __global__ void __launch_bounds__(TK_THREADS) k_cand_select(uint8_t* cand, const
         for (int i = threadIdx.x; i < ldb; i += blockDim.x) row[i] = (i < nb && b[i] > -INFINITY) ? 1 : 0;
         return;
     }
+    __shared__ typename TKScan::TempStorage scan;
     uint32_t T; int need;
-    radix_threshold(b, nb, v41::CAND_TOPK_BLOCKS, T, need, sm);
+    radix_threshold(b, nb, v41::CAND_TOPK_BLOCKS, T, need, sm, serial, &scan);
     __syncthreads();
     // mark: key > T, or the lowest-index `need` ties; never a -inf block
     const int seg = (nb + blockDim.x - 1) / blockDim.x, lo = threadIdx.x * seg, hi = min(nb, lo + seg);
     int eq = 0; for (int i = lo; i < hi; ++i) eq += fkey(b[i]) == T;
-    sm[threadIdx.x] = eq; __syncthreads();
-    if (threadIdx.x == 0) { uint32_t a = 0; for (int t = 0; t < (int)blockDim.x; ++t) { uint32_t x = sm[t]; sm[t] = a; a += x; } }
+    if (serial) {
+        sm[threadIdx.x] = eq; __syncthreads();
+        if (threadIdx.x == 0) { uint32_t a = 0; for (int t = 0; t < (int)blockDim.x; ++t) { uint32_t x = sm[t]; sm[t] = a; a += x; } }
+    } else {
+        int a; TKScan(scan).ExclusiveSum(eq, a); sm[threadIdx.x] = a;
+    }
     __syncthreads();
     int eb = sm[threadIdx.x];
     for (int i = lo; i < hi; ++i) {
@@ -270,7 +311,7 @@ void candidate_blocks(uint8_t* cand, const float* score, const int* d_pos, int r
                       void* scratch, cudaStream_t st) {
     float* bs = (float*)scratch;
     k_block_max<<<dim3((ld_cand + 255) / 256, M), 256, 0, st>>>(bs, score, d_pos, ratio, ld_score, ld_cand);
-    k_cand_select<<<M, TK_THREADS, 0, st>>>(cand, bs, d_pos, ratio, ld_cand);
+    k_cand_select<<<M, TK_THREADS, 0, st>>>(cand, bs, d_pos, ratio, ld_cand, topk_serial());
 }
 
 // --------------------------------------------------------------------------- sparse attention
