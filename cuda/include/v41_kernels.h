@@ -40,6 +40,8 @@ bool bf16_permuted(const void* W);   // W was registered by bf16_permute
 // NVFP4 copy (DecNVFP4 layout: W N*K/2 codes, S N*K/16 e4m3 scales) of a bf16 [N,K] matrix, permuted = it went
 // through bf16_permute; returns the global scale g. nvfp4_linear_f32: y[M,N] = x[M,K] (fp32) . W^T.
 float nvfp4_from_bf16(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K, bool permuted, cudaStream_t st);
+// the same from an FP8 [N, K] weight with e8m0 per 32x32 (Ws); returns g
+float nvfp4_from_fp8(uint8_t* W, uint8_t* S, const uint8_t* src, const uint8_t* srcs, int N, int K, cudaStream_t st);
 void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, cudaStream_t st);
 // Two-stage greedy head: NVFP4 scores, then the bf16 head's exact logit (bit-identical to bf16_linear,
 // M = 1 or any M) for every row within delta of the approximate max; argmax of row r -> out[r * ostride].

@@ -240,7 +240,37 @@ void alloc_drafter(Drafter& D, int max_rows) {
     v41k::sparse_attn_reserve(R);
     CK(cudaDeviceSynchronize());
 }
+// V41_DRAFT_NV=1: NVFP4 copies of the drafter's FP8 linears (RTN, as the target overlay), served by k_nvm.
+// Drafts only change acceptance, never the emitted ids; the FP8 originals stay loaded and untouched.
+// OFF by default (S6, 2026-10-29): held-out K=3 tok/verify fell in every domain (agentic 2.66 -> 2.37,
+// code 3.03 -> 2.74, chat 2.22 -> 2.06), speedup x1.194 -> x1.089 agentic; the draft saves ~1.3 ms of ~90.
+static void prepare_draft_nv(Drafter& D, cudaStream_t st) {
+    const char* e = getenv("V41_DRAFT_NV");
+    if (!(e && *e == '1')) return;
+    size_t bytes = 0;
+    auto cv = [&](const uint8_t*& w, const uint8_t*& ws, int N, int K) {
+        uint8_t* c = dal<uint8_t>(D, (size_t)N * K / 2); uint8_t* sc = dal<uint8_t>(D, (size_t)N * K / 16);
+        const float g = v41k::nvfp4_from_fp8(c, sc, w, ws, N, K, st);
+        v41k::overlay_register(c, sc, g, N, K);
+        w = c; ws = sc; bytes += (size_t)N * K / 2 + (size_t)N * K / 16;
+    };
+    cv(D.main_proj, D.main_proj_s, DIM, 3 * DIM);
+    for (int i = 0; i < N_MTP; ++i) {
+        DBlock& b = D.b[i];
+        cv(b.wq_a, b.wq_a_s, Q_LORA, DIM);
+        cv(b.wkv, b.wkv_s, HEAD_DIM, DIM);
+        cv(b.wq_b, b.wq_b_s, N_HEADS * HEAD_DIM, Q_LORA);
+        cv(b.wo_a, b.wo_a_s, O_GROUPS * O_LORA, O_GROUP_IN);
+        cv(b.wo_b, b.wo_b_s, DIM, O_GROUPS * O_LORA);
+        cv(b.sh_w1, b.sh_w1s, MOE_INTER, DIM);
+        cv(b.sh_w3, b.sh_w3s, MOE_INTER, DIM);
+        cv(b.sh_w2, b.sh_w2s, DIM, MOE_INTER);
+    }
+    CK(cudaDeviceSynchronize());
+    printf("[draft] NVFP4 copies of the drafter linears: %.2f GiB\n", bytes / double(1 << 30));
+}
 void prepare_draft_head(const Model& m, Drafter& D, cudaStream_t st) {
+    prepare_draft_nv(D, st);
     // default on (spec sweep 2026-10-29: same tok/verify at every K, round faster, K=2 0.971x -> 1.017x)
     const char* e = getenv("V41_DRAFT_HEAD_FP4");
     if (e && *e == '0') return;

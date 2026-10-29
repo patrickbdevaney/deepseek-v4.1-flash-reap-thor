@@ -775,6 +775,42 @@ float nvfp4_from_bf16(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K,
     float a; std::memcpy(&a, &h, 4);
     return std::max(a, 1e-30f) / (448.f * 6.f);
 }
+// NVFP4 copy of an FP8 [N, K] matrix (e8m0 per 32x32), same RTN scheme: the drafter's linears (draft only)
+__device__ __forceinline__ float fp8_at(const uint8_t* W, const uint8_t* Ws, int K, size_t i) {
+    const size_t row = i / K, k = i % K;
+    return e4m3f(W[i]) * e8m0f(Ws[(row >> 5) * (size_t)(K >> 5) + (k >> 5)]);
+}
+__global__ void k_absmax_fp8(unsigned* out, const uint8_t* W, const uint8_t* Ws, int K, size_t n) {
+    float m = 0.f;
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x)
+        m = fmaxf(m, fabsf(fp8_at(W, Ws, K, i)));
+    m = warp_max(m);
+    if ((threadIdx.x & 31) == 0) atomicMax(out, __float_as_uint(m));
+}
+__global__ void k_nvfp4_quant_fp8(uint8_t* W, uint8_t* S, const uint8_t* src, const uint8_t* srcs, int N, int K, const unsigned* amax) {
+    const size_t gi = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (gi >= (size_t)N * (K / 16)) return;
+    const int row = (int)(gi / (K / 16)), k0 = (int)(gi % (K / 16)) * 16;
+    const float g = fmaxf(__uint_as_float(*amax), 1e-30f) / (448.f * 6.f);
+    float v[16], m = 0.f;
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) { v[i] = fp8_at(src, srcs, K, (size_t)row * K + k0 + i); m = fmaxf(m, fabsf(v[i])); }
+    const uint8_t sc = f2e4m3(m / 6.f / g);
+    const float s = e4m3f(sc) * g, inv = s > 0.f ? 1.f / s : 0.f;
+    #pragma unroll
+    for (int i = 0; i < 16; i += 2)
+        W[(size_t)row * (K / 2) + (k0 + i) / 2] = (uint8_t)__nv_cvt_float2_to_fp4x2(make_float2(v[i] * inv, v[i + 1] * inv), __NV_E2M1, cudaRoundNearest);
+    S[gi] = sc;
+}
+float nvfp4_from_fp8(uint8_t* W, uint8_t* S, const uint8_t* src, const uint8_t* srcs, int N, int K, cudaStream_t st) {
+    unsigned* d; cudaMalloc(&d, 4); cudaMemsetAsync(d, 0, 4, st);
+    k_absmax_fp8<<<512, 256, 0, st>>>(d, src, srcs, K, (size_t)N * K);
+    const size_t ng = (size_t)N * (K / 16);
+    k_nvfp4_quant_fp8<<<(unsigned)((ng + 255) / 256), 256, 0, st>>>(W, S, src, srcs, N, K, d);
+    unsigned h; cudaMemcpyAsync(&h, d, 4, cudaMemcpyDeviceToHost, st); cudaStreamSynchronize(st); cudaFree(d);
+    float a; std::memcpy(&a, &h, 4);
+    return std::max(a, 1e-30f) / (448.f * 6.f);
+}
 void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, cudaStream_t st) {
     XSrc X; X.xf = x; X.ldx = K;
     DecNVFP4 d{W, S, g, K};
