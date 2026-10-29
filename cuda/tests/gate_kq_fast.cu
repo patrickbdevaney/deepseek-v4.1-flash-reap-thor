@@ -13,6 +13,7 @@
 //
 //   nvcc -O3 -std=c++17 -gencode arch=compute_110a,code=sm_110a -I include -I kernels/v41 \
 //        tests/gate_kq_fast.cu -o build/gate_kq_fast && ./build/gate_kq_fast
+#include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_kq_fast.cuh"
 #include <cstdio>
@@ -124,6 +125,24 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     CU(cudaMemcpy(t1, d1.data(), POOL * 8, cudaMemcpyHostToDevice)); CU(cudaMemcpy(t3, d3.data(), POOL * 8, cudaMemcpyHostToDevice));
     CU(cudaMemcpy(t2, d2.data(), POOL * 8, cudaMemcpyHostToDevice));
     KQTab tab{t1, t3, t2, pass};
+    // the same pool reordered by kq_soa_repack, for the SOA kernel
+    std::vector<uint8_t*> s1(POOL), s3(POOL), s2(POOL);
+    {
+        void* tmp; CU(cudaMalloc(&tmp, (size_t)v41::DIM * (v41::MOE_INTER / 256 + 1) * 110));
+        auto soa = [&](const uint8_t* src, int rows, int k) {
+            const size_t n = (size_t)rows * (k / 256) * (QT == 2 ? 84 : 110); uint8_t* d; CU(cudaMalloc(&d, n));
+            CU(cudaMemcpy(d, src, n, cudaMemcpyDeviceToDevice)); v41k::kq_soa_repack(d, rows, k, QT, tmp, 0); return d; };
+        for (int e = 0; e < POOL; ++e) {
+            s1[e] = soa(d1[e], v41::MOE_INTER, v41::DIM); s3[e] = soa(d3[e], v41::MOE_INTER, v41::DIM);
+            s2[e] = soa(d2[e], v41::DIM, v41::MOE_INTER);
+        }
+        CU(cudaDeviceSynchronize()); cudaFree(tmp);
+    }
+    const uint8_t** u1; const uint8_t** u3; const uint8_t** u2;
+    CU(cudaMalloc(&u1, POOL * 8)); CU(cudaMalloc(&u3, POOL * 8)); CU(cudaMalloc(&u2, POOL * 8));
+    CU(cudaMemcpy(u1, s1.data(), POOL * 8, cudaMemcpyHostToDevice)); CU(cudaMemcpy(u3, s3.data(), POOL * 8, cudaMemcpyHostToDevice));
+    CU(cudaMemcpy(u2, s2.data(), POOL * 8, cudaMemcpyHostToDevice));
+    KQTab tabs{u1, u3, u2, pass};
     // activations: P rows, e4m3 of N(0,1)*k, pow2 scales
     std::vector<uint8_t> hx((size_t)P * K); std::vector<float> hs((size_t)P * K / 32);
     std::normal_distribution<float> nd(0.f, 1.f);
@@ -162,6 +181,17 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     printf("Q%d_K pass %d P=%d MT=%d: rms(ref) %.4g, max err/rms %.3g, out of tol %ld / %zu %s\n", QT, pass, P, MT_units, rms,
            worst, bad, r.size(), bad ? "FAIL" : "ok");
     bool ok = bad == 0;
+    {   // SOA layout must give the AoS fast kernel's output bit for bit
+        float* so; CU(cudaMalloc(&so, (size_t)P * N * 4));
+        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K); }
+        else { auto kf = k_kq<QT, 4, Unit, true>; CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+               kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K); }
+        CU(cudaDeviceSynchronize());
+        std::vector<float> os((size_t)P * N); CU(cudaMemcpy(os.data(), so, os.size() * 4, cudaMemcpyDeviceToHost));
+        long diff = 0; for (size_t i = 0; i < os.size(); ++i) diff += memcmp(&os[i], &o[i], 4) != 0;
+        printf("  SOA vs AoS fast: %ld / %zu differ %s\n", diff, os.size(), diff ? "FAIL" : "ok");
+        ok = ok && diff == 0; cudaFree(so);
+    }
     if (bench) {
         // rotate sets of 6 experts through the pool so nothing is L2-resident
         const int SETS = POOL / 6, REPS = 200;
@@ -187,6 +217,12 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
             cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
         }
         const double new_gbs = bytes / ms / 1e6;
+        for (int w = 0; w < 2; ++w) {
+            cudaEventRecord(a);
+            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tabs, N, K); }
+            cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
+        }
+        printf("  bench SOA: %.1f GB/s\n", bytes / ms / 1e6);
         printf("  bench M=1 x6 experts: old %.1f GB/s  new %.1f GB/s  %.2fx  (%.0f us per launch)\n", old_gbs, new_gbs,
                new_gbs / old_gbs, 1e6 * bytes / REPS / (new_gbs * 1e9));
         CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice));
@@ -205,7 +241,7 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         printf("  MT=4 vs MT=1 on the same pairs: %ld / %zu differ %s\n", diff, o1.size(), diff ? "FAIL" : "ok");
         ok = ok && diff == 0;
     }
-    for (int e = 0; e < POOL; ++e) { cudaFree(d1[e]); cudaFree(d3[e]); cudaFree(d2[e]); }
+    for (int e = 0; e < POOL; ++e) { cudaFree(d1[e]); cudaFree(d3[e]); cudaFree(d2[e]); cudaFree(s1[e]); cudaFree(s3[e]); cudaFree(s2[e]); }
     cudaFree(dx); cudaFree(dxs); cudaFree(dout); cudaFree(dref);
     return ok;
 }

@@ -205,7 +205,7 @@ void load_drafter(Drafter& D, const std::string& ckpt, const std::string& head_d
     D.gib = (H ? H->gib() : 0.0) + D.base->gib();
     char buf[512];
     snprintf(buf, sizeof buf, "%s (%s, %d experts/block, %s, %.2f GiB)", head_dir.empty() ? (ckpt + " mtp.*").c_str() : head_dir.c_str(),
-             hj.value("arm", std::string(head_dir.empty() ? "native" : "?")).c_str(), D.n_routed,
+             (hj.is_object() ? hj.value("arm", std::string("?")) : std::string("native")).c_str(), D.n_routed,
              qtype.empty() ? "MXFP4" : qtype.c_str(), D.gib);
     D.desc = buf;
 }

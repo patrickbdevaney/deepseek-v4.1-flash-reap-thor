@@ -319,21 +319,48 @@ static bool kq_fast() {
     return g_kq_fast;
 }
 void kq_fast_set(bool on) { g_kq_fast = on ? 1 : 0; }
-template <int QT, int MT>
+bool kq_soa() { static const bool on = [] { const char* e = getenv("V41_KQ_SOA"); return kq_fast() && !(e && *e == '0'); }(); return on; }
+__global__ void k_kq_soa(uint8_t* dst, const uint8_t* src, size_t cnt, int bits) {
+    const size_t bi = blockIdx.x * (size_t)blockDim.x + threadIdx.x; if (bi >= cnt) return;
+    if (bits == 2) {                                  // scales[16] qs[64] d,dmin[4] -> qs | scales | d
+        const uint8_t* b = src + bi * 84;
+        for (int i = 0; i < 64; ++i) dst[bi * 64 + i] = b[16 + i];
+        for (int i = 0; i < 16; ++i) dst[64 * cnt + bi * 16 + i] = b[i];
+        for (int i = 0; i < 4; ++i) dst[80 * cnt + bi * 4 + i] = b[80 + i];
+    } else {                                          // hmask[32] qs[64] scales[12] d[2] -> same order, planar
+        const uint8_t* b = src + bi * 110;
+        for (int i = 0; i < 32; ++i) dst[bi * 32 + i] = b[i];
+        for (int i = 0; i < 64; ++i) dst[32 * cnt + bi * 64 + i] = b[32 + i];
+        for (int i = 0; i < 12; ++i) dst[96 * cnt + bi * 12 + i] = b[96 + i];
+        for (int i = 0; i < 2; ++i) dst[108 * cnt + bi * 2 + i] = b[108 + i];
+    }
+}
+void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st) {
+    const size_t cnt = (size_t)rows * (K / 256), bytes = cnt * (bits == 2 ? 84 : 110);
+    k_kq_soa<<<(unsigned)((cnt + 255) / 256), 256, 0, st>>>((uint8_t*)tmp, W, cnt, bits);
+    cudaMemcpyAsync(W, tmp, bytes, cudaMemcpyDeviceToDevice, st);   // same stream: ordered after the kernel
+}
+template <int QT, int MT, bool SOA>
 static void launch_kq(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
                       const KQTab& tab, int N, int K, int max_units, cudaStream_t st) {
     dim3 grid((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, max_units);
     const size_t smem = (size_t)MT * kq_stage_bytes(K);
-    auto kf = k_kq<QT, MT, Unit>;
+    auto kf = k_kq<QT, MT, Unit, SOA>;
     if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K);
 }
-static void run_kq(int bits, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
+template <bool SOA>
+static void run_kq_(int bits, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
+                    const int* ptok, const KQTab& tab, int N, int K, int max_units, int mt, cudaStream_t st) {
+    if (bits == 2) { if (mt == 1) launch_kq<2, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+                     else launch_kq<2, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
+    else           { if (mt == 1) launch_kq<3, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+                     else launch_kq<3, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
+}
+static void run_kq(int bits, bool soa, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
                    const int* ptok, const KQTab& tab, int N, int K, int max_units, int mt, cudaStream_t st) {
-    if (bits == 2) { if (mt == 1) launch_kq<2, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
-                     else launch_kq<2, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
-    else           { if (mt == 1) launch_kq<3, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
-                     else launch_kq<3, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
+    if (soa) run_kq_<true>(bits, out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, mt, st);
+    else run_kq_<false>(bits, out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, mt, st);
 }
 
 // one pass (0 = gate|up, 1 = down) in the format the table names for it
@@ -353,8 +380,13 @@ static void dispatch_pass(int pass, const ExpertTab& T, float* out, int ldo, con
         else run_pass<LUTDec<4>>(out, ldo, X, by_pair, units, nu, ptok, tl, N, K, max_units, mt, st);
         break;
     case ExpertFmt::KQ:
+        if ((bits == 2 || bits == 3) && T.kq_soa) {     // reordered bytes: only the SOA kernel can read them
+            if (!X.xq) { fprintf(stderr, "kq_soa needs fp8 activations\n"); abort(); }
+            run_kq(bits, true, out, ldo, X, by_pair, units, nu, ptok, KQTab{T.w1, T.w3, T.w2, pass}, N, K, max_units, mt, st);
+            break;
+        }
         if ((bits == 2 || bits == 3) && X.xq && kq_fast()) {
-            run_kq(bits, out, ldo, X, by_pair, units, nu, ptok, KQTab{T.w1, T.w3, T.w2, pass}, N, K, max_units, mt, st);
+            run_kq(bits, false, out, ldo, X, by_pair, units, nu, ptok, KQTab{T.w1, T.w3, T.w2, pass}, N, K, max_units, mt, st);
             break;
         }
         if (bits == 2) run_pass<KQDec<2>>(out, ldo, X, by_pair, units, nu, ptok, tm, N, K, max_units, mt, st);

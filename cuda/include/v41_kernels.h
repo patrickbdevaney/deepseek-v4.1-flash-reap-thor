@@ -83,6 +83,10 @@ void overlay_register(const uint8_t* codes, float g);
 // Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
 // bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
 void kq_fast_set(bool on);
+// Reorder one Q2_K/Q3_K [rows, K] matrix in place into code | scale | d planes (same bytes), for the
+// vector-load fast kernel. tmp >= rows*(K/256)*block bytes. kq_soa(): the loader should repack.
+void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st);
+bool kq_soa();
 size_t overlay_count();
 
 // MXFP4(_HW): thor-v1 MXFP4_SRC / the HF checkpoint. KQ: thor-v1 Q2_K/Q3_K/Q4_K (bits = 2/3/4).
@@ -95,6 +99,7 @@ struct ExpertTab {
     // more bits on down_proj (FORMAT_PROPOSAL.md §4)
     ExpertFmt fmt13 = ExpertFmt::MXFP4, fmt2 = ExpertFmt::MXFP4;
     int bits13 = 4, bits2 = 4;                      // KQ: 2/3/4 (Q2_K..Q4_K); LUT/KT code bits
+    bool kq_soa = false;                            // KQ 2/3 matrices reordered by kq_soa_repack (fast kernel only)
     const float* heal_gain = nullptr;               // thor-v1 arm B `ffn.heal_gain` [1]: routed sum x gain
     const uint8_t* const* w2 = nullptr;
     const uint8_t* const* w2s = nullptr;

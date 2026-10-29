@@ -103,8 +103,12 @@ __device__ __forceinline__ float f16_lo(uint32_t v) { return __half2float(__usho
 struct KQTab { const uint8_t* const* w1; const uint8_t* const* w3; const uint8_t* const* w2; int pass; };
 
 // grid (row tiles, max units); same contract as k_experts<KQDec<QT>, MT> in v41_moe.cu
-template <int QT, int MT, class UnitT>
-__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) k_kq(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
+// SOA: the matrix was reordered by kq_soa_repack (codes | scales | d planes, each 16-aligned), so a
+// lane's 32 code bytes are two 16-byte loads; the values reaching each lane are the same.
+// Blocks/SM at M=1 from gate_kq_fast (ncu: issue-bound, 0.66 eligible warps at 2): Q3_K gains 12% at 4
+// despite ~140 B of spills; Q2_K loses at 3 or 4, so it stays at 2.
+template <int QT, int MT, class UnitT, bool SOA = false>
+__global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                             const UnitT* units, const int* units_n, const int* pair_tok,
                                             KQTab tab, int N, int K) {
     static_assert(QT == 2 || QT == 3, "Q2_K / Q3_K");
@@ -123,6 +127,7 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) k_kq(float* __restrict__
     if (tab.pass == 0) { W0 = tab.w1[U.e]; W1 = tab.w3[U.e]; split = v41::MOE_INTER; }
     else { W0 = W1 = tab.w2[U.e]; split = 1 << 30; }
     const int nch = K / 32, nsb = K / 256;
+    const int mrows = tab.pass == 0 ? split : N;          // rows of the one matrix a row index points into
     const int row0 = blockIdx.x * ROWS_PER_CTA;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     float acc[ROWS_PER_WARP][MT];
@@ -153,16 +158,28 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) k_kq(float* __restrict__
             int row = min(row0 + warp * ROWS_PER_WARP + r, N - 1);
             const uint8_t* W = W0;
             if (row >= split) { W = W1; row -= split; }
-            const uint8_t* b = W + ((size_t)row * nsb + (cc >> 3)) * BB;
+            const size_t bi = (size_t)row * nsb + (cc >> 3), cnt = (size_t)mrows * nsb;
+            const uint8_t* b = W + bi * BB;
             float a[2], m[2];
             uint32_t cw[8];
             if (QT == 2) {
-                const uint32_t* q = reinterpret_cast<const uint32_t*>(b + 16 + (j >> 2) * 32);
+                uint32_t q[8];
+                if (SOA) {
+                    const uint4* q4 = reinterpret_cast<const uint4*>(W + bi * 64 + (j >> 2) * 32);
+                    const uint4 u0 = q4[0], u1 = q4[1];
+                    q[0] = u0.x; q[1] = u0.y; q[2] = u0.z; q[3] = u0.w; q[4] = u1.x; q[5] = u1.y; q[6] = u1.z; q[7] = u1.w;
+                } else {
+                    const uint32_t* qa = reinterpret_cast<const uint32_t*>(b + 16 + (j >> 2) * 32);
+                    #pragma unroll
+                    for (int i = 0; i < 8; ++i) q[i] = qa[i];
+                }
                 #pragma unroll
                 for (int i = 0; i < 8; ++i) cw[i] = (q[i] >> sh) & 0x03030303u;
-                const uint32_t dd = *reinterpret_cast<const uint32_t*>(b + 80);
+                const uint32_t dd = SOA ? *reinterpret_cast<const uint32_t*>(W + 80 * cnt + bi * 4)
+                                        : *reinterpret_cast<const uint32_t*>(b + 80);
                 const float d = f16_lo(dd), dm = f16_lo(dd >> 16);
-                const uint32_t s2 = *reinterpret_cast<const uint16_t*>(b + 2 * j);
+                const uint32_t s2 = SOA ? *reinterpret_cast<const uint16_t*>(W + 64 * cnt + bi * 16 + 2 * j)
+                                        : *reinterpret_cast<const uint16_t*>(b + 2 * j);
                 #pragma unroll
                 for (int hh = 0; hh < 2; ++hh) {
                     const uint32_t s = (s2 >> (8 * hh)) & 0xFF;
@@ -170,12 +187,21 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) k_kq(float* __restrict__
                 }
             } else {
                 uint32_t qs[8], hm[8];
-                ld8w(b + 32 + (j >> 2) * 32, qs);
-                ld8w(b, hm);
+                if (SOA) {
+                    const uint4* h4 = reinterpret_cast<const uint4*>(W + bi * 32);
+                    const uint4* q4 = reinterpret_cast<const uint4*>(W + 32 * cnt + bi * 64 + (j >> 2) * 32);
+                    const uint4 h0 = h4[0], h1 = h4[1], u0 = q4[0], u1 = q4[1];
+                    hm[0] = h0.x; hm[1] = h0.y; hm[2] = h0.z; hm[3] = h0.w; hm[4] = h1.x; hm[5] = h1.y; hm[6] = h1.z; hm[7] = h1.w;
+                    qs[0] = u0.x; qs[1] = u0.y; qs[2] = u0.z; qs[3] = u0.w; qs[4] = u1.x; qs[5] = u1.y; qs[6] = u1.z; qs[7] = u1.w;
+                } else {
+                    ld8w(b + 32 + (j >> 2) * 32, qs);
+                    ld8w(b, hm);
+                }
                 #pragma unroll
                 for (int i = 0; i < 8; ++i) cw[i] = ((qs[i] >> sh) & 0x03030303u) | (((hm[i] >> j) & 0x01010101u) << 2);
-                const float d = __half2float(__ushort_as_half(*reinterpret_cast<const unsigned short*>(b + 108)));
-                const uint8_t* s12 = b + 96;
+                const float d = __half2float(__ushort_as_half(SOA ? *reinterpret_cast<const unsigned short*>(W + 108 * cnt + bi * 2)
+                                                                  : *reinterpret_cast<const unsigned short*>(b + 108)));
+                const uint8_t* s12 = SOA ? W + 96 * cnt + bi * 12 : b + 96;
                 #pragma unroll
                 for (int hh = 0; hh < 2; ++hh) {
                     const int k = 2 * j + hh;
