@@ -11,6 +11,8 @@
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_dev.cuh"
+namespace v41g { using namespace v41d; }
+#include "v41_sa_mma.cuh"
 #include <cstdio>
 
 using namespace v41d;
@@ -487,7 +489,21 @@ __global__ void __launch_bounds__(HPC * 32) k_sparse_attn_c(float* o, const floa
 // max is order-free; den and every acc[h][d] are sums over the entries in list order.
 static constexpr int SA_SPLIT_M = 8;
 static float* g_sa_e = nullptr;  static float* g_sa_s = nullptr;  static int* g_sa_n = nullptr;  static int g_sa_m = 0;
+// tensor-core path scratch (v41_sa_mma.cuh): SAM_ROWS rows of bf16 entries + fp32 scores
+static uint16_t* g_sam_e = nullptr; static float* g_sam_s = nullptr; static int* g_sam_n = nullptr;
+static constexpr int SAM_K2_SMEM = 2 * 64 * v41g::SAM_QS * 2;
+static constexpr int SAM_K3_SMEM = 64 * v41g::SAM_PS * 2 + 64 * v41g::SAM_K3S * 2;
 void sparse_attn_reserve(int max_m) {
+    if (!g_sam_e) {
+        const int R = v41g::SAM_ROWS;
+        if (cudaMalloc(&g_sam_e, (size_t)R * v41g::SAM_E * v41g::SAM_D * 2) == cudaSuccess &&
+            cudaMalloc(&g_sam_s, (size_t)R * v41::N_HEADS * v41g::SAM_E * 4) == cudaSuccess &&
+            cudaMalloc(&g_sam_n, (size_t)R * 4) == cudaSuccess) {
+            cudaMemset(g_sam_e, 0, (size_t)R * v41g::SAM_E * v41g::SAM_D * 2);
+            cudaFuncSetAttribute(v41g::k_sam_scores, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K2_SMEM);
+            cudaFuncSetAttribute(v41g::k_sam_out, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K3_SMEM);
+        } else { g_sam_e = nullptr; (void)cudaGetLastError(); }
+    }
     max_m = std::min(max_m, SA_SPLIT_M);
     if (max_m <= g_sa_m) return;
     if (g_sa_e) { cudaFree(g_sa_e); cudaFree(g_sa_s); cudaFree(g_sa_n); }
@@ -618,6 +634,20 @@ void sparse_attn(float* o, const float* q, const float* win_ring, int ring, cons
     if (old) {
         k_sparse_attn<<<dim3(M, v41::N_HEADS / 8), 256, 0, st>>>(o, q, win_ring, ring, ccodes, cscales, cidx, ncomp, sink,
                                                                 d_pos, scale);
+        return;
+    }
+    // tensor-core path for every M (V41_SA_MMA=0: the fp32 kernels below)
+    static const bool sam = [] { const char* e = getenv("V41_SA_MMA"); return !(e && *e == '0'); }();
+    if (sam && g_sam_e) {
+        for (int a = 0; a < M; a += v41g::SAM_ROWS) {
+            const int mm = std::min(v41g::SAM_ROWS, M - a);
+            v41g::k_sam_gather<<<dim3(v41g::SAM_E / 16, mm), 256, 0, st>>>(g_sam_e, g_sam_n, win_ring, ring, ccodes, cscales,
+                                                                          cidx ? cidx + (size_t)a * ncomp : nullptr, ncomp, d_pos + a);
+            v41g::k_sam_scores<<<dim3(v41g::SAM_E / 64, mm), 128, SAM_K2_SMEM, st>>>(g_sam_s, g_sam_e, g_sam_n,
+                                                                                    q + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, scale);
+            v41g::k_sam_out<<<dim3(v41g::SAM_D / v41g::SAM_K3D, mm), 128, SAM_K3_SMEM, st>>>(
+                o + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, g_sam_s, g_sam_e, g_sam_n, sink);
+        }
         return;
     }
     if (g_sa_split < 0) { const char* e = getenv("V41_SA_SPLIT"); g_sa_split = (e && *e == '0') ? 0 : 1; }

@@ -363,7 +363,9 @@ hashes refer to this repository.
 | NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | b667022 |
 | k_nvm sums its split-K partials in the last CTA (no `k_ksum` launch) | **22.28** (paired vs 8cfe5b7: 22.27 → 22.28, parity) | bitwise vs b667022 | 5295ecd |
 | two-stage greedy head: NVFP4 shortlist + exact bf16 rescore (`head2_argmax`) | **24.52** (paired: 22.24 → 24.52, +10.3%) | greedy ids exact (T0e: recall by measured error, Δ = 9σ) | c5c5ff2 |
-| hc_collapse + rmsnorm + act_quant fused (`k_cnq`); coalesced router + fused top-k; rmsnorm weight prefetch | **24.55** (paired: 24.44 → 24.55, +0.5%) | bitwise | (this commit) |
+| hc_collapse + rmsnorm + act_quant fused (`k_cnq`); coalesced router + fused top-k; rmsnorm weight prefetch | **24.55** (paired: 24.44 → 24.55, +0.5%) | bitwise | c5575a6 |
+| prefill chunks up to 512 rows (window ring WINDOW + 512, `k_units_big`) | 8k prefill 79.4 → 88.0 | bitwise (ids identical at every chunk) | dd5cc13 |
+| sparse attention on bf16 tensor cores, every M (`v41_sa_mma.cuh`) | 8k prefill **88 → 160 tok/s**; 8k-context decode 21.4 → 22.6 | T1 (KL to exact 0.0173 → 0.0124) | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
@@ -519,4 +521,22 @@ Glue work that shortens launch chains but moves no bytes therefore buys little:
 
 The remaining AR levers move bytes, and those are quality-tier (T2) decisions. Speed beyond that
 comes from speculation.
+
+**Prefill (2026-10-29).** Two changes:
+
+- **Chunk size:** prefill took 64-row chunks and re-read every expert it touched once per chunk.
+  With chunks up to 512 rows, 8k prefill went 79 → 88 tok/s, then plateaued.
+- **Sparse attention on tensor cores:** the nsys trace showed attention at 53% of the prefill.
+  Each row is MQA (64 heads against one 512-wide KV row per entry), so it runs as two bf16 GEMMs
+  on `mma.m16n8k16`. Every product is exact, because q, the KV rows and bf16(p) are all bf16
+  values; only the summation order changes. The softmax keeps the reference's two passes. Per-row
+  instructions are identical at every M, so decode == prefill is still bitwise.
+
+| | before | after |
+|---|---|---|
+| 8k prefill | 88 tok/s | 160 tok/s |
+| decode at 8k context | 21.4 tok/s | 22.6 tok/s |
+| KL to exact | 0.0173 | 0.0124 |
+
+`V41_SA_MMA=0` restores the fp32 kernels. New ids reference: `ops/logs/bench/sam1_arm0.json`.
 
