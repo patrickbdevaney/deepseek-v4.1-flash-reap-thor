@@ -156,6 +156,9 @@ size_t topk_scratch_bytes(int M);
 // Sparse MLA attention over a 256-slot window ring (fp32 rows, fp8-sim values) plus packed fp4
 // compressed rows. Row m attends window positions max(0,pos_m-127)..pos_m and the compressed
 // indices cidx[m][0..ncomp) (already shifted by `coff`; -1 = masked). o is bf16-rounded.
+// Scratch for the split decode/verify form (M <= 8); without it sparse_attn uses the one-kernel form.
+void sparse_attn_reserve(int max_m);
+void sparse_attn_split_set(bool on);
 void sparse_attn(float* o, const float* q, const float* win_ring, int ring, const uint8_t* ccodes,
                  const uint8_t* cscales, const int* cidx, int ncomp, int coff, const float* sink,
                  const int* d_pos, int M, float scale, cudaStream_t st);

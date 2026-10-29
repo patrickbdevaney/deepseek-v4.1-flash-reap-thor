@@ -439,6 +439,136 @@ __global__ void __launch_bounds__(HPC * 32) k_sparse_attn_c(float* o, const floa
     #pragma unroll
     for (int i = 0; i < 16; ++i) oh[lane + 32 * i] = bf16r(acc[i] / den);
 }
+// Split form for the decode/verify widths (M <= SA_SPLIT_M), bit-identical to k_sparse_attn_c. All 64
+// heads read the same 512-wide kv row (one kv head), so the rows are decoded ONCE into an fp32 scratch
+// and the two passes are spread over (head, entry) and (head, dim) instead of 16 CTAs each restaging
+// everything twice. Order is kept where it matters: a score is the same per-lane fma chain + warp_sum;
+// max is order-free; den and every acc[h][d] are sums over the entries in list order.
+static constexpr int SA_SPLIT_M = 8;
+static float* g_sa_e = nullptr;  static float* g_sa_s = nullptr;  static int* g_sa_n = nullptr;  static int g_sa_m = 0;
+void sparse_attn_reserve(int max_m) {
+    max_m = std::min(max_m, SA_SPLIT_M);
+    if (max_m <= g_sa_m) return;
+    if (g_sa_e) { cudaFree(g_sa_e); cudaFree(g_sa_s); cudaFree(g_sa_n); }
+    g_sa_m = 0;
+    if (cudaMalloc(&g_sa_e, (size_t)max_m * SA_MAXE * v41::HEAD_DIM * 4) != cudaSuccess) { g_sa_e = nullptr; return; }
+    if (cudaMalloc(&g_sa_s, (size_t)max_m * v41::N_HEADS * SA_MAXE * 4) != cudaSuccess) { cudaFree(g_sa_e); g_sa_e = nullptr; return; }
+    if (cudaMalloc(&g_sa_n, (size_t)max_m * 4) != cudaSuccess) { cudaFree(g_sa_e); cudaFree(g_sa_s); g_sa_e = nullptr; return; }
+    g_sa_m = max_m;
+}
+static int g_sa_split = -1;                              // V41_SA_SPLIT=0 -> k_sparse_attn_c
+void sparse_attn_split_set(bool on) { g_sa_split = on ? 1 : 0; }
+static constexpr int SA_K1_ROWS = 16, SA_K2_ECH = 32, SA_K3_HG = 8, SA_K3_D = 64;
+// K1: valid-entry list (same construction as k_sparse_attn_c), rows decoded to E[m][k][512]
+__global__ void __launch_bounds__(256) k_sa_gather(float* E, int* nent_out, const float* ring_buf, int ring,
+                                                   const uint8_t* cc, const uint8_t* cs, const int* cidx, int ncomp,
+                                                   const int* d_pos) {
+    const int m = blockIdx.y, k0 = blockIdx.x * SA_K1_ROWS, pos = d_pos[m];
+    __shared__ short ent[SA_MAXE];
+    __shared__ int nent;
+    const int* ci = cidx ? cidx + (size_t)m * ncomp : nullptr;
+    if (threadIdx.x < 32) {
+        const int lane = threadIdx.x;
+        int n = 0;
+        const int w0 = max(0, (v41::WINDOW - 1) - pos);
+        for (int e = w0 + lane; e < v41::WINDOW; e += 32) ent[n + (e - w0)] = (short)e;
+        n = v41::WINDOW - w0;
+        for (int b = 0; b < ncomp; b += 32) {
+            const int e = b + lane;
+            const bool ok = e < ncomp && ci[e] >= 0;
+            const unsigned bal = __ballot_sync(0xffffffffu, ok);
+            if (ok) ent[n + __popc(bal & ((1u << lane) - 1u))] = (short)(v41::WINDOW + e);
+            n += __popc(bal);
+        }
+        if (lane == 0) { nent = n; if (blockIdx.x == 0) nent_out[m] = n; }
+    }
+    __syncthreads();
+    const int ne = nent;
+    float* Em = E + (size_t)m * SA_MAXE * v41::HEAD_DIM;
+    for (int i = threadIdx.x; i < SA_K1_ROWS * v41::HEAD_DIM / 2; i += blockDim.x) {
+        const int r = k0 + i / (v41::HEAD_DIM / 2), j = i % (v41::HEAD_DIM / 2);
+        if (r >= ne) break;
+        const int e = ent[r];
+        float a, b;
+        if (e < v41::WINDOW) {
+            const float* src = ring_buf + (size_t)((pos - (v41::WINDOW - 1) + e) % ring) * v41::HEAD_DIM;
+            a = src[2 * j]; b = src[2 * j + 1];
+        } else {
+            const int t = ci[e - v41::WINDOW];
+            const uint8_t byte = cc[(size_t)t * 256 + j];
+            const float s = e4m3f(cs[(size_t)t * 32 + (2 * j) / v41::CKV_FP4_GRP]);
+            a = fp4f(byte & 15) * s; b = fp4f(byte >> 4) * s;
+        }
+        Em[(size_t)r * v41::HEAD_DIM + 2 * j] = a; Em[(size_t)r * v41::HEAD_DIM + 2 * j + 1] = b;
+    }
+}
+// K2: one warp per head over SA_K2_ECH entries; S[m][h][k] = warp_sum(fma chain) * scale
+__global__ void __launch_bounds__(256) k_sa_scores(float* S, const float* E, const int* nent, const float* q, float scale) {
+    const int m = blockIdx.z, h = blockIdx.x * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    const int ne = nent[m], k0 = blockIdx.y * SA_K2_ECH;
+    if (k0 >= ne) return;
+    const float* qh = q + ((size_t)m * v41::N_HEADS + h) * v41::HEAD_DIM;
+    float qr[16];
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) qr[i] = qh[lane + 32 * i];
+    const float* Em = E + (size_t)m * SA_MAXE * v41::HEAD_DIM;
+    float* Sh = S + ((size_t)m * v41::N_HEADS + h) * SA_MAXE;
+    const int k1 = min(ne, k0 + SA_K2_ECH);
+    for (int k = k0; k < k1; ++k) {
+        const float* row = Em + (size_t)k * v41::HEAD_DIM;
+        float d = 0.f;
+        #pragma unroll
+        for (int i = 0; i < 16; ++i) d = fmaf(qr[i], row[lane + 32 * i], d);
+        d = warp_sum(d) * scale;
+        if (lane == 0) Sh[k] = d;
+    }
+}
+// K3: SA_K3_HG heads x SA_K3_D dims per CTA; p, den and acc in entry order as in k_sparse_attn_c
+__global__ void __launch_bounds__(SA_K3_D) k_sa_out(float* o, const float* S, const float* E, const int* nent,
+                                                    const float* sink) {
+    const int m = blockIdx.z, h0 = blockIdx.x * SA_K3_HG, d = blockIdx.y * SA_K3_D + threadIdx.x;
+    const int ne = nent[m];
+    __shared__ float pb[SA_K3_HG][SA_MAXE];
+    __shared__ float pp[SA_K3_HG][SA_MAXE];
+    __shared__ float mxs[SA_K3_HG], dens[SA_K3_HG];
+    const float* Sm = S + (size_t)m * v41::N_HEADS * SA_MAXE;
+    // max per head (order-free), one warp-strided scan per head
+    for (int hh = 0; hh < SA_K3_HG; ++hh) {
+        float mx = -INFINITY;
+        for (int k = threadIdx.x; k < ne; k += blockDim.x) mx = fmaxf(mx, Sm[(size_t)(h0 + hh) * SA_MAXE + k]);
+        mx = warp_max(mx);
+        __shared__ float red[SA_K3_D / 32];
+        if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = mx;
+        __syncthreads();
+        if (threadIdx.x == 0) { float v = red[0]; for (int w = 1; w < SA_K3_D / 32; ++w) v = fmaxf(v, red[w]); mxs[hh] = fmaxf(v, -1e30f); }
+        __syncthreads();
+    }
+    for (int i = threadIdx.x; i < SA_K3_HG * ne; i += blockDim.x) {
+        const int hh = i / ne, k = i % ne;
+        const float p = expf(Sm[(size_t)(h0 + hh) * SA_MAXE + k] - mxs[hh]);
+        pp[hh][k] = p; pb[hh][k] = bf16r(p);
+    }
+    __syncthreads();
+    if (threadIdx.x < SA_K3_HG) {
+        const int hh = threadIdx.x;
+        float den = 0.f;
+        for (int k = 0; k < ne; ++k) den += pp[hh][k];
+        dens[hh] = den + expf(sink[h0 + hh] - mxs[hh]);
+    }
+    float acc[SA_K3_HG];
+    #pragma unroll
+    for (int hh = 0; hh < SA_K3_HG; ++hh) acc[hh] = 0.f;
+    const float* Em = E + (size_t)m * SA_MAXE * v41::HEAD_DIM + d;
+    for (int k = 0; k < ne; ++k) {
+        const float v = Em[(size_t)k * v41::HEAD_DIM];
+        #pragma unroll
+        for (int hh = 0; hh < SA_K3_HG; ++hh) acc[hh] = fmaf(pb[hh][k], v, acc[hh]);
+    }
+    __syncthreads();
+    #pragma unroll
+    for (int hh = 0; hh < SA_K3_HG; ++hh)
+        o[((size_t)m * v41::N_HEADS + h0 + hh) * v41::HEAD_DIM + d] = bf16r(acc[hh] / dens[hh]);
+}
 void sparse_attn(float* o, const float* q, const float* win_ring, int ring, const uint8_t* ccodes, const uint8_t* cscales,
                  const int* cidx, int ncomp, int coff, const float* sink, const int* d_pos, int M, float scale,
                  cudaStream_t st) {
@@ -447,6 +577,15 @@ void sparse_attn(float* o, const float* q, const float* win_ring, int ring, cons
     if (old) {
         k_sparse_attn<<<dim3(M, v41::N_HEADS / 8), 256, 0, st>>>(o, q, win_ring, ring, ccodes, cscales, cidx, ncomp, sink,
                                                                 d_pos, scale);
+        return;
+    }
+    if (g_sa_split < 0) { const char* e = getenv("V41_SA_SPLIT"); g_sa_split = (e && *e == '0') ? 0 : 1; }
+    if (g_sa_split && M <= g_sa_m) {
+        k_sa_gather<<<dim3(SA_MAXE / SA_K1_ROWS, M), 256, 0, st>>>(g_sa_e, g_sa_n, win_ring, ring, ccodes, cscales, cidx,
+                                                                   ncomp, d_pos);
+        k_sa_scores<<<dim3(v41::N_HEADS / 8, SA_MAXE / SA_K2_ECH, M), 256, 0, st>>>(g_sa_s, g_sa_e, g_sa_n, q, scale);
+        k_sa_out<<<dim3(v41::N_HEADS / SA_K3_HG, v41::HEAD_DIM / SA_K3_D, M), SA_K3_D, 0, st>>>(o, g_sa_s, g_sa_e, g_sa_n,
+                                                                                               sink);
         return;
     }
     constexpr int HPC = 4;

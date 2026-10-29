@@ -338,6 +338,7 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
     s.seqmax = seqmax; s.max_rows = max_rows;
     v41k::rope_set_tables();
     v41k::hc_reserve(max_rows);
+    v41k::sparse_attn_reserve(max_rows);
     v41k::v41k_init((size_t)1 << 22);
     s.ring.assign(N_LAYERS, nullptr);
     for (int L = 0; L < N_LAYERS; ++L) s.ring[L] = dalloc<float>(s, (size_t)State::RING * HEAD_DIM);

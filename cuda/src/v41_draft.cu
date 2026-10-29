@@ -237,6 +237,7 @@ void alloc_drafter(Drafter& D, int max_rows) {
     D.logits = dal<float>(D, (size_t)NB * VOCAB);
     D.mk_e = dal<float>(D, DSPARK_MARKOV_RANK); D.mk_bias = dal<float>(D, VOCAB);
     v41k::hc_reserve(R);
+    v41k::sparse_attn_reserve(R);
     CK(cudaDeviceSynchronize());
 }
 void reset_drafter(Drafter& D, cudaStream_t st) {
