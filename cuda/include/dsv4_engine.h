@@ -132,6 +132,10 @@ public:
     // Teacher forcing: prefill ids, then step each forced token; logits before each forced token
     // (forced.size() rows of VOCAB). Compares kernels by KL instead of by where greedy text diverges.
     std::vector<float> debug_forced_logits(const std::vector<int>& ids, const std::vector<int>& forced);
+    // Drafter taps (bf16 bits, [n - from, 3, dim]: the hc-mean entering each DSpark tap layer) of rows
+    // [from, n) from one teacher-forced prefill of ids -- the rows the drafter reads while decoding them
+    // (prefill == decode bitwise). Needs a loaded drafter (spec_k > 0 at load). Resets the context.
+    std::vector<uint16_t> debug_taps(const std::vector<int>& ids, int from);
 
 private:
     struct Impl;

@@ -22,10 +22,17 @@
 // re-prefilled and classified like --consistency (near-tie = reassociation at verify width M=K+1 vs
 // M=1, GROSS = a bug). JSON "spec": {"nospec": {...}, "k": [{k, tok_s, tok_per_verify, accept_hist,
 // identical, first_diff, diff_class, speedup}], "identity_gross"}. Exit 1 on any GROSS mismatch.
+// --trace-gen F --trace-dir DIR --spec K (drafter training data, D2): per jsonl line {id, domain, mode
+// raw|chat|thinking, ids | content}, the greedy continuation (--n tokens, speculative K: same ids), then
+// one teacher-forced prefill of prompt + continuation for the drafter taps of rows [gen_start - 128, end).
+// Appends DIR/taps.bin (bf16 [T, 3, dim]), DIR/tokens.bin (int32 [T]), DIR/seqs.jsonl {id, domain, mode,
+// offset, length, gen_start, prompt_tokens}; resumes after the last complete seqs line. ops/zenith/d2_pack.py
+// turns it into s11's taps_<set>/ (L37/L38/L39.npy, tokens.npy, meta.json).
 // --chat-file F (ops/bench/heldout_prompts.jsonl): every line's prompt in one load -- greedy no-spec, then
 // each --spec-sweep K; per-prompt and per-domain tok/s and tok/verify, rows to --json. The held-out set
 // for acceptance and head-shortlist work; never the speed prompt.
 #include "dsv4_engine.h"
+#include "v41_config.h"
 #include "encoding_dsv41.h"
 #include "tokenizer_dsv4.h"
 #include <algorithm>
@@ -34,6 +41,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <unistd.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -53,7 +61,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
     ec.seqmax = 8192; ec.ext_chunk = 256;            // prefill chunk (8k prefill: 64 -> 79.4, 256 -> 88.0 tok/s, ids identical)
-    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, chat_file;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, chat_file, trace_gen, trace_dir;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -67,6 +75,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt") prompt = next();
         else if (a == "--chat") chat = next();
         else if (a == "--chat-file") chat_file = next();
+        else if (a == "--trace-gen") trace_gen = next();
+        else if (a == "--trace-dir") trace_dir = next();
         else if (a == "--thinking") thinking = true;
         else if (a == "--ids") ids_arg = next();
         else if (a == "--ids-file") { std::ifstream f(next()); std::stringstream ss; ss << f.rdbuf(); ids_arg = ss.str(); }
@@ -136,6 +146,50 @@ int main(int argc, char** argv) {
         eng.reset();
     }
     eng.set_prefix_cache(false);
+    if (!trace_gen.empty()) {
+        if (trace_dir.empty() || ec.spec_k < 1) { fprintf(stderr, "--trace-gen needs --trace-dir and --spec K\n"); return 2; }
+        const int row = 3 * v41::DIM, W = v41::WINDOW;
+        std::map<std::string, int> done; long T = 0;
+        { std::ifstream fs(trace_dir + "/seqs.jsonl"); std::string l;
+          while (std::getline(fs, l)) { if (l.empty()) continue; const json j = json::parse(l); done[j["id"]] = 1;
+                                        T = std::max(T, j["offset"].get<long>() + j["length"].get<long>()); } }
+        // drop a partly written tail (a seq whose meta line never landed)
+        if (truncate((trace_dir + "/taps.bin").c_str(), (off_t)T * row * 2) && T) { perror("truncate taps.bin"); return 2; }
+        if (truncate((trace_dir + "/tokens.bin").c_str(), (off_t)T * 4) && T) { perror("truncate tokens.bin"); return 2; }
+        std::ofstream ft(trace_dir + "/taps.bin", std::ios::binary | std::ios::app), fk(trace_dir + "/tokens.bin", std::ios::binary | std::ios::app),
+                      fm(trace_dir + "/seqs.jsonl", std::ios::app);
+        std::ifstream fi(trace_gen); std::string line; int cnt = 0; double gen_tok = 0, gen_s = 0;
+        while (std::getline(fi, line)) {
+            if (line.empty()) continue;
+            const json q = json::parse(line);
+            const std::string id = q["id"], mode = q.value("mode", std::string("chat"));
+            if (done.count(id)) continue;
+            std::vector<int> pid;
+            if (q.contains("ids")) pid = q["ids"].get<std::vector<int>>();
+            else pid = tok.encode(dsv41enc::encode_messages(json::array({json{{"role", "user"}, {"content", q["content"]}}}),
+                                                            mode == "thinking" ? "thinking" : "chat"));
+            std::vector<int> out;
+            eng.set_spec_k(ec.spec_k); eng.reset();
+            const dsv4srv::GenStats g = eng.generate(pid, gp, [&](int t) { out.push_back(t); return true; });
+            std::vector<int> all(pid); all.insert(all.end(), out.begin(), out.end());
+            const int gs = (int)pid.size(), from = std::max(0, gs - W);
+            const std::vector<uint16_t> taps = eng.debug_taps(all, from);
+            const int len = (int)all.size() - from;
+            ft.write(reinterpret_cast<const char*>(taps.data()), (std::streamsize)taps.size() * 2);
+            fk.write(reinterpret_cast<const char*>(all.data() + from), (std::streamsize)len * 4);
+            ft.flush(); fk.flush();
+            if (!ft || !fk) { fprintf(stderr, "[trace] write failed\n"); return 2; }
+            fm << json{{"id", id}, {"domain", q.value("domain", std::string("?"))}, {"mode", mode}, {"offset", T}, {"length", len},
+                       {"gen_start", gs - from}, {"prompt_tokens", gs}, {"gen_tokens", (int)out.size()}, {"tok_s", g.tok_per_s},
+                       {"tok_per_verify", g.tok_per_verify}}.dump() << "\n";
+            fm.flush();
+            T += len; ++cnt; gen_tok += out.size(); gen_s += g.decode_ms / 1e3;
+            if (cnt % 10 == 1) printf("[trace] %d done (+%zu resumed): %s %s %d+%zu tok, %.1f tok/s, %.2f/verify, T=%ld\n", cnt, done.size(),
+                                      id.c_str(), mode.c_str(), gs, out.size(), g.tok_per_s, g.tok_per_verify, T), fflush(stdout);
+        }
+        printf("[trace] %d new seqs, %.0f gen tok at %.1f tok/s; T=%ld rows\n", cnt, gen_tok, gen_s > 0 ? gen_tok / gen_s : 0.0, T);
+        return 0;
+    }
     if (!chat_file.empty()) {
         // held-out set: one jsonl line per prompt {id, domain, content[, file]} ("file" is prepended, relative
         // to the cwd); greedy no-spec, then each --spec-sweep K on the same prompt; per-prompt rows to --json

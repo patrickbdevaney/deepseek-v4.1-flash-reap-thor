@@ -226,7 +226,7 @@ class Taps:
     """s11_tapdump output: tokens [T], seq offsets, gen_start per seq, taps L37/38/39 bf16 [T, dim]."""
 
     def __init__(self, which: str):
-        d = OUT / f"taps_{which}"
+        d = Path(os.environ.get("S11_TAPS_ROOT", OUT)) / f"taps_{which}"   # D2 (ops/zenith/d2_pack.py) sets it
         self.meta = json.load(open(d / "meta.json"))
         if not self.meta.get("complete"):
             raise SystemExit(f"{d}: tapdump not complete")

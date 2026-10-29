@@ -488,6 +488,36 @@ std::vector<float> Engine::debug_prefix_logits(const std::vector<int>& ids) {
     return out;
 }
 
+std::vector<uint16_t> Engine::debug_taps(const std::vector<int>& ids, int from) {
+    Impl& I = *p_;
+    if (!I.D) throw std::runtime_error("debug_taps: no drafter loaded");
+    I.reset_all(); I.ctx.clear(); I.kv_len = 0;
+    const int n = (int)ids.size(), row = 3 * v41::DIM;
+    from = std::max(0, std::min(from, n));
+    std::vector<uint16_t> out((size_t)(n - from) * row);
+    std::vector<float> buf((size_t)I.chunk * row);
+    size_t odd = 0;
+    for (int c0 = 0; c0 < n; c0 += I.chunk) {         // Impl::prefill's chunk loop, taps copied per chunk
+        const int M = std::min(I.chunk, n - c0);
+        I.stage_rows(ids.data() + c0, M, c0);
+        v41m::embed_rows(I.m, I.s, M, I.st);
+        I.reap();
+        v41m::forward_layers(I.m, I.s, 0, v41::N_LAYERS - 1, M, n, c0, I.eg, I.st, I.hook_for(M), I.dec_margin);
+        const int lo = std::max(c0, from);
+        if (lo >= c0 + M) continue;
+        const size_t cnt = (size_t)(c0 + M - lo) * row;
+        CK(cudaMemcpyAsync(buf.data(), I.D->taps + (size_t)(lo - c0) * row, cnt * 4, cudaMemcpyDeviceToHost, I.st));
+        CK(cudaStreamSynchronize(I.st));
+        uint16_t* o = out.data() + (size_t)(lo - from) * row;
+        for (size_t i = 0; i < cnt; ++i) {            // bf16r values: the low half is zero
+            uint32_t u; std::memcpy(&u, &buf[i], 4);
+            odd += (u & 0xFFFF) != 0; o[i] = (uint16_t)(u >> 16);
+        }
+    }
+    if (odd) throw std::runtime_error("debug_taps: " + std::to_string(odd) + " tap values are not bf16");
+    I.reset_all(); I.ctx.clear(); I.kv_len = 0;
+    return out;
+}
 std::vector<float> Engine::debug_forced_logits(const std::vector<int>& ids, const std::vector<int>& forced) {
     Impl& I = *p_;
     I.reset_all();
