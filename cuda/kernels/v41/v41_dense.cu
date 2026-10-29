@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -310,9 +311,9 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     const int nk_max = ((nsb + ks - 1) / ks) * 256;
     const size_t smem = (size_t)mt * ((v41g::nvm_stage_bytes(nk_max) + 15) & ~(size_t)15);
     dim3 grid(ntile, (M + mt - 1) / mt, ks);
-    #define V41_NVM(MTV) do { auto kf = v41g::k_nvm<MTV>; \
     static const bool ks_fuse_env = [] { const char* e = getenv("V41_KSUM_FUSE"); return !(e && *e == '0'); }();
     const bool fuse = ks > 1 && ks_fuse_env && kcnt && (size_t)grid.x * grid.y <= (size_t)KS_TILES;
+    #define V41_NVM(MTV) do { auto kf = v41g::k_nvm<MTV>; \
         if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part, fuse ? kcnt : nullptr); } while (0)
     switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; default: V41_NVM(8); }
@@ -716,5 +717,100 @@ void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t*
     XSrc X; X.xf = x; X.ldx = K;
     DecNVFP4 d{W, S, g, K};
     launch_dense(y, X, d, M, N, K, 1, false, 1.0f, st);
+}
+
+// --------------------------------------------------------------------------- two-stage greedy head
+// Greedy decode needs only the argmax of x . head^T, not the 129280 logits. Stage 1 scores every row
+// with the NVFP4 copy (a quarter of the bytes); stage 2 recomputes, with the bf16 weights and exactly
+// k_dense's M = 1 arithmetic (same chunk order, same fmaf chain, same warp_sum: bit for bit the full
+// head's logit), every row whose approximate logit is within `delta` of the approximate maximum, and
+// takes the argmax of those (ties to the lower index, as k_argmax). The exact winner is in the
+// shortlist whenever |err| at it plus |err| at the approximate winner is <= delta; delta is set from
+// the measured error near the top (V41_HEAD_PROBE). More than `cap` candidates sets fb[r] and the host
+// recomputes that row with the full head.
+__device__ __forceinline__ int h2_key(float f) { const int i = __float_as_int(f); return i >= 0 ? i : i ^ 0x7fffffff; }
+__device__ __forceinline__ float h2_val(int k) { return __int_as_float(k >= 0 ? k : k ^ 0x7fffffff); }
+// grid (H2_BLK, n); hk[r] is INT_MIN on entry (k_h2_pick leaves it so)
+static constexpr int H2_BLK = 64;
+__global__ void k_h2_max(int* hk, const float* al, int N) {
+    const float* a = al + (size_t)blockIdx.y * N;
+    float m = -INFINITY;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += gridDim.x * blockDim.x) m = fmaxf(m, a[i]);
+    m = warp_max(m);
+    if ((threadIdx.x & 31) == 0) atomicMax(hk + blockIdx.y, h2_key(m));
+}
+__global__ void k_h2_sel(int* list, int* cnt, const int* hk, const float* al, int N, float delta, int cap) {
+    const float* a = al + (size_t)blockIdx.y * N;
+    const float thr = h2_val(hk[blockIdx.y]) - delta;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += gridDim.x * blockDim.x)
+        if (a[i] >= thr) { const int p = atomicAdd(cnt + blockIdx.y, 1); if (p < cap) list[(size_t)blockIdx.y * cap + p] = i; }
+}
+// grid (cap/8, n), 256 threads: warp w rescoring candidate blockIdx.x*8 + w of row blockIdx.y
+template <class Dec>
+__global__ void __launch_bounds__(256) k_h2_rescore(float* resc, const float* x, Dec dec, const int* list, const int* cnt,
+                                                    int cap, int K) {
+    extern __shared__ float4 xs4[];
+    const int r = blockIdx.y, n = min(cnt[r], cap);
+    if (blockIdx.x * 8 >= n) return;
+    XSrc X; X.xf = x + (size_t)r * K; X.ldx = K;
+    stage_row(xs4, X, 0, 0, K);
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, j = blockIdx.x * 8 + warp, nch = K / 32;
+    if (j >= n) return;
+    const int row = list[(size_t)r * cap + j];
+    float acc = 0.f;
+    for (int cb = 0; cb < nch; cb += 32) {
+        const int c = cb + lane, cc = min(c, nch - 1);
+        float w[1][32];
+        dec.load(row, cc, w[0]);
+        float a[1][1] = {{0.f}};
+        dot_chunk_rb<1, 1>(a, w, xs4, cc, nch);
+        if (c < nch) acc += a[0][0];
+    }
+    const float v = warp_sum(acc);
+    if (lane == 0) resc[(size_t)r * cap + j] = v * 1.0f;
+}
+// grid n, 256 threads: argmax of the rescored candidates -> out[r * ostride]; resets hk/cnt for the next call
+__global__ void k_h2_pick(int* out, int ostride, int* fb, int* hk, int* cnt, const int* list, const float* resc, int cap) {
+    const int r = blockIdx.x, c = cnt[r], n = min(c, cap);
+    float bv = -INFINITY; int bi = 0x7fffffff;
+    for (int j = threadIdx.x; j < n; j += blockDim.x) {
+        const float v = resc[(size_t)r * cap + j]; const int i = list[(size_t)r * cap + j];
+        if (v > bv || (v == bv && i < bi)) { bv = v; bi = i; }
+    }
+    __shared__ float sv[256]; __shared__ int si[256];
+    sv[threadIdx.x] = bv; si[threadIdx.x] = bi; __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) { const float v = sv[threadIdx.x + s]; const int j = si[threadIdx.x + s];
+            if (v > sv[threadIdx.x] || (v == sv[threadIdx.x] && j < si[threadIdx.x])) { sv[threadIdx.x] = v; si[threadIdx.x] = j; } }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { out[(size_t)r * ostride] = si[0]; fb[r] = c > cap || c == 0; hk[r] = INT_MIN; cnt[r] = 0; }
+}
+void head2_argmax(int* out, int ostride, int* fb, const float* x, int n, const uint16_t* head, const uint8_t* h4,
+                  const uint8_t* h4s, float h4g, H2Scr& sc, int N, int K, cudaStream_t st) {
+    nvfp4_linear_f32(sc.alog, x, h4, h4s, h4g, n, N, K, st);
+    k_h2_max<<<dim3(H2_BLK, n), 256, 0, st>>>(sc.hk, sc.alog, N);
+    k_h2_sel<<<dim3(H2_BLK, n), 256, 0, st>>>(sc.list, sc.cnt, sc.hk, sc.alog, N, sc.delta, sc.cap);
+    const size_t smem = (size_t)K * sizeof(float);
+    if (perm_map().count(head)) {
+        auto kf = k_h2_rescore<DecBF16P>;
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+        kf<<<dim3(sc.cap / 8, n), 256, smem, st>>>(sc.resc, x, DecBF16P{head, K}, sc.list, sc.cnt, sc.cap, K);
+    } else {
+        auto kf = k_h2_rescore<DecBF16>;
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+        kf<<<dim3(sc.cap / 8, n), 256, smem, st>>>(sc.resc, x, DecBF16{head, K}, sc.list, sc.cnt, sc.cap, K);
+    }
+    k_h2_pick<<<n, 256, 0, st>>>(out, ostride, fb, sc.hk, sc.cnt, sc.list, sc.resc, sc.cap);
+}
+bool H2Scr::alloc(int rows, int N, int cap_, float delta_) {
+    cap = cap_; delta = delta_;
+    if (cudaMalloc(&alog, (size_t)rows * N * 4) || cudaMalloc(&hk, rows * 4) || cudaMalloc(&cnt, rows * 4) ||
+        cudaMalloc(&list, (size_t)rows * cap * 4) || cudaMalloc(&resc, (size_t)rows * cap * 4)) return false;
+    std::vector<int> mn(rows, INT_MIN);
+    cudaMemcpy(hk, mn.data(), rows * 4, cudaMemcpyHostToDevice);
+    cudaMemset(cnt, 0, rows * 4); cudaMemset(list, 0, (size_t)rows * cap * 4);
+    return true;
 }
 } // namespace v41k

@@ -4,7 +4,7 @@ H2	0	harness	-	-	DONE	all	0	1	0	-	ops/bench/ab_bin.sh: paired A/B of two binarie
 H3	0	harness	-	-	DONE	all	0	1	0	-	v41_decode --score + ops/bench/score_{arms.sh,cmp.py}: teacher-forced logits; cmp = T0 proof, KL = T1/T2 measure
 H4	0	harness	-	-	TODO	all	0	1	1	-	ops/zenith/gpuq.sh: one GPU lane (pgrep -x v41_decode guard, drop_caches, receipts)
 H5	0	harness	-	-	TODO	all	0	1	1	-	RATCHET.tsv + ratchet.py: max-only banking of AR tok/s, spec best-K, 8k prefill, resident GiB
-H6	0	harness	-	-	TODO	all	0	1	2	-	held-out multi-domain prompt set (chat/code/math/agentic/long), licence-clean; never the speed prompt
+H6	0	harness	-	-	DONE	all	0	1	2	-	held-out multi-domain prompt set (chat/code/math/agentic/long), licence-clean; never the speed prompt; DONE: ops/bench/heldout_prompts.jsonl (27 prompts, 5 domains, self-authored; long = frozen copies of our own docs/code) + v41_decode --chat-file
 A1	1	kquant_experts	T1	-	DONE	ar_ceiling	2.0	1	0	gate_kq_fast	335135c fp8 mma K-quant experts: 164->182 GB/s in-engine, 200 in gate
 A1b	1	kquant_experts	T1	A1	TODO	ar_ceiling	1.5	0.6	4	gate_kq_fast	k_kqm: next-superblock prefetch, 2 tiles/warp (B reuse), occupancy sweep; target 210 GB/s in-engine
 A2	1	nvfp4_dense	T0	-	TODO	ar_ceiling	1.2	0.6	4	bench_dense	small-N shapes: wkv 116, wq_a 158, sh_w2 143 GB/s; fuse wq_a||wkv (same x), RB/LPR per shape
@@ -17,7 +17,7 @@ A4	3	launches	T0	A3d,A3e	TODO	ar_ceiling	4.0	0.3	20	score cmp	persistent decode 
 A5	1	sparse_attn	T0	-	TODO	ar_ceiling	1.0	0.6	4	gate_sa_split	fuse gather+scores+out into one launch (2.16 ms at 12 GB/s)
 A6	1	host	T0	-	TODO	ar_ceiling	0.2	0.7	2	score cmp	210 us argmax->embed host gap: overlap sync/sample/hash/submit with graph tail
 B1	3	bf16_head	T2	H6	TODO	head_fp4	4.4	0.6	3	score_cmp KL budget	SEPARATE NVFP4 head copy for AR built at load from the bf16 master (drafter's head4 already exists: share it); bf16 master untouched; opt-in env; budget d_kl32 <= +0.018
-B2	3	bf16_head	T0	B1,H6	TODO	head_fp4	3.9	0.7	5	shortlist recall = 100% on held-out	two-stage head: NVFP4 shortlist (top-64) + exact bf16 rescore of those rows -> greedy argmax exact; sampling inside shortlist (T1); keeps ~90% of B1's saving with no greedy change
+B2	3	bf16_head	T0e	B1,H6	DONE	head_fp4	3.9	0.7	5	shortlist recall = 100% on held-out	two-stage head: NVFP4 shortlist (top-64) + exact bf16 rescore of those rows -> greedy argmax exact; sampling inside shortlist (T1); keeps ~90% of B1's saving with no greedy change; DONE 2026-10-29: shortlist = approx max - 4 logits (not top-64), rescore bit-identical to k_dense; paired AR 22.24 -> 24.52 (+10.3%); held-out 27/27 identical, 0 fallbacks
 S1	2	spec	-	-	DONE	spec	0	1	0	-	spec round profile (ops/zenith/spec_round.py)
 S3	2	spec	T0	S1	DONE	spec	12	1	0	spec identity	draft 24->12 ms: K slots only + NVFP4 draft head
 S4	2	spec	T0	A3c	TODO	spec	10	0.5	4	spec identity	verify round: re-profile after A1/A3; verify dense at MT=K+1, mma experts MT up to 8 per unit

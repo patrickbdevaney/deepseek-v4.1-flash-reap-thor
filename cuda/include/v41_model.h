@@ -78,6 +78,7 @@ struct Model {
     std::vector<LayerW> layers;          // index = layer id; only `loaded` ones are valid
     std::vector<bool> loaded;
     const uint16_t *embed = nullptr, *head = nullptr, *norm = nullptr;
+    uint8_t *head4 = nullptr, *head4s = nullptr; float head4g = 0.f;   // NVFP4 copy of head (enable_head2; the drafter shares it)
     std::string quant_format = "mxfp4";
     int n_routed = 0;
 };
@@ -126,6 +127,7 @@ struct State {
     float *rw = nullptr; int* ridx = nullptr; float* y = nullptr; float* rscr = nullptr;
     float *eg_e = nullptr, *eg_kv = nullptr;
     float *logits = nullptr;                          // [max_rows, VOCAB]: head_row writes row 0, head_rows rows 0..n-1
+    v41k::H2Scr hd2; int* d_hfb = nullptr;             // two-stage greedy head scratch, per-row fallback flags
     int* d_argmax = nullptr;                          // [max_rows] argmax of each head_rows row
     uint8_t *xq = nullptr; float* xs = nullptr;       // act_quant scratch, largest K x max_rows
     uint8_t *pk = nullptr, *ps = nullptr;             // packed fp4 scratch
@@ -175,6 +177,13 @@ int forward_layers(const Model& m, State& s, int lo, int hi, int M, int prompt_e
 void embed_rows(const Model& m, State& s, int M, cudaStream_t st);
 // final collapse + norm + head for row r -> s.logits [129280] fp32
 void head_row(const Model& m, State& s, int r, cudaStream_t st);
+// Two-stage greedy head (v41k::head2_argmax): argmax only, s.logits untouched. head_row_greedy -> *d_tok,
+// head_rows_greedy -> s.d_argmax[0..n); s.d_hfb[r] = 1 means row r must be redone by head_full_argmax.
+// enable_head2 builds the NVFP4 head copy and the scratch (once, before any graph capture).
+void enable_head2(Model& m, State& s, int cap, float delta, cudaStream_t st);
+void head_row_greedy(const Model& m, State& s, int r, int* d_tok, cudaStream_t st);
+void head_rows_greedy(const Model& m, State& s, int r0, int n, cudaStream_t st);
+void head_full_argmax(const Model& m, State& s, int row, int* d_out, cudaStream_t st);   // s.x row already normed
 // greedy argmax over s.logits into *d_tok
 void argmax_logits(const State& s, int* d_tok, cudaStream_t st);
 // Speculative verify: final collapse + norm + head for rows [r0, r0+n) -> s.logits rows 0..n-1, and their

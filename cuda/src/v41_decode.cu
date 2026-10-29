@@ -22,6 +22,9 @@
 // re-prefilled and classified like --consistency (near-tie = reassociation at verify width M=K+1 vs
 // M=1, GROSS = a bug). JSON "spec": {"nospec": {...}, "k": [{k, tok_s, tok_per_verify, accept_hist,
 // identical, first_diff, diff_class, speedup}], "identity_gross"}. Exit 1 on any GROSS mismatch.
+// --chat-file F (ops/bench/heldout_prompts.jsonl): every line's prompt in one load -- greedy no-spec, then
+// each --spec-sweep K; per-prompt and per-domain tok/s and tok/verify, rows to --json. The held-out set
+// for acceptance and head-shortlist work; never the speed prompt.
 #include "dsv4_engine.h"
 #include "encoding_dsv41.h"
 #include "tokenizer_dsv4.h"
@@ -30,6 +33,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -49,7 +53,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
     ec.seqmax = 8192; ec.ext_chunk = 64;
-    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, chat_file;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -62,6 +66,7 @@ int main(int argc, char** argv) {
         else if (a == "--keepset") ec.keepset = next();
         else if (a == "--prompt") prompt = next();
         else if (a == "--chat") chat = next();
+        else if (a == "--chat-file") chat_file = next();
         else if (a == "--thinking") thinking = true;
         else if (a == "--ids") ids_arg = next();
         else if (a == "--ids-file") { std::ifstream f(next()); std::stringstream ss; ss << f.rdbuf(); ids_arg = ss.str(); }
@@ -131,6 +136,56 @@ int main(int argc, char** argv) {
         eng.reset();
     }
     eng.set_prefix_cache(false);
+    if (!chat_file.empty()) {
+        // held-out set: one jsonl line per prompt {id, domain, content[, file]} ("file" is prepended, relative
+        // to the cwd); greedy no-spec, then each --spec-sweep K on the same prompt; per-prompt rows to --json
+        std::ifstream fi(chat_file); std::string line; json rows = json::array();
+        std::map<std::string, std::vector<double>> dom_rate;
+        std::map<std::string, std::map<int, std::pair<double, double>>> dom_k;   // domain -> K -> (sum tok/s ratio, sum tok/verify)
+        int gross = 0, cnt = 0;
+        while (std::getline(fi, line)) {
+            if (line.empty()) continue;
+            const json q = json::parse(line);
+            std::string content = q["content"];
+            if (q.contains("file")) { std::ifstream ff(q["file"].get<std::string>()); std::stringstream ss; ss << ff.rdbuf(); content = ss.str() + "\n\n" + content; }
+            const std::vector<int> pid = tok.encode(dsv41enc::encode_messages(json::array({json{{"role", "user"}, {"content", content}}}), thinking ? "thinking" : "chat"));
+            const std::string dom = q["domain"];
+            std::vector<int> ref;
+            eng.set_spec_k(0); eng.reset();
+            const dsv4srv::GenStats g0 = eng.generate(pid, gp, [&](int t) { ref.push_back(t); return true; });
+            json row{{"id", q["id"]}, {"domain", dom}, {"prompt_tokens", (int)pid.size()}, {"tok_s", g0.tok_per_s}, {"ids", ref},
+                     {"head2_fallbacks", g0.head2_fallbacks}};
+            dom_rate[dom].push_back(g0.tok_per_s);
+            std::string ks_txt;
+            json ks = json::array();
+            for (int k : sweep) {
+                std::vector<int> out;
+                eng.set_spec_k(k); eng.reset();
+                const dsv4srv::GenStats g = eng.generate(pid, gp, [&](int t) { out.push_back(t); return true; });
+                int diff = -1;
+                for (size_t i = 0; i < std::max(out.size(), ref.size()); ++i)
+                    if (i >= out.size() || i >= ref.size() || out[i] != ref[i]) { diff = (int)i; break; }
+                if (diff >= 0) ++gross;                     // near-tie classification lives in --spec-sweep
+                const double ratio = g0.tok_per_s > 0 ? g.tok_per_s / g0.tok_per_s : 0.0;
+                dom_k[dom][k].first += ratio; dom_k[dom][k].second += g.tok_per_verify;
+                ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tok_per_verify", g.tok_per_verify}, {"first_diff", diff}});
+                char b[96]; snprintf(b, sizeof b, "  K=%d %.2f (x%.3f, %.2f/verify%s)", k, g.tok_per_s, ratio, g.tok_per_verify, diff >= 0 ? ", DIFF" : "");
+                ks_txt += b;
+            }
+            row["spec"] = ks; rows.push_back(row); ++cnt;
+            printf("[held] %-9s %5zu tok  no-spec %.2f tok/s%s%s\n", q["id"].get<std::string>().c_str(), pid.size(), g0.tok_per_s,
+                   g0.head2_fallbacks ? (" (head2 fallbacks " + std::to_string(g0.head2_fallbacks) + ")").c_str() : "", ks_txt.c_str());
+        }
+        for (auto& [d, v] : dom_rate) {
+            double m = 0; for (double x : v) m += x; m /= v.size();
+            std::string t;
+            for (auto& [k, pr] : dom_k[d]) { char b[64]; snprintf(b, sizeof b, "  K=%d x%.3f %.2f/verify", k, pr.first / v.size(), pr.second / v.size()); t += b; }
+            printf("[held] domain %-8s n=%zu  no-spec %.2f tok/s%s\n", d.c_str(), v.size(), m, t.c_str());
+        }
+        printf("[held] %d prompts, %d spec divergence(s)\n", cnt, gross);
+        if (!json_out.empty()) std::ofstream(json_out) << json{{"rows", rows}, {"n", n}, {"spec_divergences", gross}}.dump(1);
+        return 0;
+    }
     std::vector<int> first;
     std::vector<double> rates;
     bool deterministic = true;
@@ -143,9 +198,10 @@ int main(int argc, char** argv) {
             first = out;
             printf("[v41] %s\n", tok.decode(out).c_str());
         } else if (gp.temperature <= 0.f && out != first) deterministic = false;
-        printf("[v41] run %d: prefill %d tok %.1f ms (%.1f tok/s)  decode %d tok %.1f ms = %.2f tok/s\n", r,
+        printf("[v41] run %d: prefill %d tok %.1f ms (%.1f tok/s)  decode %d tok %.1f ms = %.2f tok/s%s\n", r,
                last.prompt_tokens, last.prefill_ms, last.prompt_tokens / (last.prefill_ms / 1e3),
-               last.completion_tokens, last.decode_ms, last.tok_per_s);
+               last.completion_tokens, last.decode_ms, last.tok_per_s,
+               last.head2_fallbacks ? ("  head2 fallbacks " + std::to_string(last.head2_fallbacks)).c_str() : "");
     }
     double mean = 0, mn = 1e30, mx = 0;
     for (double v : rates) { mean += v; mn = std::min(mn, v); mx = std::max(mx, v); }

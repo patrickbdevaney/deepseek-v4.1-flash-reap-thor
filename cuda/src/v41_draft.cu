@@ -244,6 +244,11 @@ void prepare_draft_head(const Model& m, Drafter& D, cudaStream_t st) {
     // default on (spec sweep 2026-10-29: same tok/verify at every K, round faster, K=2 0.971x -> 1.017x)
     const char* e = getenv("V41_DRAFT_HEAD_FP4");
     if (e && *e == '0') return;
+    if (m.head4) {                                   // the target's two-stage head built the same copy
+        D.head4 = m.head4; D.head4s = m.head4s; D.head4g = m.head4g;
+        printf("[draft] head NVFP4 copy shared with the target's two-stage head\n");
+        return;
+    }
     D.head4 = dal<uint8_t>(D, (size_t)VOCAB * DIM / 2);
     D.head4s = dal<uint8_t>(D, (size_t)VOCAB * DIM / 16);
     D.head4g = v41k::nvfp4_from_bf16(D.head4, D.head4s, m.head, VOCAB, DIM, v41k::bf16_permuted(m.head), st);

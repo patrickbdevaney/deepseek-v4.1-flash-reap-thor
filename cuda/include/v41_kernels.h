@@ -41,6 +41,16 @@ bool bf16_permuted(const void* W);   // W was registered by bf16_permute
 // through bf16_permute; returns the global scale g. nvfp4_linear_f32: y[M,N] = x[M,K] (fp32) . W^T.
 float nvfp4_from_bf16(uint8_t* W, uint8_t* S, const uint16_t* src, int N, int K, bool permuted, cudaStream_t st);
 void nvfp4_linear_f32(float* y, const float* x, const uint8_t* W, const uint8_t* S, float g, int M, int N, int K, cudaStream_t st);
+// Two-stage greedy head: NVFP4 scores, then the bf16 head's exact logit (bit-identical to bf16_linear,
+// M = 1 or any M) for every row within delta of the approximate max; argmax of row r -> out[r * ostride].
+// fb[r] = 1 when more than cap rows qualified (out[r] is then not the argmax: recompute with the full head).
+struct H2Scr {
+    float* alog = nullptr; int* hk = nullptr; int* cnt = nullptr; int* list = nullptr; float* resc = nullptr;
+    int cap = 0; float delta = 0.f;
+    bool alloc(int rows, int N, int cap, float delta);
+};
+void head2_argmax(int* out, int ostride, int* fb, const float* x, int n, const uint16_t* head, const uint8_t* h4,
+                  const uint8_t* h4s, float h4g, H2Scr& sc, int N, int K, cudaStream_t st);
 void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int K,
                  bool round_bf16, cudaStream_t st, float out_scale = 1.0f);
 // y = bf16(w * x * rsqrt(mean(x^2) + eps)); w bf16 or null. rows independent.

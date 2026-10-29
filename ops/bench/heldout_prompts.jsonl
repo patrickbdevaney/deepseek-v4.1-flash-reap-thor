@@ -1,0 +1,27 @@
+{"id": "chat00", "domain": "chat", "content": "Explain to a curious teenager why the sky looks blue during the day but red at sunset."}
+{"id": "chat01", "domain": "chat", "content": "My houseplant's leaves are turning yellow at the edges. What are the most likely causes and how do I check each one?"}
+{"id": "chat02", "domain": "chat", "content": "Write a warm, two-paragraph thank-you note to a neighbour who looked after my cat for a week."}
+{"id": "chat03", "domain": "chat", "content": "What are the main differences between a lease and a rental agreement? Keep it practical."}
+{"id": "chat04", "domain": "chat", "content": "Give me a three-day itinerary for a first visit to Lisbon on a modest budget."}
+{"id": "chat05", "domain": "chat", "content": "Summarize the causes of the French Revolution in about 150 words."}
+{"id": "code06", "domain": "code", "content": "Write a Python function that merges overlapping intervals in a list of [start, end] pairs, with a short docstring and two test cases."}
+{"id": "code07", "domain": "code", "content": "In C, implement a ring buffer of fixed capacity with push, pop and is_full, and explain the full/empty ambiguity."}
+{"id": "code08", "domain": "code", "content": "Here is a bug: `for i in range(len(xs)): if xs[i] == target: xs.remove(xs[i])` raises IndexError. Explain why and fix it."}
+{"id": "code09", "domain": "code", "content": "Write a SQL query that returns, for each customer, their most recent order date and the total amount they spent in 2025."}
+{"id": "code10", "domain": "code", "content": "Implement a thread-safe LRU cache in Rust with get and put, using a HashMap and a doubly linked list or an equivalent crate-free design."}
+{"id": "code11", "domain": "code", "content": "Write a bash one-liner that finds the 10 largest files under the current directory, human-readable sizes, excluding .git."}
+{"id": "math12", "domain": "math", "content": "Solve for x: 3x^2 - 12x + 9 = 0. Show the steps."}
+{"id": "math13", "domain": "math", "content": "A train leaves at 9:40 travelling 84 km/h; a second leaves the same station at 10:10 at 105 km/h on the same track. When does the second catch the first?"}
+{"id": "math14", "domain": "math", "content": "Prove that the square root of 2 is irrational."}
+{"id": "math15", "domain": "math", "content": "What is the sum of all integers from 1 to 1000 that are divisible by 3 or 5?"}
+{"id": "math16", "domain": "math", "content": "Compute the derivative of f(x) = x^3 * ln(x) and find where it is zero for x > 0."}
+{"id": "math17", "domain": "math", "content": "A bag has 5 red and 7 blue marbles. Two are drawn without replacement. What is the probability that they are different colours?"}
+{"id": "agentic18", "domain": "agentic", "content": "You have tools search(query) and fetch(url). Plan, step by step, how you would find the current population of the three largest cities in Kenya, and write the first tool call as JSON."}
+{"id": "agentic19", "domain": "agentic", "content": "You are a shell agent. The user says: 'my disk is full, find what is using space in /var and suggest safe cleanups'. List the commands you would run in order and why, without running anything destructive."}
+{"id": "agentic20", "domain": "agentic", "content": "Given the tool schema {\"name\": \"get_weather\", \"parameters\": {\"city\": \"string\", \"unit\": \"celsius|fahrenheit\"}}, respond to: 'Should I bring an umbrella to Osaka tomorrow?' with the tool call you would make and how you would use the result."}
+{"id": "agentic21", "domain": "agentic", "content": "You are coordinating three sub-agents to migrate a small web app from Flask to FastAPI. Write the task breakdown, what each sub-agent receives, and how you would verify the migration."}
+{"id": "agentic22", "domain": "agentic", "content": "A CI job fails with 'ModuleNotFoundError: No module named yaml' only on the Linux runner. Describe a debugging plan with the exact checks you would make."}
+{"id": "agentic23", "domain": "agentic", "content": "Draft a JSON plan with steps, tools and success criteria for an agent that books the cheapest refundable train ticket from Milan to Zurich next Friday."}
+{"id": "long0", "domain": "long", "file": "ops/bench/heldout/long_zenith.txt", "content": "Summarize the document above in five bullet points, then name the single most important rule it states."}
+{"id": "long1", "domain": "long", "file": "ops/bench/heldout/long_parity.txt", "content": "Using only the document above, list each optimization it mentions and the measured effect of each."}
+{"id": "long2", "domain": "long", "file": "ops/bench/heldout/long_code.txt", "content": "Explain what this CUDA header does, how the data layout works, and one possible performance risk."}

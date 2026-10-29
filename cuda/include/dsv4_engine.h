@@ -63,6 +63,7 @@ struct GenStats {
     double decode_ms         = 0;
     double tok_per_s         = 0;
     double tok_per_verify    = 0;
+    int    head2_fallbacks   = 0;  // V41_HEAD2 rows recomputed with the full head (too many candidates)
     SpecProfile spec;              // always-on; see SpecProfile
 };
 

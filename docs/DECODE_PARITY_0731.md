@@ -361,7 +361,8 @@ hashes refer to this repository.
 | hc_mixes on its own stream beside collapse/norm/attention and MoE; hc_partial x reuse; rmsnorm loads batched | 21.71 (paired: 21.07 → 21.71, +3.0%) | bitwise (teacher-forced logits identical) | 63a9a45 |
 | shared expert forked before the router; attention KV branch on its own stream (per-stream split-K scratch) | **22.08** (paired: 21.61 → 22.08, +2.2%) | bitwise | 8cfe5b7 |
 | NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | b667022 |
-| k_nvm sums its split-K partials in the last CTA (no `k_ksum` launch) | **22.28** (paired vs 8cfe5b7: 22.27 → 22.28, parity) | bitwise vs b667022 | (this commit) |
+| k_nvm sums its split-K partials in the last CTA (no `k_ksum` launch) | **22.28** (paired vs 8cfe5b7: 22.27 → 22.28, parity) | bitwise vs b667022 | 5295ecd |
+| two-stage greedy head: NVFP4 shortlist + exact bf16 rescore (`head2_argmax`) | **24.52** (paired: 22.24 → 24.52, +10.3%) | greedy ids exact (T0e: recall by measured error, Δ = 9σ) | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
@@ -456,4 +457,44 @@ The first gate timed L2-hot weights and hid the problem completely, so `gate_nvm
 than 100 MB of copies.
 
 New ids reference: `ops/logs/bench/nvm2_arm0.json`. `V41_NV_MMA=0` restores `k_dense<DecNVFP4>`.
+
+**Two-stage greedy head (2026-10-29).** The bf16 head is 1.32 GB a token, which is 5.7 ms at roofline.
+Greedy decode needs only the argmax, so the head now runs in two stages:
+
+1. Score every row with an NVFP4 copy of the head (0.37 GiB, which the drafter now shares).
+2. Recompute, with the bf16 weights, every row within Δ = 4 logits of the approximate maximum. The
+   recompute (`k_h2_rescore`) reruns k_dense's M=1 chunk order, fmaf chain and warp_sum, so each
+   value is bit for bit the logit the full head writes.
+
+If more than 64 rows qualify, the host recomputes that row with the full head.
+
+**Why Δ = 4 is safe.** The true winner can be missed only if the approximation errors at it and at
+the approximate winner add up to more than Δ. The probe (`V41_HEAD_PROBE=1` on the forced
+continuation) measured:
+
+- **Rank of the exact argmax** in the NVFP4 order: 0 at 97 of 99 positions, 1 at the other 2.
+- **Error near the top:** rms 0.30 logits, max 1.17 over 442 rows.
+
+So Δ is about 9σ of that pair.
+
+**Measured.**
+
+- **Held-out prompts:** greedy ids identical to the full head on 27/27 (128 tokens each, plain and
+  spec K=3), with 0 fallbacks.
+- **Paired decode:** 22.24 → 24.52 tok/s.
+
+Sampling (temperature > 0) and the debug and scoring paths keep the full head.
+
+**Spec by domain (held-out, K=3).** On top of the 24.1 tok/s plain decode:
+
+| domain | spec K=3 |
+|---|---|
+| math | 1.60x (38.6 tok/s) |
+| code | 1.43x |
+| agentic | 1.21x |
+| long | 1.15x |
+| chat | 0.98x |
+
+The speed prompt is a chat prompt, so it is the drafter's worst case. S5 (adaptive K) and D1–D4
+(drafter fine-tune) should report per-domain numbers.
 

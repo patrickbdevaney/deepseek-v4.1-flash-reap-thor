@@ -70,10 +70,12 @@ struct Engine::Impl {
     std::vector<int64_t> hid;
     std::vector<float> h_logits;
     // decode graph
-    cudaGraphExec_t gexec = nullptr;
+    cudaGraphExec_t gexec = nullptr, gexec2 = nullptr;   // gexec2: greedy step with the two-stage head
+    bool h2 = false;                                    // V41_HEAD2: two-stage head on greedy steps and verifies
+    int* h_fb = nullptr;
     // speculation
     std::unique_ptr<v41m::Drafter> D;
-    std::map<int, cudaGraphExec_t> vexec;          // verify graphs by row count; key -K = the K-slot draft
+    std::map<int, cudaGraphExec_t> vexec, vexec2;  // verify graphs by row count; key -K = the K-slot draft
     int *h_draft = nullptr, *h_tgt = nullptr;
     int active_k = 0;                              // set_spec_k(); cfg.spec_k sizes the drafter
     v41m::LayerHook hook_for(int M) { return D ? v41m::tap_hook(*D, s, M) : v41m::LayerHook(); }
@@ -123,9 +125,10 @@ struct Engine::Impl {
         hi_written = std::max(hi_written, n - 1);
     }
 
-    void step_body() {                                // M = 1, inputs already in d_pos/d_ids/d_img
+    void step_body(bool fast) {                       // M = 1, inputs already in d_pos/d_ids/d_img
         v41m::embed_rows(m, s, 1, st);
         v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, 1, 0, 0, eg, st, hook_for(1));
+        if (fast) { v41m::head_row_greedy(m, s, 0, d_tok, st); return; }
         v41m::head_row(m, s, 0, st);
         v41m::argmax_logits(s, d_tok, st);
     }
@@ -151,13 +154,15 @@ struct Engine::Impl {
             CK(cudaGraphLaunch(*ex, st));
         } else body();
     }
-    void step(int tok, int pos) {
+    // greedy: the caller reads only d_tok (sample() with fast), so the two-stage head may serve it
+    void step(int tok, int pos, bool greedy = false) {
+        const bool fast = greedy && h2;
         stage_rows(&tok, 1, pos);
         // Eager (no graph, or before the first capture): ~40 layers of single launches overrun the launch
         // queue while the stream sits on the layer-1 flag wait, so cudaLaunchKernel blocks before reap()
         // can set the flag -- a deadlock (--no-graph hung forever). Land the rows first; reap() is then a no-op.
-        if (!cfg.graph || !gexec) reap();
-        launch(&gexec, [&] { step_body(); });
+        if (!cfg.graph || !(fast ? gexec2 : gexec)) reap();
+        launch(fast ? &gexec2 : &gexec, [&] { step_body(fast); });
         reap();
         hi_written = std::max(hi_written, pos);
     }
@@ -181,19 +186,24 @@ struct Engine::Impl {
         rows[0] = tok;
         for (int i = 1; i < M; ++i) rows[i] = h_draft[i];
         stage_rows(rows.data(), M, pos);
-        if (!cfg.graph || !vexec[M]) reap();          // eager: see step()
-        launch(&vexec[M], [&] {
+        const bool fast = p.temperature <= 0.f && h2;
+        auto& vx = fast ? vexec2 : vexec;
+        if (!cfg.graph || !vx[M]) reap();             // eager: see step()
+        launch(&vx[M], [&] {
             v41m::embed_rows(m, s, M, st);
             v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, 0, 0, eg, st, hook_for(M));
-            v41m::head_rows(m, s, 0, M, st);
+            if (fast) v41m::head_rows_greedy(m, s, 0, M, st);
+            else v41m::head_rows(m, s, 0, M, st);
         });
         reap();
         hi_written = std::max(hi_written, pos + K);
         std::vector<int> tgt(M);
         if (p.temperature <= 0.f) {
             CK(cudaMemcpyAsync(h_tgt, s.d_argmax, M * 4, cudaMemcpyDeviceToHost, st));
+            if (fast) CK(cudaMemcpyAsync(h_fb, s.d_hfb, M * 4, cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
             for (int i = 0; i < M; ++i) tgt[i] = h_tgt[i];
+            if (fast) for (int i = 0; i < M; ++i) if (h_fb[i]) tgt[i] = head_fallback(i);
         }
         int a = 0;
         if (p.temperature <= 0.f) {
@@ -212,10 +222,21 @@ struct Engine::Impl {
         return a;
     }
 
-    int sample(const GenParams& p, std::mt19937_64& rng) {
+    // a two-stage-head row with too many candidates: the full head on the same normed x
+    int head_fallback(int row) {
+        ++h2_fallbacks;
+        v41m::head_full_argmax(m, s, row, d_tok, st);
+        CK(cudaMemcpyAsync(h_tok, d_tok, 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        return *h_tok;
+    }
+    long h2_fallbacks = 0;
+    int sample(const GenParams& p, std::mt19937_64& rng, bool fast = false) {
         if (p.temperature <= 0.f) {
             CK(cudaMemcpyAsync(h_tok, d_tok, 4, cudaMemcpyDeviceToHost, st));
+            if (fast) CK(cudaMemcpyAsync(h_fb, s.d_hfb, 4, cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
+            if (fast && *h_fb) return head_fallback(0);
             return *h_tok;
         }
         return sample_row(p, rng, 0);
@@ -263,7 +284,9 @@ struct Engine::Impl {
 Engine::Engine(const EngineConfig& cfg) : p_(new Impl) { p_->cfg = cfg; }
 Engine::~Engine() {
     if (p_->gexec) cudaGraphExecDestroy(p_->gexec);
+    if (p_->gexec2) cudaGraphExecDestroy(p_->gexec2);
     for (auto& kv : p_->vexec) if (kv.second) cudaGraphExecDestroy(kv.second);
+    for (auto& kv : p_->vexec2) if (kv.second) cudaGraphExecDestroy(kv.second);
     delete p_;
 }
 
@@ -289,6 +312,16 @@ void Engine::load() {
     if (const char* e = getenv("V41_DEC_MARGIN")) I.dec_margin = std::max(0, atoi(e));
     v41m::alloc_state(I.s, I.cfg.seqmax, I.chunk);
     I.chunk = std::min(I.chunk, v41m::max_chunk(I.s));
+    // two-stage greedy head (B2), default on (V41_HEAD2=0 off): V41_HEAD2_DELTA (logits), V41_HEAD2_CAP (candidates,
+    // multiple of 8). Delta 4: V41_HEAD_PROBE measured NVFP4-vs-bf16 error rms 0.30 near the top (max 1.17 over
+    // 442), so 4 is ~9 sigma of the two errors a miss needs; held-out 27/27 prompts identical, 0 fallbacks.
+    if (const char* e = getenv("V41_HEAD2"); !(e && *e == '0')) {
+        const char* d = getenv("V41_HEAD2_DELTA"); const char* c = getenv("V41_HEAD2_CAP");
+        const float delta = d ? (float)atof(d) : 4.0f; const int cap = c ? std::max(8, atoi(c) / 8 * 8) : 64;
+        v41m::enable_head2(I.m, I.s, cap, delta, I.st);
+        I.h2 = true;
+        if (!I.cfg.quiet) printf("[engine] two-stage greedy head: NVFP4 shortlist within %.3g logits (cap %d) + exact bf16 rescore\n", delta, cap);
+    }
     if (I.cfg.spec_k > 0) {
         if (I.cfg.spec_k > v41::DSPARK_BLOCK) throw std::runtime_error("spec_k > DSpark block " + std::to_string(v41::DSPARK_BLOCK));
         if (I.chunk < I.cfg.spec_k + 1) throw std::runtime_error("chunk < spec_k + 1: a verify is one forward");
@@ -327,7 +360,7 @@ void Engine::load() {
         if (!I.cfg.quiet) printf("[engine] Engram row store %s (format %d, %d B rows)\n", ec.dir.c_str(), I.store.format(), I.store.row_bytes());
     }
     CK(cudaHostAlloc(&I.h_pos, I.chunk * 4, 0)); CK(cudaHostAlloc(&I.h_ids, I.chunk * 4, 0));
-    CK(cudaHostAlloc(&I.h_img, I.chunk, 0)); CK(cudaHostAlloc(&I.h_tok, 4, 0));
+    CK(cudaHostAlloc(&I.h_img, I.chunk, 0)); CK(cudaHostAlloc(&I.h_tok, 4, 0)); CK(cudaHostAlloc(&I.h_fb, 4 * std::max(I.chunk, 8), 0));
     CK(cudaMalloc(&I.d_tok, 4));
     CK(cudaHostAlloc(&I.h_draft, (v41::DSPARK_BLOCK + 1) * 4, 0)); CK(cudaHostAlloc(&I.h_tgt, I.chunk * 4, 0));
     I.hid.resize((size_t)I.chunk * 2 * v41::ENGRAM_COLS);
@@ -356,6 +389,7 @@ GenStats Engine::generate(const std::vector<int>& ids, const GenParams& p, const
     t0 = clk::now();
     const bool spec = I.D != nullptr && I.active_k > 0;
     int emitted_by_spec = 0;
+    const long fb0 = I.h2_fallbacks;
     for (int n = 0; n < p.max_tokens; ++n) {
         const int tok = q.front(); q.pop_front();
         ++gs.completion_tokens;
@@ -373,15 +407,17 @@ GenStats Engine::generate(const std::vector<int>& ids, const GenParams& p, const
             emitted_by_spec += a + 1;
             if (K < SpecProfile::MAXW) ++gs.spec.accept_joint[K][a];
         } else {
-            I.step(tok, pos);
+            const bool greedy = p.temperature <= 0.f;
+            I.step(tok, pos, greedy);
             I.kv_len = pos + 1;
-            q.push_back(I.sample(p, rng));
+            q.push_back(I.sample(p, rng, greedy && I.h2));
             if (spec) ++gs.spec.accept_joint[0][0];
         }
         ++gs.verifies;
     }
     I.kv_len = std::min(I.kv_len, (int)I.ctx.size());
     gs.decode_ms = ms_since(t0);
+    gs.head2_fallbacks = (int)(I.h2_fallbacks - fb0);
     gs.tok_per_s = gs.decode_ms > 0 ? (gs.completion_tokens - 1) / (gs.decode_ms / 1e3) : 0;
     gs.tok_per_verify = gs.verifies ? (double)(gs.completion_tokens - 1) / gs.verifies : 0;
     if (!spec && gs.verifies < SpecProfile::MAXW) gs.spec.accept_joint[1][0] = gs.verifies;
@@ -421,14 +457,53 @@ std::vector<float> Engine::debug_forced_logits(const std::vector<int>& ids, cons
     I.prefill(ids, 0);
     I.ctx.assign(ids.begin(), ids.end());
     std::vector<float> out((size_t)forced.size() * v41::VOCAB);
+    // V41_HEAD_PROBE=1: also an NVFP4 copy of the head on the same normed x (s.x row 0) -- where does the
+    // exact argmax rank in the approximate order, and how large is the approximation error near the top?
+    // (the B2 two-stage head: NVFP4 shortlist + exact bf16 rescore)
+    static const bool probe = [] { const char* e = getenv("V41_HEAD_PROBE"); return e && *e == '1'; }();
+    uint8_t *h4 = nullptr, *h4s = nullptr; float h4g = 0.f, *alog = nullptr;
+    std::vector<float> ap(v41::VOCAB);
+    std::vector<int> ranks; double se_all = 0, se_top = 0; size_t n_all = 0, n_top = 0; float maxe_top = 0;
+    if (probe) {
+        CK(cudaMalloc(&h4, (size_t)v41::VOCAB * v41::DIM / 2)); CK(cudaMalloc(&h4s, (size_t)v41::VOCAB * v41::DIM / 16));
+        CK(cudaMalloc(&alog, (size_t)v41::VOCAB * 4));
+        h4g = v41k::nvfp4_from_bf16(h4, h4s, I.m.head, v41::VOCAB, v41::DIM, v41k::bf16_permuted(I.m.head), I.st);
+    }
     for (size_t i = 0; i < forced.size(); ++i) {
         CK(cudaMemcpyAsync(out.data() + i * v41::VOCAB, I.s.logits, v41::VOCAB * 4, cudaMemcpyDeviceToHost, I.st));
         CK(cudaStreamSynchronize(I.st));
+        if (probe) {
+            v41k::nvfp4_linear_f32(alog, I.s.x, h4, h4s, h4g, 1, v41::VOCAB, v41::DIM, I.st);
+            CK(cudaMemcpyAsync(ap.data(), alog, v41::VOCAB * 4, cudaMemcpyDeviceToHost, I.st));
+            CK(cudaStreamSynchronize(I.st));
+            const float* ex = out.data() + i * v41::VOCAB;
+            int am = 0; for (int r = 1; r < v41::VOCAB; ++r) if (ex[r] > ex[am]) am = r;
+            int rank = 0; for (int r = 0; r < v41::VOCAB; ++r) if (ap[r] > ap[am] || (ap[r] == ap[am] && r < am)) ++rank;
+            ranks.push_back(rank);
+            for (int r = 0; r < v41::VOCAB; ++r) {
+                const double e = ap[r] - ex[r]; se_all += e * e; ++n_all;
+                if (ex[r] > ex[am] - 10.f) { se_top += e * e; ++n_top; maxe_top = std::max(maxe_top, (float)std::fabs(e)); }
+            }
+        }
+        if (i + 1 == forced.size()) break;
         if (i + 1 == forced.size()) break;
         const int pos = (int)I.ctx.size();
         I.ctx.push_back(forced[i]);
         I.step(forced[i], pos);
         I.kv_len = pos + 1;
+    }
+    if (probe) {
+        std::vector<int> r(ranks); std::sort(r.begin(), r.end());
+        int c[6] = {0, 0, 0, 0, 0, 0}; const int lim[6] = {0, 3, 15, 63, 255, 1 << 30};
+        for (int v : r) for (int j = 0; j < 6; ++j) if (v <= lim[j]) { ++c[j]; break; }
+        printf("[probe] head NVFP4 vs bf16 over %zu positions: exact argmax rank in approx order max %d, median %d;"
+               " rank 0: %d, <=3: %d, <=15: %d, <=63: %d, <=255: %d, more: %d\n", r.size(), r.back(), r[r.size() / 2],
+               c[0], c[1], c[2], c[3], c[4], c[5]);
+        printf("[probe] approx-exact logit error: rms all %.4f, rms within 10 of top %.4f (n %zu), max within 10 of top %.4f\n",
+               std::sqrt(se_all / n_all), std::sqrt(se_top / std::max<size_t>(n_top, 1)), n_top, maxe_top);
+        std::string rs; for (int v : ranks) rs += std::to_string(v) + " ";
+        printf("[probe] ranks: %s\n", rs.c_str());
+        cudaFree(h4); cudaFree(h4s); cudaFree(alog);
     }
     I.reset_all(); I.ctx.clear(); I.kv_len = 0;
     return out;
