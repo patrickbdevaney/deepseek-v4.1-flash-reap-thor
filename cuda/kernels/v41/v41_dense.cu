@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <unordered_map>
 #include <cmath>
 
 using namespace v41d;
@@ -89,15 +90,18 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
                          float out_scale, cudaStream_t st) {
     const int Ng = N / G;
     const int nch = K / 32;
-    int mt = (M == 1) ? 1 : (M == 2 ? 2 : 4);
-    while (mt > 1 && (size_t)mt * K * sizeof(float) > 160 * 1024) mt >>= 1;   // smem cap
+    // MT = 8 lets a speculative verify (M = K+1 <= 8) read every weight once instead of twice
+    int mt = (M == 1) ? 1 : (M == 2 ? 2 : (M <= 4 ? 4 : 8));
+    while (mt > 1 && (size_t)mt * K * sizeof(float) > 160 * 1024) mt >>= 1;   // smem cap (K=8192 stays at 4)
     const int ntile = (N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, mtile = (M + mt - 1) / mt;
     // Split-K changes the summation order, so it is chosen independently of M for M <= SPEC_M: a
     // speculative verify (M = K+1) then sums every row exactly as the M = 1 decode step does, and
     // greedy speculation emits the same ids as plain decode (cuda/CHAIN_STEPS.sh spec_identity).
     constexpr int SPEC_M = 8;
     int ks = 1;
-    const int ctas = ntile * (M <= SPEC_M ? 1 : mtile), want = 2 * nsm();
+    // Above SPEC_M, ks follows the MT = 4 tiling it always had (MT itself does not change a row's
+    // sum, the split does), so prefill keeps its old summation order whatever MT it launches with.
+    const int ctas = ntile * (M <= SPEC_M ? 1 : (M + 3) / 4), want = 2 * nsm();
     if (ctas < want) {
         ks = std::min((want + ctas - 1) / ctas, std::max(1, nch / 8));
         if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) ks = 1;
@@ -107,7 +111,7 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     #define V41_LAUNCH(MTV) do { auto kf = k_dense<Dec, MTV>; \
         if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part); } while (0)
-    if (mt == 1) V41_LAUNCH(1); else if (mt == 2) V41_LAUNCH(2); else V41_LAUNCH(4);
+    if (mt == 1) V41_LAUNCH(1); else if (mt == 2) V41_LAUNCH(2); else if (mt == 4) V41_LAUNCH(4); else V41_LAUNCH(8);
     #undef V41_LAUNCH
     if (ks > 1) {
         size_t MN = (size_t)M * N;
@@ -115,9 +119,23 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     }
 }
 
+// NVFP4 dense overlay registry: a weight pointer registered here is NVFP4 codes (Ws = its e4m3/16
+// scales), not FP8, and fp8_linear serves it with DecNVFP4. Filled at load time (bind_layer).
+struct OvEntry { float g; };
+static std::unordered_map<const void*, OvEntry>& ov_map() { static std::unordered_map<const void*, OvEntry> m; return m; }
+void overlay_register(const uint8_t* codes, float g) { ov_map()[codes] = OvEntry{g}; }
+size_t overlay_count() { return ov_map().size(); }
 void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, const uint8_t* Ws,
                 int M, int N, int K, bool round_bf16, cudaStream_t st, int G) {
     XSrc X; X.xq = xq; X.xs = xs; X.ldx = K * G;
+    if (!ov_map().empty()) {
+        auto it = ov_map().find(W);
+        if (it != ov_map().end()) {
+            DecNVFP4 d{W, Ws, it->second.g, K};
+            launch_dense(y, X, d, M, N, K, G, round_bf16, 1.0f, st);
+            return;
+        }
+    }
     DecFP8 d{W, Ws, K};
     launch_dense(y, X, d, M, N, K, G, round_bf16, 1.0f, st);
 }
@@ -289,33 +307,36 @@ __global__ void k_hc_partial(float* part, const float* x, const float* fn) {
     if (threadIdx.x == 0) { float s = 0.f; for (int w = 0; w < (int)(blockDim.x >> 5); ++w) s += red[w];
         part[((size_t)m * 25 + j) * HC_KS + z] = s; }
 }
+// One warp per token. Bit-identical to the single-thread version it replaced (which ran 24 reductions
+// and 20 Sinkhorn iterations serially, 80x per token): lane j < 24 reduces mix j in the same z order;
+// lane t < 16 owns c[t/4][t%4]; every row/column sum gathers its 4 terms by shuffle and adds them in
+// the original index order, so every rounding matches.
 __global__ void k_hc_finish(float* pre, float* post, float* comb, const float* part, const float* scale,
                             const float* base) {
-    const int m = blockIdx.x;
-    if (threadIdx.x != 0) return;
-    float mix[24];
+    const int m = blockIdx.x, lane = threadIdx.x;
     float ss = 0.f; for (int z = 0; z < HC_KS; ++z) ss += part[((size_t)m * 25 + 24) * HC_KS + z];
     const float rs = rsqrtf(ss / v41::HC_DIM + v41::NORM_EPS);
-    for (int j = 0; j < 24; ++j) { float d = 0.f; for (int z = 0; z < HC_KS; ++z) d += part[((size_t)m * 25 + j) * HC_KS + z]; mix[j] = d * rs; }
+    float mixv = 0.f;
+    if (lane < 24) { float d = 0.f; for (int z = 0; z < HC_KS; ++z) d += part[((size_t)m * 25 + lane) * HC_KS + z]; mixv = d * rs; }
     const float eps = v41::HC_EPS;
-    for (int i = 0; i < 4; ++i) {
-        pre[m * 4 + i] = 1.f / (1.f + expf(-(mix[i] * scale[0] + base[i]))) + eps;
-        post[m * 4 + i] = 2.f / (1.f + expf(-(mix[4 + i] * scale[1] + base[4 + i])));
-    }
-    float c[4][4];
-    for (int i = 0; i < 4; ++i) {
-        float mx = -INFINITY;
-        for (int k = 0; k < 4; ++k) { c[i][k] = mix[8 + 4 * i + k] * scale[2] + base[8 + 4 * i + k]; mx = fmaxf(mx, c[i][k]); }
-        float s = 0.f; for (int k = 0; k < 4; ++k) { c[i][k] = expf(c[i][k] - mx); s += c[i][k]; }
-        for (int k = 0; k < 4; ++k) c[i][k] = c[i][k] / s + eps;
-    }
-    auto colnorm = [&]() { for (int k = 0; k < 4; ++k) { float s = 0.f; for (int i = 0; i < 4; ++i) s += c[i][k];
-                                                          for (int i = 0; i < 4; ++i) c[i][k] /= (s + eps); } };
-    auto rownorm = [&]() { for (int i = 0; i < 4; ++i) { float s = 0.f; for (int k = 0; k < 4; ++k) s += c[i][k];
-                                                          for (int k = 0; k < 4; ++k) c[i][k] /= (s + eps); } };
+    if (lane < 4) pre[m * 4 + lane] = 1.f / (1.f + expf(-(mixv * scale[0] + base[lane]))) + eps;
+    else if (lane < 8) post[m * 4 + lane - 4] = 2.f / (1.f + expf(-(mixv * scale[1] + base[lane])));
+    const int t = lane & 15, i = t >> 2, k = t & 3;
+    const float mt = __shfl_sync(0xffffffffu, mixv, 8 + t);
+    float c = mt * scale[2] + base[8 + t];
+    auto row4 = [&](float v, int r, float (&o)[4]) { for (int q = 0; q < 4; ++q) o[q] = __shfl_sync(0xffffffffu, v, 4 * r + q); };
+    auto col4 = [&](float v, int cl, float (&o)[4]) { for (int q = 0; q < 4; ++q) o[q] = __shfl_sync(0xffffffffu, v, 4 * q + cl); };
+    float g[4];
+    row4(c, i, g);
+    float mx = -INFINITY; for (int q = 0; q < 4; ++q) mx = fmaxf(mx, g[q]);
+    c = expf(c - mx);
+    row4(c, i, g);
+    { float sm = 0.f; for (int q = 0; q < 4; ++q) sm += g[q]; c = c / sm + eps; }
+    auto colnorm = [&]() { col4(c, k, g); float sm = 0.f; for (int q = 0; q < 4; ++q) sm += g[q]; c /= (sm + eps); };
+    auto rownorm = [&]() { row4(c, i, g); float sm = 0.f; for (int q = 0; q < 4; ++q) sm += g[q]; c /= (sm + eps); };
     colnorm();
     for (int it = 0; it < v41::HC_SINKHORN_ITERS - 1; ++it) { rownorm(); colnorm(); }
-    for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) comb[m * 16 + i * 4 + k] = c[i][k];
+    if (lane < 16) comb[m * 16 + t] = c;
 }
 static float* g_hcpart = nullptr; static int g_hcpart_m = 0;
 void hc_mixes(float* pre, float* post, float* comb, const float* x, const float* fn, const float* scale,

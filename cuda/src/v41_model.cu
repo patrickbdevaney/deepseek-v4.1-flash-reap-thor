@@ -25,7 +25,7 @@ namespace v41m {
 using namespace v41;
 
 // =========================================================================== Store
-Store::Store(const std::string& dir, const Filter& want) {
+Store::Store(const std::string& dir, const Filter& want, const Rename& rename) {
     // Two layouts: a thor-v1 build (thor.json + layer-NN/globals/... files, ops/lib/thor_format.md)
     // or an HF checkpoint (model.safetensors.index.json). Missing files are skipped (partial
     // checkpoints for per-layer golden runs); has() reports what loaded.
@@ -60,8 +60,9 @@ Store::Store(const std::string& dir, const Filter& want) {
         try { sh.reset(new st::SafeTensors(dir + "/" + f)); } catch (...) { continue; }
         bool any = false;
         for (auto& t : sh->all()) {
-            if (t.first.compare(0, 6, "__pad.") == 0 || !want(t.first)) continue;   // thor-v1 padding tensors
-            Item it{t.first, sh->fd(), sh->dataFileOffset() + (size_t)(t.second.data - sh->dataStart()), t.second.nbytes,
+            const std::string nm = rename ? rename(f, t.first) : t.first;
+            if (t.first.compare(0, 6, "__pad.") == 0 || !want(nm)) continue;   // thor-v1 padding tensors
+            Item it{nm, sh->fd(), sh->dataFileOffset() + (size_t)(t.second.data - sh->dataStart()), t.second.nbytes,
                     t.second.dtype, t.second.shape};
             total += (it.n + 255) & ~(size_t)255;
             items.push_back(std::move(it));
@@ -204,32 +205,42 @@ void bind_layer(Model& m, int L, bool hw) {
     w.kv_owner = w.ratio ? kv_owner(L) : -1; w.idx_owner = w.ratio ? index_owner(L) : -1;
     auto u8 = [&](const std::string& n) { return S.p<uint8_t>(p + n); };
     auto b16 = [&](const std::string& n) { return S.p<uint16_t>(p + n); };
+    // an FP8 linear, or its NVFP4 overlay replacement (codes + e4m3/16 scales, registered with g)
+    const Store* O = m.overlay.get();
+    auto lin = [&](const std::string& n, const uint8_t*& W, const uint8_t*& Ws) {
+        if (O && O->has(p + n + ".weight")) {
+            W = O->p<uint8_t>(p + n + ".weight"); Ws = O->p<uint8_t>(p + n + ".weight_scale");
+            float g = 0.f;
+            CK(cudaMemcpy(&g, O->p<float>(p + n + ".weight_scale_2"), sizeof(float), cudaMemcpyDefault));
+            v41k::overlay_register(W, g);
+        } else { W = u8(n + ".weight"); Ws = u8(n + ".scale"); }
+    };
     auto f32 = [&](const std::string& n) { return S.p<float>(p + n); };
     w.attn_sink = f32("attn.attn_sink");
     w.attn_norm = b16("attn_norm.weight"); w.ffn_norm = b16("ffn_norm.weight");
     w.q_norm = b16("attn.q_norm.weight"); w.kv_norm = b16("attn.kv_norm.weight");
-    w.wq_a = u8("attn.wq_a.weight"); w.wq_a_s = u8("attn.wq_a.scale");
-    w.wq_b = u8("attn.wq_b.weight"); w.wq_b_s = u8("attn.wq_b.scale");
-    w.wkv = u8("attn.wkv.weight"); w.wkv_s = u8("attn.wkv.scale");
-    w.wo_a = u8("attn.wo_a.weight"); w.wo_a_s = u8("attn.wo_a.scale");
-    w.wo_b = u8("attn.wo_b.weight"); w.wo_b_s = u8("attn.wo_b.scale");
-    if (S.get(p + "attn.wo_a.weight").dtype != "F8_E4M3")
+    lin("attn.wq_a", w.wq_a, w.wq_a_s);
+    lin("attn.wq_b", w.wq_b, w.wq_b_s);
+    lin("attn.wkv", w.wkv, w.wkv_s);
+    lin("attn.wo_a", w.wo_a, w.wo_a_s);
+    lin("attn.wo_b", w.wo_b, w.wo_b_s);
+    if (!(O && O->has(p + "attn.wo_a.weight")) && S.get(p + "attn.wo_a.weight").dtype != "F8_E4M3")
         throw std::runtime_error(p + "attn.wo_a is not FP8 (a convert.py output? load the HF checkpoint layout)");
     if (w.kv_src) {
         w.cmp_wkv = b16("attn.compressor.wkv.weight"); w.cmp_norm = b16("attn.compressor.norm.weight");
         if (w.ratio > 1) w.cmp_wgate = b16("attn.compressor.wgate.weight");
     }
     if (w.idx_src) {
-        w.idx_wq_b = u8("attn.indexer.wq_b.weight"); w.idx_wq_b_s = u8("attn.indexer.wq_b.scale");
+        lin("attn.indexer.wq_b", w.idx_wq_b, w.idx_wq_b_s);
         w.idx_wproj = b16("attn.indexer.weights_proj.weight");
         if (w.kv_src) { w.idx_wk = b16("attn.indexer.wk.weight"); w.idx_k_norm = b16("attn.indexer.k_norm.weight"); }
     }
     w.hc_attn_fn = f32("hc_attn_fn"); w.hc_attn_base = f32("hc_attn_base"); w.hc_attn_scale = f32("hc_attn_scale");
     w.hc_ffn_fn = f32("hc_ffn_fn"); w.hc_ffn_base = f32("hc_ffn_base"); w.hc_ffn_scale = f32("hc_ffn_scale");
     w.gate_w = b16("ffn.gate.weight"); w.gate_bias = f32("ffn.gate.bias"); w.gate_bias_vl = S.opt<float>(p + "ffn.gate.bias_vl");
-    w.sh_w1 = u8("ffn.shared_experts.w1.weight"); w.sh_w1s = u8("ffn.shared_experts.w1.scale");
-    w.sh_w2 = u8("ffn.shared_experts.w2.weight"); w.sh_w2s = u8("ffn.shared_experts.w2.scale");
-    w.sh_w3 = u8("ffn.shared_experts.w3.weight"); w.sh_w3s = u8("ffn.shared_experts.w3.scale");
+    lin("ffn.shared_experts.w1", w.sh_w1, w.sh_w1s);
+    lin("ffn.shared_experts.w2", w.sh_w2, w.sh_w2s);
+    lin("ffn.shared_experts.w3", w.sh_w3, w.sh_w3s);
     if (engram_slot(L) >= 0) {
         w.eg_wkv = u8("engram.wkv.weight"); w.eg_wkv_s = u8("engram.wkv.scale");
         w.eg_q = b16("engram.q_weight"); w.eg_k = b16("engram.k_weight");
@@ -240,7 +251,8 @@ void bind_layer(Model& m, int L, bool hw) {
         auto j = std::make_shared<nlohmann::json>(nlohmann::json::parse(S.thor_json()));
         qtype_of = [j](const std::string& n) {
             const auto& T = (*j)["tensors"];
-            return T.contains(n) ? T[n].value("qtype", std::string()) : std::string();
+            if (!T.contains(n) || !T[n].contains("qtype") || !T[n]["qtype"].is_string()) return std::string();
+            return T[n]["qtype"].get<std::string>();
         };
     }
     const int E = bind_experts(S, ep, qtype_of, hw, MOE_INTER, w.ex);
@@ -251,7 +263,31 @@ void bind_layer(Model& m, int L, bool hw) {
 }
 
 void load_model(Model& m, const std::string& dir, const LoadOpts& o) {
+    // NVFP4 dense overlay first: its tensor names decide which FP8 weights are never loaded
+    std::set<std::string> ov_bases;                       // "layers.L.attn.wq_a" etc.
+    if (!o.overlay_dir.empty()) {
+        auto rename = [](const std::string& f, const std::string& t) {
+            return "layers." + std::to_string(atoi(f.c_str() + 1)) + "." + t;      // L07.safetensors -> layers.7.
+        };
+        auto want_ov = [&](const std::string& n) {
+            if (n.compare(0, 7, "layers.") != 0) return false;
+            const int L = atoi(n.c_str() + 7);
+            return L >= o.layer_lo && L <= o.layer_hi;
+        };
+        m.overlay.reset(new Store(o.overlay_dir, want_ov, rename));
+        if (!m.overlay->count()) throw std::runtime_error("overlay " + o.overlay_dir + ": no tensors loaded");
+        for (int L = o.layer_lo; L <= o.layer_hi; ++L)
+            for (const char* b : {"attn.wq_a", "attn.wq_b", "attn.wkv", "attn.wo_a", "attn.wo_b", "attn.indexer.wq_b",
+                                  "ffn.shared_experts.w1", "ffn.shared_experts.w2", "ffn.shared_experts.w3"}) {
+                const std::string base = "layers." + std::to_string(L) + "." + b;
+                if (m.overlay->has(base + ".weight")) ov_bases.insert(base);
+            }
+    }
     auto want = [&](const std::string& n) {
+        if (!ov_bases.empty()) {                          // FP8 twin of an overlaid weight: skip (.weight and .scale)
+            const size_t d = n.rfind('.');
+            if (d != std::string::npos && ov_bases.count(n.substr(0, d))) return false;
+        }
         if (n.find(".engram.embed.") != std::string::npos) return false;        // row store
         if (n.compare(0, 7, "vision.") == 0 || n.compare(0, 8, "aligner.") == 0) return false;
         if (n.compare(0, 4, "mtp.") == 0) return false;                         // DSpark: not wired yet
@@ -274,6 +310,8 @@ void load_model(Model& m, const std::string& dir, const LoadOpts& o) {
             throw std::runtime_error("KEEPSET MISMATCH: build " + have + " != configured " + o.keepset_sha256);
         m.quant_format = "thor-v1 arm " + j.value("arm", std::string("?"));
     }
+    if (m.overlay) m.quant_format += " + NVFP4 dense overlay (" + std::to_string(ov_bases.size()) + " tensors, " +
+                                     std::to_string(m.overlay->gib()).substr(0, 5) + " GiB)";
     m.layers.assign(N_LAYERS, LayerW{}); m.loaded.assign(N_LAYERS, false);
     for (int L = o.layer_lo; L <= o.layer_hi; ++L) { bind_layer(m, L, o.mxfp4_hw); m.loaded[L] = true; }
     if (o.embed_head) {
@@ -284,7 +322,12 @@ void load_model(Model& m, const std::string& dir, const LoadOpts& o) {
 }
 
 // =========================================================================== state
-State::~State() { for (void* p : allocs) cudaFree(p); }
+State::~State() {
+    for (void* p : allocs) cudaFree(p);
+    if (ev_fork) cudaEventDestroy(ev_fork);
+    if (ev_join) cudaEventDestroy(ev_join);
+    if (side) cudaStreamDestroy(side);
+}
 template <class T> static T* dalloc(State& s, size_t n) {
     void* p = nullptr; CK(cudaMalloc(&p, n * sizeof(T) + 256)); CK(cudaMemset(p, 0, n * sizeof(T) + 256));
     s.allocs.push_back(p); s.bytes += n * sizeof(T); return (T*)p;
@@ -323,6 +366,7 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
     s.lat = dalloc<float>(s, (size_t)R * HEAD_DIM); s.ik = dalloc<float>(s, (size_t)R * INDEX_HEAD_DIM);
     s.iq = dalloc<float>(s, (size_t)R * INDEX_N_HEADS * INDEX_HEAD_DIM); s.iw = dalloc<float>(s, (size_t)R * INDEX_N_HEADS);
     s.rw = dalloc<float>(s, (size_t)R * N_ACT); s.ridx = dalloc<int>(s, (size_t)R * N_ACT);
+    s.rscr = dalloc<float>(s, v41k::router_scratch_bytes(R, 512) / sizeof(float));
     s.eg_e = dalloc<float>(s, (size_t)R * ENGRAM_KV_IN); s.eg_kv = dalloc<float>(s, (size_t)R * ENGRAM_KV_OUT);
     s.logits = dalloc<float>(s, (size_t)VOCAB * R);              // row r of a verify at s.logits + r * VOCAB
     s.d_argmax = dalloc<int>(s, R);
@@ -330,6 +374,13 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
     s.pk = dalloc<uint8_t>(s, (size_t)R * 256); s.ps = dalloc<uint8_t>(s, (size_t)R * 32);
     s.valid = dalloc<int>(s, R);
     s.moe_scratch = dalloc<uint8_t>(s, v41k::moe_scratch_bytes(R, N_ACT));
+    if (!getenv("V41_NO_SIDE_STREAM")) {
+        s.sh_scratch = dalloc<uint8_t>(s, v41k::moe_scratch_bytes(R, 1));
+        s.sh_o = dalloc<float>(s, (size_t)R * DIM);
+        CK(cudaStreamCreateWithFlags(&s.side, cudaStreamNonBlocking));
+        CK(cudaEventCreateWithFlags(&s.ev_fork, cudaEventDisableTiming));
+        CK(cudaEventCreateWithFlags(&s.ev_join, cudaEventDisableTiming));
+    }
     s.cand_scratch = dalloc<uint8_t>(s, v41k::candidate_scratch_bytes(R, s.ld_cand));
     s.ld_score = seqmax;
     const int rs = (int)std::max<size_t>(1, std::min<size_t>(R, score_budget / ((size_t)seqmax * 4)));
@@ -446,9 +497,18 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
 // MoE.forward: router (bias_vl on image rows), routed experts in ascending order, + shared
 static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st) {
     const int M = R.M;
-    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st);
+    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
     v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
     cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
+    if (s.side) {                                    // shared expert concurrently with the routed experts
+        CK(cudaEventRecord(s.ev_fork, st)); CK(cudaStreamWaitEvent(s.side, s.ev_fork, 0));
+        v41k::moe_shared(s.sh_o, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.sh_scratch, s.side);
+        CK(cudaEventRecord(s.ev_join, s.side));
+        v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
+        CK(cudaStreamWaitEvent(st, s.ev_join, 0));
+        v41k::add_bf16(out, s.sh_o, (size_t)M * DIM, st);
+        return;
+    }
     v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
     v41k::moe_shared_add(out, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.moe_scratch, st);
 }

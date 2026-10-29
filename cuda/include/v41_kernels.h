@@ -72,7 +72,16 @@ void embed_expand(float* h, const uint16_t* emb, const int* d_ids, int M, cudaSt
 // scores = sqrtsoftplus(x @ Wg^T) (fp32, bf16 weight); select top-k of scores + (img ? bias_vl : bias);
 // weights = gathered unbiased scores / (sum + 1e-20) * route_scale.
 void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float* bias, const float* bias_vl,
-            const uint8_t* d_img, int M, int E, int topk, float route_scale, cudaStream_t st);
+            const uint8_t* d_img, int M, int E, int topk, float route_scale, cudaStream_t st,
+            float* scratch = nullptr);   // scratch >= router_scratch_bytes(M, E): parallel path; null: one CTA per token
+size_t router_scratch_bytes(int M, int E);
+// NVFP4 dense overlay: after overlay_register(codes, g), fp8_linear(.., W = codes, Ws = e4m3/16 scales, ..)
+// decodes NVFP4 instead of FP8 (DecNVFP4). overlay_count() = registered tensors.
+void overlay_register(const uint8_t* codes, float g);
+// Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
+// bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
+void kq_fast_set(bool on);
+size_t overlay_count();
 
 // MXFP4(_HW): thor-v1 MXFP4_SRC / the HF checkpoint. KQ: thor-v1 Q2_K/Q3_K/Q4_K (bits = 2/3/4).
 // LUT/KT: the sub-3-bit proposal (FORMAT_PROPOSAL.md) -- NOT in thor-v1; a loader refuses them
@@ -109,6 +118,10 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
 void moe_shared_add(float* y, const uint8_t* xq, const float* xs,
                     const uint8_t* w1, const uint8_t* w1s, const uint8_t* w3, const uint8_t* w3s,
                     const uint8_t* w2, const uint8_t* w2s, int M, void* scratch, cudaStream_t st);
+// o = shared(x) only (no add); o null -> it lives in scratch. Returns o. scratch >= moe_scratch_bytes(M, 1).
+float* moe_shared(float* o, const uint8_t* xq, const float* xs, const uint8_t* w1, const uint8_t* w1s,
+                  const uint8_t* w3, const uint8_t* w3s, const uint8_t* w2, const uint8_t* w2s, int M, void* scratch,
+                  cudaStream_t st);
 
 // ------------------------------------------------------------------ CSA2 attention
 // Compressor, ratio 2 (fp32 pooling): kv/score [M, 512] already computed (bf16 weight, fp32 out).

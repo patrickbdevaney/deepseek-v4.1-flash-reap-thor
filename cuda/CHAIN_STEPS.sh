@@ -112,9 +112,12 @@ spec_sweep() { local c=$1 f=$OUT/spec_${1}_${ARM}_${TAG}.json; [ -f $f ] && retu
   local K="--ckpt $(ckpt_of $ARM) --keepset $(keepf $ARM) --engram $ROWS" D=""; [ -n "$DRAFT" ] && D="--draft $DRAFT"
   [ -f $ROWS/engram_L14.v41rows ] || die "Engram row files missing ($ROWS)"
   # fit guard (unified memory: an overcommit hard-reboots Thor): resident build + drafter (the build's own
-  # mtp shards, or the s11 head dir) + 12 GiB reserve for KV/activations/driver must fit MemAvailable
+  # mtp shards, or the s11 head dir) + 10 GiB reserve for KV/activations/driver must fit MemAvailable.
+  # vision.safetensors is excluded: the engine skips vision./aligner. tensors. Measured 2026-10-26: weights 98.58 GiB
+  # + state 0.13 GiB at seqmax 8192; a 12 GiB reserve refused the native drafter by 1 GiB (118 > 117). memguard
+  # covers v41_decode as the last-resort kill.
   local ck=$(ckpt_of $ARM) need avail
-  need=$(( ( $(du -sbL $ck | cut -f1) + $( [ -n "$DRAFT" ] && du -sbL $DRAFT | cut -f1 || echo 0 ) ) / 1073741824 + 12 ))
+  need=$(( ( $(du -scbL $ck/* --exclude=vision.safetensors | tail -1 | cut -f1) + $( [ -n "$DRAFT" ] && du -sbL $DRAFT | cut -f1 || echo 0 ) ) / 1073741824 + 10 ))
   avail=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
   [ $need -le $avail ] || die "spec $c $ARM $TAG: needs ~${need} GiB (build + drafter + 12 reserve) > MemAvailable ${avail} GiB"
   if [ $c = 128 ]; then

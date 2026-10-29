@@ -61,7 +61,7 @@ struct Drafter {
     int* d_out = nullptr;                // [6]: out[0] = the committed token, out[1..5] = drafts
     float *h = nullptr, *h2 = nullptr, *pre = nullptr, *post = nullptr, *comb = nullptr, *pre_next = nullptr;
     float *x = nullptr, *xa = nullptr, *qa = nullptr, *qr = nullptr, *q = nullptr, *kv = nullptr, *o = nullptr;
-    float *og = nullptr, *y = nullptr, *rw = nullptr; int* ridx = nullptr;
+    float *og = nullptr, *y = nullptr, *rw = nullptr; int* ridx = nullptr; float* rscr = nullptr;
     void* moe_scratch = nullptr;
     float *logits = nullptr, *mk_e = nullptr, *mk_bias = nullptr;
     std::vector<void*> allocs;

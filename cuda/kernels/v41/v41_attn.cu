@@ -6,6 +6,7 @@
 // So storing the code + scale is EXACT -- the same numbers, 288 B per 512-dim compressed row
 // (vs 1 KiB bf16) and 68 B per 128-dim index key. At 1M context that is the difference between
 // ~2.1 GiB and ~7 GiB of cache (docs/V41_DELTA.md has the table).
+#include <cstdlib>
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_dev.cuh"
@@ -351,12 +352,106 @@ __global__ void __launch_bounds__(256) k_sparse_attn(float* o, const float* q, c
     #pragma unroll
     for (int i = 0; i < 16; ++i) oh[lane + 32 * i] = bf16r(acc[i] / den);
 }
+// Compacted form, bit-identical to k_sparse_attn: an invalid entry (window slot before position 0,
+// compressed index -1) scores -inf, so its p is exactly 0 and it adds exactly nothing to den or acc.
+// Each CTA first lists the valid entries IN ORDER (one warp, ballot + popc), then runs the same two
+// passes over that list only. At short context k_sparse_attn walked all 640 entries (~80% masked);
+// HPC heads per CTA (4) give 16 CTAs at M=1 instead of 8 (the kv tile is staged per CTA either way).
+template <int HPC>
+__global__ void __launch_bounds__(HPC * 32) k_sparse_attn_c(float* o, const float* q, const float* ring_buf, int ring,
+                                                          const uint8_t* cc, const uint8_t* cs, const int* cidx, int ncomp,
+                                                          const float* sink, const int* d_pos, float scale) {
+    const int m = blockIdx.x, h = blockIdx.y * HPC + (threadIdx.x >> 5), lane = threadIdx.x & 31, wp = threadIdx.x >> 5;
+    const int pos = d_pos[m];
+    __shared__ float kv[SA_TILE][v41::HEAD_DIM];
+    __shared__ float sc[HPC][SA_MAXE];
+    __shared__ short ent[SA_MAXE];
+    __shared__ int nent;
+    const int* ci = cidx ? cidx + (size_t)m * ncomp : nullptr;
+    if (threadIdx.x < 32) {
+        int n = 0;
+        const int w0 = max(0, (v41::WINDOW - 1) - pos);              // window slots with p = pos-127+e >= 0
+        for (int e = w0 + lane; e < v41::WINDOW; e += 32) ent[n + (e - w0)] = (short)e;
+        n = v41::WINDOW - w0;
+        for (int b = 0; b < ncomp; b += 32) {
+            const int e = b + lane;
+            const bool ok = e < ncomp && ci[e] >= 0;
+            const unsigned bal = __ballot_sync(0xffffffffu, ok);
+            if (ok) ent[n + __popc(bal & ((1u << lane) - 1u))] = (short)(v41::WINDOW + e);
+            n += __popc(bal);
+        }
+        if (lane == 0) nent = n;
+    }
+    __syncthreads();
+    const int ne = nent;
+    float qr[16];
+    const float* qh = q + ((size_t)m * v41::N_HEADS + h) * v41::HEAD_DIM;
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) qr[i] = qh[lane + 32 * i];
+    auto stage = [&](int k0) {
+        for (int i = threadIdx.x; i < SA_TILE * v41::HEAD_DIM / 2; i += blockDim.x) {
+            const int r = i / (v41::HEAD_DIM / 2), j = i % (v41::HEAD_DIM / 2);
+            float a = 0.f, b = 0.f;
+            if (k0 + r < ne) {
+                const int e = ent[k0 + r];
+                if (e < v41::WINDOW) {
+                    const float* src = ring_buf + (size_t)((pos - (v41::WINDOW - 1) + e) % ring) * v41::HEAD_DIM;
+                    a = src[2 * j]; b = src[2 * j + 1];
+                } else {
+                    const int t = ci[e - v41::WINDOW];
+                    const uint8_t byte = cc[(size_t)t * 256 + j];
+                    const float s = e4m3f(cs[(size_t)t * 32 + (2 * j) / v41::CKV_FP4_GRP]);
+                    a = fp4f(byte & 15) * s; b = fp4f(byte >> 4) * s;
+                }
+            }
+            kv[r][2 * j] = a; kv[r][2 * j + 1] = b;
+        }
+    };
+    float mx = -INFINITY;
+    for (int k0 = 0; k0 < ne; k0 += SA_TILE) {
+        __syncthreads(); stage(k0); __syncthreads();
+        for (int r = 0; r < SA_TILE && k0 + r < ne; ++r) {
+            float d = 0.f;
+            #pragma unroll
+            for (int i = 0; i < 16; ++i) d = fmaf(qr[i], kv[r][lane + 32 * i], d);
+            d = warp_sum(d) * scale;
+            if (lane == 0) sc[wp][k0 + r] = d;
+            mx = fmaxf(mx, d);
+        }
+    }
+    mx = fmaxf(mx, -1e30f);
+    float acc[16];
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) acc[i] = 0.f;
+    float den = 0.f;
+    for (int k0 = 0; k0 < ne; k0 += SA_TILE) {
+        __syncthreads(); stage(k0); __syncthreads();
+        for (int r = 0; r < SA_TILE && k0 + r < ne; ++r) {
+            const float p = expf(sc[wp][k0 + r] - mx);
+            den += p;
+            const float pb = bf16r(p);
+            #pragma unroll
+            for (int i = 0; i < 16; ++i) acc[i] = fmaf(pb, kv[r][lane + 32 * i], acc[i]);
+        }
+    }
+    den += expf(sink[h] - mx);
+    float* oh = o + ((size_t)m * v41::N_HEADS + h) * v41::HEAD_DIM;
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) oh[lane + 32 * i] = bf16r(acc[i] / den);
+}
 void sparse_attn(float* o, const float* q, const float* win_ring, int ring, const uint8_t* ccodes, const uint8_t* cscales,
                  const int* cidx, int ncomp, int coff, const float* sink, const int* d_pos, int M, float scale,
                  cudaStream_t st) {
     (void)coff;
-    k_sparse_attn<<<dim3(M, v41::N_HEADS / 8), 256, 0, st>>>(o, q, win_ring, ring, ccodes, cscales, cidx, ncomp, sink,
-                                                            d_pos, scale);
+    static const bool old = [] { const char* e = getenv("V41_SA_OLD"); return e && *e == '1'; }();
+    if (old) {
+        k_sparse_attn<<<dim3(M, v41::N_HEADS / 8), 256, 0, st>>>(o, q, win_ring, ring, ccodes, cscales, cidx, ncomp, sink,
+                                                                d_pos, scale);
+        return;
+    }
+    constexpr int HPC = 4;
+    k_sparse_attn_c<HPC><<<dim3(M, v41::N_HEADS / HPC), HPC * 32, 0, st>>>(o, q, win_ring, ring, ccodes, cscales, cidx,
+                                                                         ncomp, sink, d_pos, scale);
 }
 
 } // namespace v41k

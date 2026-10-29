@@ -265,6 +265,9 @@ void Engine::load() {
     const auto t0 = clk::now();
     CK(cudaStreamCreateWithFlags(&I.st, cudaStreamNonBlocking));
     v41m::LoadOpts o; o.mxfp4_hw = I.cfg.mxfp4_hw;
+    // NVFP4 dense overlay (ops/s07_quant.py overlay_nvfp4): served when set; the engine log line below
+    // names it, so a run labelled "overlay" can be checked against what was actually loaded
+    if (const char* e = getenv("DSV4_NVFP4_OVERLAY")) if (*e) o.overlay_dir = e;
     if (!I.cfg.keepset.empty()) {
         std::ifstream f(I.cfg.keepset);
         if (!f) throw std::runtime_error("cannot read keepset " + I.cfg.keepset);

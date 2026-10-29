@@ -223,7 +223,11 @@ def serve_and_run(model: Path, extra: list[str], ps: list[list[int]], c: dict, t
     log(f"bench {tag}: " + " ".join(cmd))
     with open(log_path, "w") as lf:
         # exec'd directly (no shell), so the pid we kill IS the server (eval-orphaned-server lesson)
-        srv = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        # the GGUF has no Engram tables: the server reads them from the NVMe row files (s09_engram_rowfile build)
+        srv_env = {**os.environ, "LLAMA_ENGRAM_ROWFILE_DIR": os.environ.get("LLAMA_ENGRAM_ROWFILE_DIR",
+                                                                           str(env.WORK / "engram_rows"))}
+        srv = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                               env=srv_env)
     try:
         for _ in range(180):
             if srv.poll() is not None:

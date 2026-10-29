@@ -145,6 +145,29 @@ struct DecMXFP4 {
     }
 };
 
+// NVFP4 dense overlay (thor-overlay-nvfp4, ops/lib/ggml_quants.nvfp4_dequant): codes [N, K/2] (low
+// nibble = even element), e4m3 scale per 16 along K [N, K/16], one fp32 global g per tensor.
+// w = (e2m1 * e4m3) * g: the product in parentheses is exact in fp32, then one rounding by g -- the
+// numpy reference's float32 order, so bit-identical to it.
+struct DecNVFP4 {
+    const uint8_t* W; const uint8_t* S; float g; int K;
+    __device__ __forceinline__ void load(int row, int c, float (&w)[32]) const {
+        const uint4 u = *reinterpret_cast<const uint4*>(W + (size_t)row * (K / 2) + c * 16);
+        const uint8_t* sp = S + (size_t)row * (K / 16) + 2 * c;
+        const float s0 = e4m3f(sp[0]), s1 = e4m3f(sp[1]);
+        const uint32_t v[4] = {u.x, u.y, u.z, u.w};
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const float s = i < 2 ? s0 : s1;
+            #pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                const float2 f = __half22float2(e2m1x2_h2((uint8_t)(v[i] >> (8 * b))));
+                w[8 * i + 2 * b] = (f.x * s) * g; w[8 * i + 2 * b + 1] = (f.y * s) * g;
+            }
+        }
+    }
+};
+
 // LUT-b (FORMAT_PROPOSAL.md §2): b-bit codes into a 2^b-entry fp16 codebook, E4M3 scale per 32.
 // Chunk record = 4*b bytes: b=2 -> 2 words of 2-bit codes; b=3 -> 2 words of low 2 bits + 1 word of
 // high bits; b=4 -> 4 words of nibbles. The codebook lives in REGISTERS, one entry per lane, and is

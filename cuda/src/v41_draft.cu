@@ -183,7 +183,9 @@ void load_drafter(Drafter& D, const std::string& ckpt, const std::string& head_d
             auto j = std::make_shared<nlohmann::json>(nlohmann::json::parse(D.base->thor_json()));
             qtype_of = [j](const std::string& n) {
                 const auto& T = (*j)["tensors"];
-                return T.contains(n) ? T[n].value("qtype", std::string()) : std::string();
+                // thor.json writes "qtype": null for unquantized tensors; value() throws on null
+                if (!T.contains(n) || !T[n].contains("qtype") || !T[n]["qtype"].is_string()) return std::string();
+                return T[n]["qtype"].get<std::string>();
             };
         }
         const int E = bind_experts(in_head ? *H : *D.base, ep, qtype_of, hw, MOE_INTER, w.ex);
@@ -230,6 +232,7 @@ void alloc_drafter(Drafter& D, int max_rows) {
     D.q = dal<float>(D, (size_t)NB * N_HEADS * HEAD_DIM); D.o = dal<float>(D, (size_t)NB * N_HEADS * HEAD_DIM);
     D.kv = dal<float>(D, (size_t)NB * HEAD_DIM); D.og = dal<float>(D, (size_t)NB * O_GROUPS * O_LORA);
     D.rw = dal<float>(D, (size_t)NB * DSPARK_N_ACT); D.ridx = dal<int>(D, (size_t)NB * DSPARK_N_ACT);
+    D.rscr = dal<float>(D, v41k::router_scratch_bytes(NB, 512) / sizeof(float));
     D.moe_scratch = dal<uint8_t>(D, v41k::moe_scratch_bytes(NB, DSPARK_N_ACT));
     D.logits = dal<float>(D, (size_t)NB * VOCAB);
     D.mk_e = dal<float>(D, DSPARK_MARKOV_RANK); D.mk_bias = dal<float>(D, VOCAB);
@@ -308,7 +311,7 @@ static void dblock(const DBlock& w, int bi, Drafter& D, cudaStream_t st) {
     v41k::hc_mixes(D.pre, D.post, D.comb, D.h2, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base, M, st);
     v41k::hc_collapse(D.x, D.h2, D.pre_next, M, st);
     v41k::rmsnorm(D.x, D.x, w.ffn_norm, M, DIM, NORM_EPS, st);
-    v41k::router(D.rw, D.ridx, D.x, w.gate_w, w.gate_bias, nullptr, nullptr, M, w.ex.n_routed, DSPARK_N_ACT, ROUTE_SCALE, st);
+    v41k::router(D.rw, D.ridx, D.x, w.gate_w, w.gate_bias, nullptr, nullptr, M, w.ex.n_routed, DSPARK_N_ACT, ROUTE_SCALE, st, D.rscr);
     v41k::act_quant_fp8(D.xq, D.xs, D.x, M, DIM, st);
     cudaMemsetAsync(D.y, 0, (size_t)M * DIM * 4, st);
     v41k::moe_routed(D.y, D.xq, D.xs, D.rw, D.ridx, w.ex.tab, M, DSPARK_N_ACT, D.moe_scratch, st);

@@ -204,17 +204,25 @@ int main(int argc, char** argv) {
         uint8_t* xq = dzero<uint8_t>((size_t)M * v41::DIM); float* xs = dzero<float>((size_t)M * v41::DIM / 32);
         float* y = dzero<float>((size_t)M * v41::DIM);
         void* scr; CK(cudaMalloc(&scr, v41k::moe_scratch_bytes(M, TK)));
-        v41k::act_quant_fp8(xq, xs, dx, M, v41::DIM, st);
-        v41k::moe_routed(y, xq, xs, up<float>(wts), up<int>(idx), T, M, TK, scr, st);
-        auto h = down(y, (size_t)M * v41::DIM);
-        double dot = 0, n1 = 0, n2 = 0, maxd = 0;
-        for (size_t i = 0; i < h.size(); ++i) {
-            const double a = h[i], b = ref.as<float>()[i];
-            dot += a * b; n1 += a * a; n2 += b * b; maxd = std::max(maxd, std::fabs(a - b));
+        float* dw = up<float>(wts); int* di = up<int>(idx);
+        // exact fp32 K-quant decode (bound 0.99999), then the half2 fast path (tolerance-gated, 0.9999)
+        for (int fast = 0; fast < 2; ++fast) {
+            v41k::kq_fast_set(fast);
+            CK(cudaMemset(y, 0, (size_t)M * v41::DIM * 4));
+            v41k::act_quant_fp8(xq, xs, dx, M, v41::DIM, st);
+            v41k::moe_routed(y, xq, xs, dw, di, T, M, TK, scr, st);
+            auto h = down(y, (size_t)M * v41::DIM);
+            double dot = 0, n1 = 0, n2 = 0, maxd = 0;
+            for (size_t i = 0; i < h.size(); ++i) {
+                const double a = h[i], b = ref.as<float>()[i];
+                dot += a * b; n1 += a * a; n2 += b * b; maxd = std::max(maxd, std::fabs(a - b));
+            }
+            const double cs = dot / std::sqrt(n1 * n2);
+            char bb[96]; snprintf(bb, sizeof bb, "cos %.8f, max |d| %.3g", cs, maxd);
+            verdict(cs >= (fast ? 0.9999 : 0.99999),
+                    fast ? "moe_routed Q3_K/Q4_K, 8 experts (fast)" : "moe_routed Q3_K/Q4_K, 8 experts (exact)", bb);
         }
-        const double cs = dot / std::sqrt(n1 * n2);
-        char bb[96]; snprintf(bb, sizeof bb, "cos %.8f, max |d| %.3g", cs, maxd);
-        verdict(cs >= 0.99999, "moe_routed Q3_K/Q4_K, 8 experts", bb);
+        v41k::kq_fast_set(true);
     }
 
     // ---- moe_routed, KT3 gate/up + KT2 down: rotated passes through the real dispatch

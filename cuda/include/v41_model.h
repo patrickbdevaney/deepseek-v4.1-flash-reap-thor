@@ -26,7 +26,9 @@ struct DevT { const void* p = nullptr; std::string dtype; std::vector<int64_t> s
 class Store {
 public:
     using Filter = std::function<bool(const std::string&)>;
-    Store(const std::string& dir, const Filter& want);
+    // rename(file, tensor) -> stored name (default: the tensor name); used to prefix per-layer overlay files
+    using Rename = std::function<std::string(const std::string&, const std::string&)>;
+    Store(const std::string& dir, const Filter& want, const Rename& rename = nullptr);
     ~Store();
     bool has(const std::string& n) const { return t_.count(n) > 0; }
     const DevT& get(const std::string& n) const;
@@ -72,6 +74,7 @@ struct LayerW {
 
 struct Model {
     std::unique_ptr<Store> store;
+    std::unique_ptr<Store> overlay;      // NVFP4 dense overlay, names "layers.L.<tensor>"; its FP8 twins are never loaded
     std::vector<LayerW> layers;          // index = layer id; only `loaded` ones are valid
     std::vector<bool> loaded;
     const uint16_t *embed = nullptr, *head = nullptr, *norm = nullptr;
@@ -83,6 +86,7 @@ struct LoadOpts {
     bool embed_head = true;
     bool mxfp4_hw = true;               // MXFP4 via cvt.rn.f16x2.e2m1x2 (false: bit-construct path)
     std::string keepset_sha256;         // thor-v1 builds: must equal thor.json keepset_sha256 (fatal otherwise)
+    std::string overlay_dir;            // thor-overlay-nvfp4 dir (L00..L39.safetensors): replaces those FP8 dense weights
 };
 // Throws std::runtime_error with the missing tensor's name on a layout mismatch.
 void load_model(Model& m, const std::string& dir, const LoadOpts& o);
@@ -119,7 +123,7 @@ struct State {
     float *x = nullptr, *xa = nullptr, *qa = nullptr, *qr = nullptr, *q = nullptr, *kv = nullptr, *o = nullptr;
     float *og = nullptr, *ck = nullptr, *cs = nullptr, *lat = nullptr, *ik = nullptr, *iq = nullptr, *iw = nullptr;
     float *score = nullptr; int ld_score = 0, score_rows_ = 0;   // indexer scores [score_rows_, seqmax]
-    float *rw = nullptr; int* ridx = nullptr; float* y = nullptr;
+    float *rw = nullptr; int* ridx = nullptr; float* y = nullptr; float* rscr = nullptr;
     float *eg_e = nullptr, *eg_kv = nullptr;
     float *logits = nullptr;                          // [max_rows, VOCAB]: head_row writes row 0, head_rows rows 0..n-1
     int* d_argmax = nullptr;                          // [max_rows] argmax of each head_rows row
@@ -127,6 +131,9 @@ struct State {
     uint8_t *pk = nullptr, *ps = nullptr;             // packed fp4 scratch
     int* valid = nullptr;
     void* moe_scratch = nullptr; void* cand_scratch = nullptr;
+    // shared expert on a forked stream, joined before its bf16 add (bit-identical to the serial order)
+    cudaStream_t side = nullptr; cudaEvent_t ev_fork = nullptr, ev_join = nullptr;
+    float* sh_o = nullptr; void* sh_scratch = nullptr;
     std::vector<void*> allocs;
     size_t bytes = 0;
     State() = default;
