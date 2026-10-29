@@ -134,6 +134,8 @@ struct State {
     // shared expert on a forked stream, joined before its bf16 add (bit-identical to the serial order)
     cudaStream_t side = nullptr; cudaEvent_t ev_fork = nullptr, ev_join = nullptr;
     cudaStream_t hcs = nullptr; cudaEvent_t ev_hf = nullptr, ev_hj = nullptr;   // hc_mixes overlap (V41_HC_OVERLAP)
+    cudaStream_t kvs = nullptr; cudaEvent_t ev_kf = nullptr, ev_kj = nullptr;   // attention KV branch (V41_KV_OVERLAP)
+    uint8_t* xq2 = nullptr; float* xs2 = nullptr;     // act_quant(qr) for the q branch while kvs reads xq
     float* sh_o = nullptr; void* sh_scratch = nullptr;
     std::vector<void*> allocs;
     size_t bytes = 0;

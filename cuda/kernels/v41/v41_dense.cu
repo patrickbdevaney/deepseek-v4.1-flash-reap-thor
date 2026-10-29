@@ -34,6 +34,19 @@ void v41k_init(size_t part_floats) {
     if (cudaMalloc(&g_part, part_floats * sizeof(float)) != cudaSuccess) { g_part = nullptr; g_part_cap = 0; return; }
     g_part_cap = part_floats;
 }
+// Streams that run k_dense concurrently with the main stream get their own partials and counters
+// (sharing g_part/g_kcnt across concurrent launches would mix their split-K sums).
+struct DenseScr { cudaStream_t st; float* part; size_t cap; int* kcnt; };
+static DenseScr g_scr[4]; static int g_nscr = 0;
+void v41k_stream_scratch(cudaStream_t st) {
+    for (int i = 0; i < g_nscr; ++i) if (g_scr[i].st == st) return;
+    if (g_nscr == 4) { fprintf(stderr, "v41k_stream_scratch: too many streams\n"); abort(); }
+    DenseScr d{st, nullptr, 0, nullptr};
+    if (g_part_cap && cudaMalloc(&d.part, g_part_cap * sizeof(float)) != cudaSuccess) { fprintf(stderr, "v41k_stream_scratch: alloc\n"); abort(); }
+    d.cap = g_part_cap;
+    if (g_kcnt && cudaMalloc(&d.kcnt, KS_TILES * sizeof(int)) == cudaSuccess) cudaMemset(d.kcnt, 0, KS_TILES * sizeof(int));
+    g_scr[g_nscr++] = d;
+}
 static int g_nsm = 0;
 static int nsm() { if (!g_nsm) { int d; cudaGetDevice(&d); cudaDeviceGetAttribute(&g_nsm, cudaDevAttrMultiProcessorCount, d); } return g_nsm; }
 
@@ -206,12 +219,14 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     // V41_KSPLIT_LEGACY=1 restores the old M-dependent prefill split.
     static const bool legacy = [] { const char* e = getenv("V41_KSPLIT_LEGACY"); return e && *e == '1'; }();
     constexpr int SPEC_M = 8;
+    float* part = g_part; size_t part_cap = g_part_cap; int* kcnt = g_kcnt;
+    for (int i = 0; i < g_nscr; ++i) if (g_scr[i].st == st) { part = g_scr[i].part; part_cap = g_scr[i].cap; kcnt = g_scr[i].kcnt; }
     int ks = 1;
     static const int want_x = [] { const char* e = getenv("V41_KSPLIT_WANT"); return e ? atoi(e) : 2; }();
     const int ctas = ntile * (legacy && M > SPEC_M ? (M + 3) / 4 : 1), want = want_x * nsm();
     if (ctas < want) {
         ks = std::min((want + ctas - 1) / ctas, std::max(1, nch / 8));
-        if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) {
+        if ((size_t)ks * std::max(M, SPEC_M) * N > part_cap) {
             static bool warned = false;          // rows would then sum differently from decode: say so once
             if (!warned) { fprintf(stderr, "[k_dense] split-K partials M=%d N=%d ks=%d exceed v41k_init capacity: unsplit\n", M, N, ks); warned = true; }
             ks = 1;
@@ -226,7 +241,7 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     const int rb = mt > 1 ? (rbm_env ? rbm_env : (mt <= 3 ? 4 : 2)) : rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
     static const bool check_launch = [] { const char* e = getenv("V41_CHECK_LAUNCH"); return e && *e == '1'; }();
     static const bool ks_fuse_env = [] { const char* e = getenv("V41_KSUM_FUSE"); return !(e && *e == '0'); }();
-    const bool fuse = ks > 1 && ks_fuse_env && g_kcnt && (size_t)ntile * mtile <= (size_t)KS_TILES;
+    const bool fuse = ks > 1 && ks_fuse_env && kcnt && (size_t)ntile * mtile <= (size_t)KS_TILES;
     // 8 lanes per row where the 32-lane stride wastes > 10% of the last trip (a function of K only)
     static const int lpr_env = [] { const char* e = getenv("V41_DENSE_LPR"); return e ? atoi(e) : -1; }();
     const int cpr = ks > 1 ? (nch + ks - 1) / ks : nch;     // chunks a row's split covers
@@ -237,7 +252,7 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
         /* opt in above 48 KB minus the kernel's own static smem (ksplit_finish's flag): at exactly 48 KB */ \
         /* dynamic (wo_a K=4096 at MT=3) the launch otherwise fails silently and y keeps stale values */ \
         if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
-        kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part, fuse ? g_kcnt : nullptr); \
+        kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, part, fuse ? kcnt : nullptr); \
         if (check_launch) { const cudaError_t e_ = cudaPeekAtLastError(); if (e_ != cudaSuccess) { \
             fprintf(stderr, "[k_dense] launch M=%d N=%d K=%d mt=%d smem=%zu: %s\n", M, N, K, MTV, smem, cudaGetErrorString(e_)); abort(); } } } while (0)
     switch (mt) { case 1: V41_LAUNCH(1); break; case 2: V41_LAUNCH(2); break; case 3: V41_LAUNCH(3); break;
@@ -245,7 +260,7 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     #undef V41_LAUNCH
     if (ks > 1) {
         size_t MN = (size_t)M * N;
-        if (!fuse) k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, g_part, ks, MN, out_scale, round ? 1 : 0);
+        if (!fuse) k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, part, ks, MN, out_scale, round ? 1 : 0);
     }
 }
 

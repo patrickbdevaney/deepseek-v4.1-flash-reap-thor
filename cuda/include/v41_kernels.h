@@ -18,6 +18,8 @@ namespace v41k {
 // One-time setup, OUTSIDE any graph capture: split-K partial buffer (floats) and HC partials for
 // up to max_rows tokens per call.
 void v41k_init(size_t part_floats);
+// a stream that runs k_dense concurrently with another gets its own split-K partials (after v41k_init)
+void v41k_stream_scratch(cudaStream_t st);
 void rope_set_tables();
 void hc_reserve(int max_rows);
 

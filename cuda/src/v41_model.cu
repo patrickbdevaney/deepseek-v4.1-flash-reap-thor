@@ -348,6 +348,9 @@ State::~State() {
     if (ev_hf) cudaEventDestroy(ev_hf);
     if (ev_hj) cudaEventDestroy(ev_hj);
     if (hcs) cudaStreamDestroy(hcs);
+    if (ev_kf) cudaEventDestroy(ev_kf);
+    if (ev_kj) cudaEventDestroy(ev_kj);
+    if (kvs) cudaStreamDestroy(kvs);
 }
 template <class T> static T* dalloc(State& s, size_t n) {
     void* p = nullptr; CK(cudaMalloc(&p, n * sizeof(T) + 256)); CK(cudaMemset(p, 0, n * sizeof(T) + 256));
@@ -403,6 +406,14 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
         CK(cudaEventCreateWithFlags(&s.ev_fork, cudaEventDisableTiming));
         CK(cudaEventCreateWithFlags(&s.ev_join, cudaEventDisableTiming));
     }
+    if (!(getenv("V41_KV_OVERLAP") && *getenv("V41_KV_OVERLAP") == '0')) {
+        CK(cudaStreamCreateWithFlags(&s.kvs, cudaStreamNonBlocking));
+        CK(cudaEventCreateWithFlags(&s.ev_kf, cudaEventDisableTiming));
+        CK(cudaEventCreateWithFlags(&s.ev_kj, cudaEventDisableTiming));
+        v41k::v41k_stream_scratch(s.kvs);
+    }
+    s.xq2 = dalloc<uint8_t>(s, (size_t)R * Q_LORA); s.xs2 = dalloc<float>(s, (size_t)R * Q_LORA / 32);
+    if (s.side) v41k::v41k_stream_scratch(s.side);
     if (!(getenv("V41_HC_OVERLAP") && *getenv("V41_HC_OVERLAP") == '0')) {
         CK(cudaStreamCreateWithFlags(&s.hcs, cudaStreamNonBlocking));
         CK(cudaEventCreateWithFlags(&s.ev_hf, cudaEventDisableTiming));
@@ -438,51 +449,70 @@ struct Rows {
 static void attention(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st) {
     const int M = R.M;
     const bool yarn = w.ratio > 0;
-    // qr = q_norm(wq_a(x)); q = wq_b(qr); rope(q[..., -64:])
+    // Two branches after act_quant(x). KV (s.kvs): window kv, compressor, indexer keys, compressed-KV
+    // append. Q (st): wq_a, q_norm, indexer queries, wq_b. They join before index_scores / sparse_attn.
+    // Same kernels on the same data in the same per-buffer order, so bit-identical; the q branch
+    // quantises qr into xq2 because the KV branch still reads act_quant(x) from xq.
     v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
-    v41k::fp8_linear(s.qa, s.xq, s.xs, w.wq_a, w.wq_a_s, M, Q_LORA, DIM, true, st);
-    v41k::rmsnorm(s.qr, s.qa, w.q_norm, M, Q_LORA, NORM_EPS, st);
-    // window kv from the SAME x quantisation (s.xq still holds act_quant(x))
-    v41k::fp8_linear(s.kv, s.xq, s.xs, w.wkv, w.wkv_s, M, HEAD_DIM, DIM, true, st);
-    v41k::rmsnorm(s.kv, s.kv, w.kv_norm, M, HEAD_DIM, NORM_EPS, st);
-    v41k::rope(s.kv, M, 1, HEAD_DIM, NOPE_DIM, R.pos, 0, false, yarn, st);
-    v41k::fp8_sim(s.kv, M, HEAD_DIM, st);
-    v41k::ring_store(s.ring[w.L], State::RING, s.kv, R.pos, M, st);
+    cudaStream_t ks = s.kvs ? s.kvs : st;
+    if (s.kvs) { CK(cudaEventRecord(s.ev_kf, st)); CK(cudaStreamWaitEvent(s.kvs, s.ev_kf, 0)); }
+    // ---- KV branch
+    v41k::fp8_linear(s.kv, s.xq, s.xs, w.wkv, w.wkv_s, M, HEAD_DIM, DIM, true, ks);
+    v41k::rmsnorm(s.kv, s.kv, w.kv_norm, M, HEAD_DIM, NORM_EPS, ks);
+    v41k::rope(s.kv, M, 1, HEAD_DIM, NOPE_DIM, R.pos, 0, false, yarn, ks);
+    v41k::fp8_sim(s.kv, M, HEAD_DIM, ks);
+    v41k::ring_store(s.ring[w.L], State::RING, s.kv, R.pos, M, ks);
     // compressor (kv_source layers only): the pooled latent before RoPE
     const int* valid = nullptr;
     bool have_latent = false;
     if (w.kv_src) {
         if (w.ratio > 1) {
-            v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, false, st);
-            v41k::bf16_linear(s.cs, x, w.cmp_wgate, M, HEAD_DIM, DIM, false, st);
+            v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, false, ks);
+            v41k::bf16_linear(s.cs, x, w.cmp_wgate, M, HEAD_DIM, DIM, false, ks);
             v41k::compressor_pool2(s.lat, s.valid, s.src[w.L].kv_state, s.src[w.L].score_state, s.ck, s.cs, w.cmp_norm,
-                                   R.pos, M, st, s.src[w.L].pool_hist + (size_t)R.r0 * 1024);
+                                   R.pos, M, ks, s.src[w.L].pool_hist + (size_t)R.r0 * 1024);
             valid = s.valid;
         } else {
-            v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, true, st);
-            v41k::rmsnorm(s.lat, s.ck, w.cmp_norm, M, HEAD_DIM, NORM_EPS, st);
+            v41k::bf16_linear(s.ck, x, w.cmp_wkv, M, HEAD_DIM, DIM, true, ks);
+            v41k::rmsnorm(s.lat, s.ck, w.cmp_norm, M, HEAD_DIM, NORM_EPS, ks);
         }
         have_latent = true;
     }
-    // indexer (index_source layers): owners append keys first, then score + select
+    // indexer keys (owners append before anyone scores)
+    if (w.idx_src && w.kv_src && have_latent) {
+        State::Src& own = s.src[w.kv_owner];
+        v41k::bf16_linear(s.ik, s.lat, w.idx_wk, M, INDEX_HEAD_DIM, HEAD_DIM, true, ks);
+        v41k::rmsnorm(s.ik, s.ik, w.idx_k_norm, M, INDEX_HEAD_DIM, NORM_EPS, ks);
+        // a latent stands for the first token of its group: position pos + 1 - ratio
+        v41k::rope(s.ik, M, 1, INDEX_HEAD_DIM, INDEX_HEAD_DIM - ROPE_DIM, R.pos, 1 - w.ratio, false, true, ks);
+        v41k::fp4_sim(s.ik, M, INDEX_HEAD_DIM, IDX_FP4_GRP, false, s.pk, s.ps, ks);
+        v41k::store_packed_rows(own.ik, own.ik_s, s.pk, s.ps, valid, R.pos, w.ratio, M, 64, 4, ks);
+    }
+    // compressed KV: RoPE the latent, fp4 (E4M3 per 16) and append to this source's cache
+    if (w.kv_src && have_latent) {
+        State::Src& own = s.src[w.L];
+        v41k::rope(s.lat, M, 1, HEAD_DIM, NOPE_DIM, R.pos, 1 - w.ratio, false, true, ks);
+        v41k::fp4_sim(s.lat, M, HEAD_DIM, CKV_FP4_GRP, true, s.pk, s.ps, ks);
+        v41k::store_packed_rows(own.ckv, own.ckv_s, s.pk, s.ps, valid, R.pos, w.ratio, M, 256, 32, ks);
+    }
+    if (s.kvs) CK(cudaEventRecord(s.ev_kj, s.kvs));
+    bool joined = !s.kvs;
+    auto join = [&] { if (!joined) { CK(cudaStreamWaitEvent(st, s.ev_kj, 0)); joined = true; } };
+    // ---- Q branch: qr = q_norm(wq_a(x))
+    v41k::fp8_linear(s.qa, s.xq, s.xs, w.wq_a, w.wq_a_s, M, Q_LORA, DIM, true, st);
+    v41k::rmsnorm(s.qr, s.qa, w.q_norm, M, Q_LORA, NORM_EPS, st);
+    uint8_t* qxq = s.kvs ? s.xq2 : s.xq; float* qxs = s.kvs ? s.xs2 : s.xs;
     int* topk = s.topk + (size_t)(s.shared_base + R.r0) * INDEX_TOPK;
     if (w.idx_src) {
         State::Src& own = s.src[w.kv_owner];
-        if (w.kv_src && have_latent) {
-            v41k::bf16_linear(s.ik, s.lat, w.idx_wk, M, INDEX_HEAD_DIM, HEAD_DIM, true, st);
-            v41k::rmsnorm(s.ik, s.ik, w.idx_k_norm, M, INDEX_HEAD_DIM, NORM_EPS, st);
-            // a latent stands for the first token of its group: position pos + 1 - ratio
-            v41k::rope(s.ik, M, 1, INDEX_HEAD_DIM, INDEX_HEAD_DIM - ROPE_DIM, R.pos, 1 - w.ratio, false, true, st);
-            v41k::fp4_sim(s.ik, M, INDEX_HEAD_DIM, IDX_FP4_GRP, false, s.pk, s.ps, st);
-            v41k::store_packed_rows(own.ik, own.ik_s, s.pk, s.ps, valid, R.pos, w.ratio, M, 64, 4, st);
-        }
-        v41k::act_quant_fp8(s.xq, s.xs, s.qr, M, Q_LORA, st);
-        v41k::fp8_linear(s.iq, s.xq, s.xs, w.idx_wq_b, w.idx_wq_b_s, M, INDEX_N_HEADS * INDEX_HEAD_DIM, Q_LORA, true, st);
+        v41k::act_quant_fp8(qxq, qxs, s.qr, M, Q_LORA, st);
+        v41k::fp8_linear(s.iq, qxq, qxs, w.idx_wq_b, w.idx_wq_b_s, M, INDEX_N_HEADS * INDEX_HEAD_DIM, Q_LORA, true, st);
         v41k::rope(s.iq, M * INDEX_N_HEADS, INDEX_N_HEADS, INDEX_HEAD_DIM, INDEX_HEAD_DIM - ROPE_DIM, R.pos, 0, false, true, st);
         v41k::fp4_sim(s.iq, M * INDEX_N_HEADS, INDEX_HEAD_DIM, IDX_FP4_GRP, false, nullptr, nullptr, st);
         v41k::bf16_linear(s.iw, x, w.idx_wproj, M, INDEX_N_HEADS, DIM, true, st);
         v41k::scale_bf16(s.iw, (size_t)M * INDEX_N_HEADS,
                          1.0f / std::sqrt((float)INDEX_HEAD_DIM) / std::sqrt((float)INDEX_N_HEADS), st);
+        join();                                      // own.ik
         uint8_t* cand = s.cand + (size_t)(s.shared_base + R.r0) * s.ld_cand;
         const int rs = s.score_rows_;
         for (int a = 0; a < M; a += rs) {
@@ -497,17 +527,11 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
                             nullptr, st);
         }
     }
-    // compressed KV: RoPE the latent, fp4 (E4M3 per 16) and append to this source's cache
-    if (w.kv_src && have_latent) {
-        State::Src& own = s.src[w.L];
-        v41k::rope(s.lat, M, 1, HEAD_DIM, NOPE_DIM, R.pos, 1 - w.ratio, false, true, st);
-        v41k::fp4_sim(s.lat, M, HEAD_DIM, CKV_FP4_GRP, true, s.pk, s.ps, st);
-        v41k::store_packed_rows(own.ckv, own.ckv_s, s.pk, s.ps, valid, R.pos, w.ratio, M, 256, 32, st);
-    }
-    // q (deferred to here only to share s.xq): q = wq_b(qr), rope
-    v41k::act_quant_fp8(s.xq, s.xs, s.qr, M, Q_LORA, st);
-    v41k::fp8_linear(s.q, s.xq, s.xs, w.wq_b, w.wq_b_s, M, N_HEADS * HEAD_DIM, Q_LORA, true, st);
+    // q = wq_b(qr), rope
+    v41k::act_quant_fp8(qxq, qxs, s.qr, M, Q_LORA, st);
+    v41k::fp8_linear(s.q, qxq, qxs, w.wq_b, w.wq_b_s, M, N_HEADS * HEAD_DIM, Q_LORA, true, st);
     v41k::rope(s.q, M * N_HEADS, N_HEADS, HEAD_DIM, NOPE_DIM, R.pos, 0, false, yarn, st);
+    join();                                          // ring, compressed KV
     // o = sparse_attn(q, [window | compressed], sink, idxs); inverse rope on o
     const State::Src* own = w.ratio ? &s.src[w.kv_owner] : nullptr;
     v41k::sparse_attn(s.o, s.q, s.ring[w.L], State::RING, own ? own->ckv : nullptr, own ? own->ckv_s : nullptr,
@@ -524,18 +548,21 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
 // MoE.forward: router (bias_vl on image rows), routed experts in ascending order, + shared
 static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st) {
     const int M = R.M;
-    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
-    v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
-    cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
-    if (s.side) {                                    // shared expert concurrently with the routed experts
+    if (s.side) {                                    // shared expert concurrently with the router and routed experts
+        v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
         CK(cudaEventRecord(s.ev_fork, st)); CK(cudaStreamWaitEvent(s.side, s.ev_fork, 0));
         v41k::moe_shared(s.sh_o, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.sh_scratch, s.side);
         CK(cudaEventRecord(s.ev_join, s.side));
+        v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+        cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
         v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
         CK(cudaStreamWaitEvent(st, s.ev_join, 0));
         v41k::add_bf16(out, s.sh_o, (size_t)M * DIM, st);
         return;
     }
+    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+    v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
+    cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
     v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
     v41k::moe_shared_add(out, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.moe_scratch, st);
 }

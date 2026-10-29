@@ -9,8 +9,8 @@ A1	1	kquant_experts	T1	-	DONE	ar_ceiling	2.0	1	0	gate_kq_fast	335135c fp8 mma K-
 A1b	1	kquant_experts	T1	A1	TODO	ar_ceiling	1.5	0.6	4	gate_kq_fast	k_kqm: next-superblock prefetch, 2 tiles/warp (B reuse), occupancy sweep; target 210 GB/s in-engine
 A2	1	nvfp4_dense	T0	-	TODO	ar_ceiling	1.2	0.6	4	bench_dense	small-N shapes: wkv 116, wq_a 158, sh_w2 143 GB/s; fuse wq_a||wkv (same x), RB/LPR per shape
 A3a	1	glue	T0	-	DONE	ar_ceiling	1.4	1	0	score cmp	63a9a45 hc_mixes on its own stream (+3.0% paired)
-A3b	1	glue	T0	A3a	IN_PROGRESS	ar_ceiling	0.6	0.8	0	score cmp	shared expert forked before the router (router 23 us x40 hidden)
-A3c	1	glue	T0	A3a	IN_PROGRESS	ar_ceiling	0.9	0.7	0	score cmp	attention KV branch (wkv/norm/rope/ring/compressor/idx keys) on kvs beside the q path; per-stream split-K scratch
+A3b	1	glue	T0	A3a	DONE	ar_ceiling	0.6	0.8	0	score cmp	shared expert forked before the router (router 23 us x40 hidden)
+A3c	1	glue	T0	A3a	DONE	ar_ceiling	0.9	0.7	0	score cmp	attention KV branch (wkv/norm/rope/ring/compressor/idx keys) on kvs beside the q path; per-stream split-K scratch
 A3d	1	glue	T0	A3c	TODO	ar_ceiling	0.4	0.7	2	score cmp	fuse hc_collapse+rmsnorm+act_quant (warp = contiguous 32-group)
 A3e	1	glue	T0	-	TODO	ar_ceiling	0.4	0.6	2	score cmp	fuse swiglu+act_quant; combine+add_bf16+hc_post
 A4	3	launches	T0	A3d,A3e	TODO	ar_ceiling	4.0	0.3	20	score cmp	persistent decode megakernel (recon first: 0731 megakernel.cu); latency floor of ~1000 small kernels
