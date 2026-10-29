@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
     ec.seqmax = 8192; ec.ext_chunk = 64;
-    std::string prompt, chat, ids_arg, json_out, logits_out;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -84,6 +84,8 @@ int main(int argc, char** argv) {
             for (int k : sweep) ec.spec_k = std::max(ec.spec_k, k);
         }
         else if (a == "--logits") logits_out = next();
+        else if (a == "--score") score_in = next();
+        else if (a == "--score-out") score_out = next();
         else { fprintf(stderr, "unknown arg %s (see the header of src/v41_decode.cu)\n", a.c_str()); return 2; }
     }
     gp.max_tokens = n;
@@ -113,6 +115,14 @@ int main(int argc, char** argv) {
 
     dsv4srv::Engine eng(ec);
     eng.load();
+    if (!score_in.empty()) {                          // whitespace-separated forced ids -> raw f32 logits
+        std::ifstream fi(score_in); std::vector<int> forced; int v; while (fi >> v) forced.push_back(v);
+        const std::vector<float> lg = eng.debug_forced_logits(ids, forced);
+        std::ofstream f(score_out, std::ios::binary);
+        f.write((const char*)lg.data(), lg.size() * 4);
+        printf("[v41] forced %zu tokens -> %s\n", forced.size(), score_out.c_str());
+        return 0;
+    }
     if (!logits_out.empty()) {
         const std::vector<float> lg = eng.debug_prefix_logits(ids);
         std::ofstream f(logits_out, std::ios::binary);

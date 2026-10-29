@@ -128,6 +128,9 @@ public:
     // consistent with a broken KV and with a near-tie flipped by the last bit of a float. Comparing
     // the logits says which: a wrong cache moves them grossly, reassociation moves them by ~1e-3.
     std::vector<float> debug_prefix_logits(const std::vector<int>& ids);
+    // Teacher forcing: prefill ids, then step each forced token; logits before each forced token
+    // (forced.size() rows of VOCAB). Compares kernels by KL instead of by where greedy text diverges.
+    std::vector<float> debug_forced_logits(const std::vector<int>& ids, const std::vector<int>& forced);
 
 private:
     struct Impl;

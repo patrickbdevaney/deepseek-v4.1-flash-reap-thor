@@ -153,7 +153,13 @@ int bind_experts(const Store& S, const std::string& ep, const std::function<std:
                 const int bb = bits == 2 ? 84 : bits == 3 ? 110 : 144;
                 if (stride != (size_t)out * (in / 256) * bb) throw std::runtime_error(ep + proj[j] + ": row bytes do not match the qtype");
                 // Q2_K/Q3_K: reorder to code | scale | d planes for the vector-load kernel (V41_KQ_SOA=0 keeps ggml order)
-                if ((bits == 2 || bits == 3) && v41k::kq_soa()) {
+                if ((bits == 2 || bits == 3) && v41k::kq_mma() && out % 16 == 0 && (uintptr_t)t.p % 16 == 0 && stride % 16 == 0) {
+                    static void* tmp = nullptr; static size_t tcap = 0;
+                    if (stride > tcap) { if (tmp) cudaFree(tmp); CK(cudaMalloc(&tmp, stride)); tcap = stride; }
+                    for (int e = 0; e < E; ++e) v41k::kq_mma_repack((uint8_t*)t.p + (size_t)e * stride, out, in, bits, tmp, 0);
+                    CK(cudaDeviceSynchronize());
+                    ex.tab.kq_mma = true;
+                } else if ((bits == 2 || bits == 3) && v41k::kq_soa()) {
                     if ((uintptr_t)t.p % 16 || stride % 16)
                         throw std::runtime_error(ep + proj[j] + ": not 16-byte aligned for kq_soa (run with V41_KQ_SOA=0)");
                     static void* tmp = nullptr; static size_t tcap = 0;

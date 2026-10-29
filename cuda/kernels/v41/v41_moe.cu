@@ -12,6 +12,7 @@
 #include "v41_config.h"
 #include "v41_gemv.cuh"
 #include "v41_kq_fast.cuh"
+#include "v41_kq_mma.cuh"
 #include <cub/block/block_scan.cuh>
 #include <cstdio>
 #include <cstdlib>
@@ -375,6 +376,23 @@ void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_
     k_kq_soa<<<(unsigned)((cnt + 255) / 256), 256, 0, st>>>((uint8_t*)tmp, W, cnt, bits);
     cudaMemcpyAsync(W, tmp, bytes, cudaMemcpyDeviceToDevice, st);   // same stream: ordered after the kernel
 }
+// fp8 tensor-core path (v41_kq_mma.cuh): ~200 GB/s on every Q2_K/Q3_K expert shape in gate_kq_fast vs
+// 110-148 for the SOA half2 kernel. V41_KQ_MMA=0 keeps the SOA layout and kernel.
+bool kq_mma() { static const bool on = [] { const char* e = getenv("V41_KQ_MMA"); return kq_fast() && !(e && *e == '0'); }(); return on; }
+void kq_mma_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st) {
+    const size_t th = (size_t)(rows / 16) * (K / 256) * 32, bytes = (size_t)rows * (K / 256) * (bits == 2 ? 84 : 110);
+    k_kq_mma_repack<<<(unsigned)((th + 255) / 256), 256, 0, st>>>((uint8_t*)tmp, W, rows, K / 256, bits);
+    cudaMemcpyAsync(W, tmp, bytes, cudaMemcpyDeviceToDevice, st);
+}
+template <int QT, int MT>
+static void launch_kqm(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
+                       const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin = 1, int cmax = 1 << 30) {
+    dim3 grid((N + KQM_ROWS_PER_CTA - 1) / KQM_ROWS_PER_CTA, max_units);
+    const size_t smem = (size_t)MT * kqm_stage_bytes(K);
+    auto kf = k_kqm<QT, MT, Unit>;
+    if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
+}
 template <int QT, int MT, bool SOA>
 static void launch_kq(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
                       const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin = 1, int cmax = 1 << 30) {
@@ -410,6 +428,26 @@ static void run_kq_(int bits, float* out, int ldo, const XSrc& X, bool by_pair, 
     else           { if (mt == 1) launch_kq<3, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
                      else launch_kq<3, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
 }
+static void run_kqm(int bits, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
+                    const int* ptok, const KQTab& tab, int N, int K, int max_units, int mt, cudaStream_t st) {
+    static const bool dual = [] { const char* e = getenv("V41_KQ_DUAL"); return !(e && *e == '0'); }();
+    if (mt > 1 && dual && g_kq_m <= KQ_DUAL_M) {
+        if (bits == 2) { launch_kqm<2, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 1);
+                         launch_kqm<2, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 2); }
+        else           { launch_kqm<3, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 1);
+                         launch_kqm<3, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 2); }
+        return;
+    }
+    if (mt == 8) {
+        if (bits == 2) launch_kqm<2, 8>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+        else launch_kqm<3, 8>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+        return;
+    }
+    if (bits == 2) { if (mt == 1) launch_kqm<2, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+                     else launch_kqm<2, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
+    else           { if (mt == 1) launch_kqm<3, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
+                     else launch_kqm<3, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
+}
 static void run_kq(int bits, bool soa, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
                    const int* ptok, const KQTab& tab, int N, int K, int max_units, int mt, cudaStream_t st) {
     if (soa) run_kq_<true>(bits, out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, mt, st);
@@ -433,6 +471,11 @@ static void dispatch_pass(int pass, const ExpertTab& T, float* out, int ldo, con
         else run_pass<LUTDec<4>>(out, ldo, X, by_pair, units, nu, ptok, tl, N, K, max_units, mt, st);
         break;
     case ExpertFmt::KQ:
+        if ((bits == 2 || bits == 3) && T.kq_mma) {     // tensor-core layout: only k_kqm can read it
+            if (!X.xq) { fprintf(stderr, "kq_mma needs fp8 activations\n"); abort(); }
+            run_kqm(bits, out, ldo, X, by_pair, units, nu, ptok, KQTab{T.w1, T.w3, T.w2, pass}, N, K, max_units, mt, st);
+            break;
+        }
         if ((bits == 2 || bits == 3) && T.kq_soa) {     // reordered bytes: only the SOA kernel can read them
             if (!X.xq) { fprintf(stderr, "kq_soa needs fp8 activations\n"); abort(); }
             run_kq(bits, true, out, ldo, X, by_pair, units, nu, ptok, KQTab{T.w1, T.w3, T.w2, pass}, N, K, max_units, mt, st);
@@ -455,7 +498,12 @@ static void dispatch_pass(int pass, const ExpertTab& T, float* out, int ldo, con
 
 void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, const int* idx, const ExpertTab& T,
                 int M, int topk, void* scratch, cudaStream_t st) {
-    const int P = M * topk, mt = (M == 1) ? 1 : UNIT_MT;
+    // Prefill on the tensor-core path: an mma tile holds 8 tokens, so 8-token units halve the expert weight
+    // reads. Per-element arithmetic does not depend on the unit size, so prefill still equals decode.
+    static const bool mt8 = [] { const char* e = getenv("V41_KQ_MT8"); return !(e && *e == '0'); }();
+    const bool all_mma = T.kq_mma && T.fmt13 == ExpertFmt::KQ && T.fmt2 == ExpertFmt::KQ &&
+                         (T.bits13 == 2 || T.bits13 == 3) && (T.bits2 == 2 || T.bits2 == 3);
+    const int P = M * topk, mt = (M == 1) ? 1 : (mt8 && all_mma && M > KQ_DUAL_M) ? 8 : UNIT_MT;
     char* b = (char*)scratch;
     Unit* units = (Unit*)b; b += al(P * sizeof(Unit));
     int* nu = (int*)b; b += al(16);

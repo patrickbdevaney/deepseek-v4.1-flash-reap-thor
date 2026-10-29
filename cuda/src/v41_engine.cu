@@ -408,4 +408,23 @@ std::vector<float> Engine::debug_prefix_logits(const std::vector<int>& ids) {
     return out;
 }
 
+std::vector<float> Engine::debug_forced_logits(const std::vector<int>& ids, const std::vector<int>& forced) {
+    Impl& I = *p_;
+    I.reset_all();
+    I.prefill(ids, 0);
+    I.ctx.assign(ids.begin(), ids.end());
+    std::vector<float> out((size_t)forced.size() * v41::VOCAB);
+    for (size_t i = 0; i < forced.size(); ++i) {
+        CK(cudaMemcpyAsync(out.data() + i * v41::VOCAB, I.s.logits, v41::VOCAB * 4, cudaMemcpyDeviceToHost, I.st));
+        CK(cudaStreamSynchronize(I.st));
+        if (i + 1 == forced.size()) break;
+        const int pos = (int)I.ctx.size();
+        I.ctx.push_back(forced[i]);
+        I.step(forced[i], pos);
+        I.kv_len = pos + 1;
+    }
+    I.reset_all(); I.ctx.clear(); I.kv_len = 0;
+    return out;
+}
+
 } // namespace dsv4srv

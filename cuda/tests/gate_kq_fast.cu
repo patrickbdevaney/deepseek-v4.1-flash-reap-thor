@@ -16,6 +16,7 @@
 #include "v41_kernels.h"
 #include "v41_config.h"
 #include "v41_kq_fast.cuh"
+#include "v41_kq_mma.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -250,6 +251,72 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         long diff = 0; for (size_t i = 0; i < o1.size(); ++i) diff += o1[i] != o[i];
         printf("  MT=4 vs MT=1 on the same pairs: %ld / %zu differ %s\n", diff, o1.size(), diff ? "FAIL" : "ok");
         ok = ok && diff == 0;
+    }
+    {   // fp8 tensor-core kernel (v41_kq_mma.cuh) on the same pool, repacked
+        std::vector<uint8_t*> m1(POOL), m3(POOL), m2(POOL);
+        auto mm = [&](const uint8_t* src, int rows, int k) {
+            const size_t n = (size_t)rows * (k / 256) * (QT == 2 ? 84 : 110); uint8_t* d; CU(cudaMalloc(&d, n));
+            const size_t th = (size_t)(rows / 16) * (k / 256) * 32;
+            k_kq_mma_repack<<<(unsigned)((th + 255) / 256), 256>>>(d, src, rows, k / 256, QT); return d; };
+        for (int e = 0; e < POOL; ++e) {
+            m1[e] = mm(d1[e], v41::MOE_INTER, v41::DIM); m3[e] = mm(d3[e], v41::MOE_INTER, v41::DIM);
+            m2[e] = mm(d2[e], v41::DIM, v41::MOE_INTER);
+        }
+        CU(cudaDeviceSynchronize());
+        const uint8_t** v1; const uint8_t** v3; const uint8_t** v2;
+        CU(cudaMalloc(&v1, POOL * 8)); CU(cudaMalloc(&v3, POOL * 8)); CU(cudaMalloc(&v2, POOL * 8));
+        CU(cudaMemcpy(v1, m1.data(), POOL * 8, cudaMemcpyHostToDevice)); CU(cudaMemcpy(v3, m3.data(), POOL * 8, cudaMemcpyHostToDevice));
+        CU(cudaMemcpy(v2, m2.data(), POOL * 8, cudaMemcpyHostToDevice));
+        KQTab tabm{v1, v3, v2, pass};
+        dim3 gm((N + KQM_ROWS_PER_CTA - 1) / KQM_ROWS_PER_CTA, nu);
+        float* mo; CU(cudaMalloc(&mo, (size_t)P * N * 4)); CU(cudaMemset(mo, 0, (size_t)P * N * 4));
+        auto launch_m = [&](float* o_, const Unit* units, dim3 gg, int mt) {
+            if (mt == 1) { auto kf = k_kqm<QT, 1, Unit>; kf<<<gg, 256, kqm_stage_bytes(K)>>>(o_, N, X, true, units, dnu, ptok, tabm, N, K, 1, 1 << 30); }
+            else { auto kf = k_kqm<QT, 4, Unit>; const size_t sm = 4 * kqm_stage_bytes(K);
+                   if (sm + 1024 > 48 * 1024) CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm));
+                   kf<<<gg, 256, sm>>>(o_, N, X, true, units, dnu, ptok, tabm, N, K, 1, 1 << 30); }
+        };
+        launch_m(mo, du, gm, MT_units); CU(cudaGetLastError()); CU(cudaDeviceSynchronize());
+        std::vector<float> om((size_t)P * N); CU(cudaMemcpy(om.data(), mo, om.size() * 4, cudaMemcpyDeviceToHost));
+        double wm = 0, wf = 0; long badm = 0;
+        for (size_t i = 0; i < r.size(); ++i) {
+            const double err = fabs(om[i] - r[i]), tol = std::max(2e-3 * rms, 2.0 * fabs(r[i]) / 256.0);
+            wm = std::max(wm, err / rms); wf = std::max(wf, fabs(o[i] - r[i]) / rms);
+            if (err > tol) ++badm;
+        }
+        printf("  MMA: max err/rms %.3g (half2 %.3g), out of tol %ld %s\n", wm, wf, badm, badm ? "FAIL" : "ok");
+        ok = ok && badm == 0;
+        if (MT_units == 4) {   // MT=4 must equal MT=1 bit for bit
+            std::vector<Unit> h1; for (const Unit& uu : hu) for (int tt = 0; tt < uu.cnt; ++tt) h1.push_back(Unit{uu.e, uu.start + tt, 1});
+            const int n1 = (int)h1.size(); Unit* d1u; CU(cudaMalloc(&d1u, n1 * sizeof(Unit)));
+            CU(cudaMemcpy(d1u, h1.data(), n1 * sizeof(Unit), cudaMemcpyHostToDevice)); CU(cudaMemcpy(dnu, &n1, 4, cudaMemcpyHostToDevice));
+            float* o1d; CU(cudaMalloc(&o1d, (size_t)P * N * 4));
+            launch_m(o1d, d1u, dim3(gm.x, n1), 1); CU(cudaDeviceSynchronize());
+            std::vector<float> o1((size_t)P * N); CU(cudaMemcpy(o1.data(), o1d, o1.size() * 4, cudaMemcpyDeviceToHost));
+            long diff = 0; for (size_t i = 0; i < o1.size(); ++i) diff += memcmp(&o1[i], &om[i], 4) != 0;
+            printf("  MMA MT=4 vs MT=1: %ld / %zu differ %s\n", diff, o1.size(), diff ? "FAIL" : "ok");
+            ok = ok && diff == 0; CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice)); cudaFree(o1d); cudaFree(d1u);
+        }
+        if (bench) {
+            const int SETS = POOL / 6, REPS = 200;
+            std::vector<Unit*> sets(SETS);
+            for (int s_ = 0; s_ < SETS; ++s_) {
+                std::vector<Unit> uu; for (int k = 0; k < 6; ++k) uu.push_back(Unit{s_ * 6 + k, k, 1});
+                CU(cudaMalloc(&sets[s_], 6 * sizeof(Unit))); CU(cudaMemcpy(sets[s_], uu.data(), 6 * sizeof(Unit), cudaMemcpyHostToDevice));
+            }
+            int six = 6; CU(cudaMemcpy(dnu, &six, 4, cudaMemcpyHostToDevice));
+            cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); float ms = 0;
+            const double bytes = 6.0 * wbytes_per_expert * REPS;
+            for (int w = 0; w < 2; ++w) {
+                cudaEventRecord(a);
+                for (int i = 0; i < REPS; ++i) launch_m(mo, sets[i % SETS], dim3(gm.x, 6), 1);
+                cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
+            }
+            printf("  bench MMA M=1 x6: %.1f GB/s (%.0f us per launch)\n", bytes / ms / 1e6, 1e3 * ms / REPS);
+            CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice));
+        }
+        for (int e = 0; e < POOL; ++e) { cudaFree(m1[e]); cudaFree(m3[e]); cudaFree(m2[e]); }
+        cudaFree(mo);
     }
     for (int e = 0; e < POOL; ++e) { cudaFree(d1[e]); cudaFree(d3[e]); cudaFree(d2[e]); cudaFree(s1[e]); cudaFree(s3[e]); cudaFree(s2[e]); }
     cudaFree(dx); cudaFree(dxs); cudaFree(dout); cudaFree(dref);

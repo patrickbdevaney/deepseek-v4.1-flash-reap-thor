@@ -92,6 +92,9 @@ void kq_fast_set(bool on);
 // vector-load fast kernel. tmp >= rows*(K/256)*block bytes. kq_soa(): the loader should repack.
 void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st);
 bool kq_soa();
+// fp8 tensor-core layout (v41_kq_mma.cuh), same bytes; rows % 16 == 0. kq_mma(): the loader should use it.
+void kq_mma_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_t st);
+bool kq_mma();
 int units_selftest();   // k_units_par vs serial k_units on random routings: mismatches (-1 = CUDA error)
 size_t overlay_count();
 
@@ -105,6 +108,7 @@ struct ExpertTab {
     // more bits on down_proj (FORMAT_PROPOSAL.md §4)
     ExpertFmt fmt13 = ExpertFmt::MXFP4, fmt2 = ExpertFmt::MXFP4;
     int bits13 = 4, bits2 = 4;                      // KQ: 2/3/4 (Q2_K..Q4_K); LUT/KT code bits
+    bool kq_mma = false;                            // KQ 2/3 matrices in kq_mma_repack layout (k_kqm only)
     bool kq_soa = false;                            // KQ 2/3 matrices reordered by kq_soa_repack (fast kernel only)
     const float* heal_gain = nullptr;               // thor-v1 arm B `ffn.heal_gain` [1]: routed sum x gain
     const uint8_t* const* w2 = nullptr;

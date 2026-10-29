@@ -356,11 +356,12 @@ hashes refer to this repository.
 | planar K-quant experts, Q3 4 blocks/SM | 18.71 | bitwise | bffc364 |
 | verify-width fixes (spec only); AR re-measured | 19.07 | bitwise | 96819b5 |
 | dense 8 lanes/row where K/32 underfills the warp | 19.82 | T1 reassociation | cab548a |
-| decode == prefill (M-independent split-K), kq 16-lane down pass | **20.16** | T1, then bitwise decode/prefill | 4e0478c |
+| decode == prefill (M-independent split-K), kq 16-lane down pass | 20.16 | T1, then bitwise decode/prefill | 4e0478c |
+| fp8 tensor-core Q2_K/Q3_K experts (`v41_kq_mma.cuh`); 8-token prefill units | **21.15** | T1 (KL to exact 0.018 vs half2 0.021) | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
-(`docs/zenith/LEDGER.md`). Today's step is 49.6 ms, which is **76% of roofline**. The best of our
+(`docs/zenith/LEDGER.md`). Today's step is 47.3 ms, which is **80% of roofline**. The best of our
 other servers, the 0731, reached 67%.
 
 **Speculative decoding (DSpark, 128 context).** A K=2 round cost 171 ms before this work and costs
@@ -381,3 +382,30 @@ verify row and a prefill row sum every row in the same order. `--consistency 32`
 zero mismatches, near-ties included, and any mismatch is a bug. Before this change the split depended
 on M. Prefill rows then summed in a different order from decode, and that rounding noise flipped MoE
 routing often enough to produce logit gaps of up to 1.47 (found in commit 4e0478c's investigation).
+
+**Tensor-core experts (2026-10-29).** `k_kq` was issue-bound. ncu measured about 4.5 thread
+instructions per weight, with the expert pass streaming at 164 GB/s. `k_kqm` exploits two facts:
+
+- A K-quant code read as an e4m3 byte is the subnormal c·2^-9.
+- Expert inputs are already e4m3.
+
+So the masked code bytes feed `mma.m16n8k16.e4m3` directly. One mma covers 16 rows, one 16-weight
+sub-block and up to 8 tokens. Every product is exact and the sum is fp32.
+
+| | result |
+|---|---|
+| Speed, `gate_kq_fast`, all four Q2/Q3 shapes | about 200 GB/s (half2 SOA: 110-148) |
+| AR decode | 20.16 → 21.15-21.31 tok/s |
+| 8k prefill | 48.7 → 61.5 tok/s; 63.8 with 8-token units (an mma tile holds 8 tokens, so expert weights are read half as often) |
+| Decode at 8k context | 17.81 → 18.71 tok/s |
+| Spec at 128 context | K=2 1.068x, K=3 1.043x; identity PASS |
+
+Greedy ids changed (T1). Teacher-forced over the exact path's 99-token output, KL to the exact fp32
+decode (`V41_KQ_FAST=0`) is 0.018 for the mma kernel and 0.021 for half2. The tool is
+`ops/bench/score_arms.sh` with `score_cmp.py`. Its arithmetic per output element does not depend on
+how many tokens share a unit. The consistency gate (33 positions, 0 mismatches) and an ids check
+(4-token vs 8-token prefill units, identical) both confirm it.
+
+The new ids reference is `ops/logs/bench/mma2_arm0.json`. `V41_KQ_MMA=0` restores the SOA half2
+kernel, and `V41_KQ_MT8=0` restores 4-token prefill units.
+
