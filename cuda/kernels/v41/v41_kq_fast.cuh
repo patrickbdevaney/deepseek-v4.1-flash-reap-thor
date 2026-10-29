@@ -238,6 +238,9 @@ __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(flo
 //    the shared-memory pipe at 83% -- it moves the bottleneck from L1 to MIO.
 //  * int16 fixed-point x + dp2a: exact integer dot, but 81-91 GB/s (same shared-memory limit).
 //  * more rows per CTA (2x, 4x): slower; staging x is not the cost.
+//  * 8 lanes per row for the down pass (K=2304 leaves 25% of a 32-lane stride idle; k_dense gains 37% from
+//    it): 4 groups x 2 rows each cut x reuse 8 -> 2 (Q2 down 126 -> 108, Q3 110 -> 86 GB/s); 4 groups x 8
+//    rows (256-row CTAs) keep reuse but lose coalescing and CTAs (73-98 GB/s, every pass). (2026-10-29)
 // What mattered: this kernel at 100 registers ran at 33% occupancy with nothing saturated (latency
 // bound); capping it to 2 CTAs/SM (64 regs, no spills) took it from ~110 to 122-150 GB/s.
 

@@ -33,7 +33,62 @@ static int nsm() { if (!g_nsm) { int d; cudaGetDevice(&d); cudaDeviceGetAttribut
 // grid (ceil(N/64), ceil(M/MT), ksplit). Group g = row / Ng reads x columns [g*K, (g+1)*K).
 // RB rows' weights are loaded before any of their dots run, so a warp keeps RB rows of loads in
 // flight (ncu: RB=1 sat at 20% of DRAM, 149 cycles/instruction on L1TEX). Each row's sum is unchanged.
-template <class Dec, int MT, int RB = 1>
+//
+// LPR = 8 (lanes per row): the warp's 8 rows run as 4 lane groups x 2 rows, a group's 8 lanes striding
+// the chunks. For K where K/32 is not a multiple of 32 (wq_b K=1280: 40 chunks, shared/expert down
+// K=2304: 72) the 32-lane stride leaves 37.5% / 25% of lanes idle on the last trip; 8 lanes fill it.
+// It sums a row in a different order than LPR = 32, so the choice is a function of K alone (never M):
+// AR and verify rows of one weight agree (prefill above SPEC_M may split K differently, as before).
+template <class Dec, int MT, int RB, int LPR>
+__device__ __forceinline__ void dense_lpr8(float* __restrict__ y, const float4* xs4, const Dec& dec, int M, int N,
+                                           int row0, int m0, int c_lo, int c_hi, int nch, int ksplit, float out_scale,
+                                           int round, float* __restrict__ part) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, gi = lane >> 3, li = lane & 7;
+    constexpr int R = ROWS_PER_WARP / 4;                     // rows per lane group
+    float acc[R][MT];
+    #pragma unroll
+    for (int r = 0; r < R; ++r)
+        #pragma unroll
+        for (int t = 0; t < MT; ++t) acc[r][t] = 0.f;
+    #pragma unroll
+    for (int r0 = 0; r0 < R; r0 += RB) {
+        int rows[RB];
+        #pragma unroll
+        for (int b = 0; b < RB; ++b) rows[b] = min(row0 + warp * ROWS_PER_WARP + (r0 + b) * 4 + gi, N - 1);
+        for (int cb = c_lo; cb < c_hi; cb += 8) {
+            const int c = cb + li, cc = min(c, c_hi - 1);
+            float w[RB][32];
+            #pragma unroll
+            for (int b = 0; b < RB; ++b) dec.load(rows[b], cc, w[b]);
+            float a[RB][MT];
+            #pragma unroll
+            for (int b = 0; b < RB; ++b)
+                #pragma unroll
+                for (int t = 0; t < MT; ++t) a[b][t] = 0.f;
+            dot_chunk_rb<MT, RB>(a, w, xs4, cc, nch);
+            if (c < c_hi) {
+                #pragma unroll
+                for (int b = 0; b < RB; ++b)
+                    #pragma unroll
+                    for (int t = 0; t < MT; ++t) acc[r0 + b][t] += a[b][t];
+            }
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < R; ++r)
+        #pragma unroll
+        for (int t = 0; t < MT; ++t) {
+            float v = acc[r][t];
+            #pragma unroll
+            for (int o = 4; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            const int row = row0 + warp * ROWS_PER_WARP + r * 4 + gi, m = m0 + t;
+            if (li == 0 && row < N && m < M) {
+                if (ksplit > 1) part[((size_t)blockIdx.z * M + m) * N + row] = v;
+                else { float o = v * out_scale; y[(size_t)m * N + row] = round ? bf16r(o) : o; }
+            }
+        }
+}
+template <class Dec, int MT, int RB = 1, int LPR = 32>
 __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, Dec dec, int M, int N, int K,
                                                int Ng, int ksplit, float out_scale, int round, float* __restrict__ part) {
     extern __shared__ float4 xs4[];
@@ -48,6 +103,10 @@ __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, De
         stage_row(xs4 + (size_t)t * nch * 8, X, m, g * K, K);
     }
     __syncthreads();
+    if constexpr (LPR == 8) {
+        dense_lpr8<Dec, MT, RB, LPR>(y, xs4, dec, M, N, row0, m0, c_lo, c_hi, nch, ksplit, out_scale, round, part);
+        return;
+    }
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     float acc[ROWS_PER_WARP][MT];
     #pragma unroll
@@ -125,7 +184,13 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     // MT > 1 shares each x read across RB rows (V41_DENSE_RBM overrides)
     static const int rbm_env = [] { const char* e = getenv("V41_DENSE_RBM"); return e ? atoi(e) : 0; }();
     const int rb = mt > 1 ? (rbm_env ? rbm_env : (mt <= 3 ? 4 : 2)) : rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
-    #define V41_LAUNCH(MTV) do { auto kf = (rb >= 4 && MTV <= 4) ? k_dense<Dec, MTV, 4> : rb >= 2 ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
+    // 8 lanes per row where the 32-lane stride wastes > 10% of the last trip (a function of K only)
+    static const int lpr_env = [] { const char* e = getenv("V41_DENSE_LPR"); return e ? atoi(e) : -1; }();
+    const int cpr = ks > 1 ? (nch + ks - 1) / ks : nch;     // chunks a row's split covers
+    const bool l8 = lpr_env >= 0 ? lpr_env == 8 && cpr % 8 == 0
+                                 : (cpr % 8 == 0 && (double)cpr / (32.0 * ((cpr + 31) / 32)) < 0.9);
+    #define V41_LAUNCH(MTV) do { auto kf = l8 ? ((rb >= 2) ? k_dense<Dec, MTV, 2, 8> : k_dense<Dec, MTV, 1, 8>) : \
+        (rb >= 4 && MTV <= 4) ? k_dense<Dec, MTV, 4> : rb >= 2 ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
         if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part); } while (0)
     switch (mt) { case 1: V41_LAUNCH(1); break; case 2: V41_LAUNCH(2); break; case 3: V41_LAUNCH(3); break;
