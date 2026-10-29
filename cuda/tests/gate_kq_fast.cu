@@ -162,9 +162,9 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     dim3 grid((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, nu);
     const size_t smem = (size_t)MT_units * kq_stage_bytes(K);
     auto launch_new = [&](const Unit* units) {
-        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit>; kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K); }
+        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit>; kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K, 1, 1 << 30); }
         else { auto kf = k_kq<QT, 4, Unit>; CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
-               kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K); }
+               kf<<<grid, 256, smem>>>(dout, N, X, true, units, dnu, ptok, tab, N, K, 1, 1 << 30); }
     };
     launch_new(du); CU(cudaGetLastError());
     k_ref<QT><<<dim3((N + 127) / 128, nu), 128>>>(dref, N, X, du, nu, tab, N, K);
@@ -183,9 +183,9 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
     bool ok = bad == 0;
     {   // SOA layout must give the AoS fast kernel's output bit for bit
         float* so; CU(cudaMalloc(&so, (size_t)P * N * 4));
-        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K); }
+        if (MT_units == 1) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K, 1, 1 << 30); }
         else { auto kf = k_kq<QT, 4, Unit, true>; CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
-               kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K); }
+               kf<<<grid, 256, smem>>>(so, N, X, true, du, dnu, ptok, tabs, N, K, 1, 1 << 30); }
         CU(cudaDeviceSynchronize());
         std::vector<float> os((size_t)P * N); CU(cudaMemcpy(os.data(), so, os.size() * 4, cudaMemcpyDeviceToHost));
         long diff = 0; for (size_t i = 0; i < os.size(); ++i) diff += memcmp(&os[i], &o[i], 4) != 0;
@@ -213,13 +213,13 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         const double old_gbs = bytes / ms / 1e6;
         for (int w = 0; w < 2; ++w) {
             cudaEventRecord(a);
-            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tab, N, K); }
+            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tab, N, K, 1, 1 << 30); }
             cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
         }
         const double new_gbs = bytes / ms / 1e6;
         for (int w = 0; w < 2; ++w) {
             cudaEventRecord(a);
-            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tabs, N, K); }
+            for (int i = 0; i < REPS; ++i) { auto kf = k_kq<QT, 1, Unit, true>; kf<<<g6, 256, kq_stage_bytes(K)>>>(dout, N, X, true, sets[i % SETS], dnu, ptok, tabs, N, K, 1, 1 << 30); }
             cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
         }
         printf("  bench SOA: %.1f GB/s\n", bytes / ms / 1e6);
@@ -234,7 +234,7 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
         CU(cudaMemcpy(d1u, h1.data(), n1 * sizeof(Unit), cudaMemcpyHostToDevice)); CU(cudaMemcpy(dnu, &n1, 4, cudaMemcpyHostToDevice));
         float* d1o; CU(cudaMalloc(&d1o, (size_t)P * N * 4));
         auto kf = k_kq<QT, 1, Unit>;
-        kf<<<dim3((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, n1), 256, kq_stage_bytes(K)>>>(d1o, N, X, true, d1u, dnu, ptok, tab, N, K);
+        kf<<<dim3((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, n1), 256, kq_stage_bytes(K)>>>(d1o, N, X, true, d1u, dnu, ptok, tab, N, K, 1, 1 << 30);
         CU(cudaDeviceSynchronize());
         std::vector<float> o1((size_t)P * N); CU(cudaMemcpy(o1.data(), d1o, o1.size() * 4, cudaMemcpyDeviceToHost));
         long diff = 0; for (size_t i = 0; i < o1.size(); ++i) diff += o1[i] != o[i];

@@ -342,16 +342,29 @@ void kq_soa_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_
 }
 template <int QT, int MT, bool SOA>
 static void launch_kq(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
-                      const KQTab& tab, int N, int K, int max_units, cudaStream_t st) {
+                      const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin = 1, int cmax = 1 << 30) {
     dim3 grid((N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, max_units);
     const size_t smem = (size_t)MT * kq_stage_bytes(K);
     auto kf = k_kq<QT, MT, Unit, SOA>;
     if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-    kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K);
+    kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
 }
+// Verify widths (M <= KQ_DUAL_M): most experts are hit by one row, and a 1-row unit in the MT = 4
+// kernel stages and dots 4 rows at 1 CTA/SM. Those units go to the MT = 1 kernel (same per-row
+// arithmetic, so the sums are unchanged) and only the shared ones to MT = 4. Prefill keeps one launch.
+static constexpr int KQ_DUAL_M = 8;
+static int g_kq_m = 1;                                // rows of the moe_routed call being dispatched
 template <bool SOA>
 static void run_kq_(int bits, float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu,
                     const int* ptok, const KQTab& tab, int N, int K, int max_units, int mt, cudaStream_t st) {
+    static const bool dual = [] { const char* e = getenv("V41_KQ_DUAL"); return !(e && *e == '0'); }();
+    if (mt > 1 && dual && g_kq_m <= KQ_DUAL_M) {
+        if (bits == 2) { launch_kq<2, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 1);
+                         launch_kq<2, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 2); }
+        else           { launch_kq<3, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 1);
+                         launch_kq<3, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 2); }
+        return;
+    }
     if (bits == 2) { if (mt == 1) launch_kq<2, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
                      else launch_kq<2, UNIT_MT, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
     else           { if (mt == 1) launch_kq<3, 1, SOA>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
@@ -418,6 +431,7 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     float* xr13 = (float*)b; b += al((size_t)M * v41::DIM * 4);
     float* xr2 = (float*)b;
     k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    g_kq_m = M;
     k_pair_w<<<(P + 127) / 128, 128, 0, st>>>(wp, w, ptok, pslot, P, topk);
     XSrc X; X.xq = xq; X.xs = xs; X.ldx = v41::DIM;
     if (T.fmt13 == ExpertFmt::KT) {               // rotate the token rows once; every unit stages them

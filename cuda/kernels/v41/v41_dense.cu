@@ -64,16 +64,17 @@ __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, De
             float w[RB][32];
             #pragma unroll
             for (int b = 0; b < RB; ++b) dec.load(rows[b], cc, w[b]);
+            float a[RB][MT];
             #pragma unroll
-            for (int b = 0; b < RB; ++b) {
-                float a[MT];
+            for (int b = 0; b < RB; ++b)
                 #pragma unroll
-                for (int t = 0; t < MT; ++t) a[t] = 0.f;
-                dot_chunk<MT>(a, w[b], xs4, cc, nch);
-                if (c < c_hi) {
+                for (int t = 0; t < MT; ++t) a[b][t] = 0.f;
+            dot_chunk_rb<MT, RB>(a, w, xs4, cc, nch);
+            if (c < c_hi) {
+                #pragma unroll
+                for (int b = 0; b < RB; ++b)
                     #pragma unroll
-                    for (int t = 0; t < MT; ++t) acc[r0 + b][t] += a[t];
-                }
+                    for (int t = 0; t < MT; ++t) acc[r0 + b][t] += a[b][t];
             }
         }
     }
@@ -101,7 +102,8 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     const int Ng = N / G;
     const int nch = K / 32;
     // MT = 8 lets a speculative verify (M = K+1 <= 8) read every weight once instead of twice
-    int mt = (M == 1) ? 1 : (M == 2 ? 2 : (M <= 4 ? 4 : 8));
+    // MT = M up to 6 (a padded tile row is a whole wasted dot product per weight)
+    int mt = (M <= 6) ? M : 8;
     while (mt > 1 && (size_t)mt * K * sizeof(float) > 160 * 1024) mt >>= 1;   // smem cap (K=8192 stays at 4)
     const int ntile = (N + ROWS_PER_CTA - 1) / ROWS_PER_CTA, mtile = (M + mt - 1) / mt;
     // Split-K changes the summation order, so it is chosen independently of M for M <= SPEC_M: a
@@ -120,11 +122,14 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     const size_t smem = (size_t)mt * K * sizeof(float);
     // RB per decoder from bench_dense: NVFP4 gains ~10% at 2; bf16/FP8 lose at 2 (V41_DENSE_RB overrides)
     static const int rb_env = [] { const char* e = getenv("V41_DENSE_RB"); return e ? atoi(e) : 0; }();
-    const int rb = rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
-    #define V41_LAUNCH(MTV) do { auto kf = (MTV == 1 && rb == 4) ? k_dense<Dec, MTV, 4> : (MTV == 1 && rb == 2) ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
+    // MT > 1 shares each x read across RB rows (V41_DENSE_RBM overrides)
+    static const int rbm_env = [] { const char* e = getenv("V41_DENSE_RBM"); return e ? atoi(e) : 0; }();
+    const int rb = mt > 1 ? (rbm_env ? rbm_env : (mt <= 3 ? 4 : 2)) : rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
+    #define V41_LAUNCH(MTV) do { auto kf = (rb >= 4 && MTV <= 4) ? k_dense<Dec, MTV, 4> : rb >= 2 ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
         if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part); } while (0)
-    if (mt == 1) V41_LAUNCH(1); else if (mt == 2) V41_LAUNCH(2); else if (mt == 4) V41_LAUNCH(4); else V41_LAUNCH(8);
+    switch (mt) { case 1: V41_LAUNCH(1); break; case 2: V41_LAUNCH(2); break; case 3: V41_LAUNCH(3); break;
+                  case 4: V41_LAUNCH(4); break; case 5: V41_LAUNCH(5); break; case 6: V41_LAUNCH(6); break; default: V41_LAUNCH(8); }
     #undef V41_LAUNCH
     if (ks > 1) {
         size_t MN = (size_t)M * N;

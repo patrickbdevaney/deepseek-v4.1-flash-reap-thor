@@ -79,7 +79,7 @@ void reset_drafter(Drafter& D, cudaStream_t st);
 LayerHook tap_hook(Drafter& D, State& s, int M_total);
 // Draft at anchor position p (device scalar D.d_anchor) with the committed token at p+1 (device
 // scalar D.d_tok). Graph-capturable: every input is in device memory. -> D.d_out[0..5].
-void draft_body(const Model& m, Drafter& D, cudaStream_t st);
+void draft_body(const Model& m, Drafter& D, cudaStream_t st, int K = 0);   // K: slots read (0 = all)
 // Host helper: set the anchor and the token from host values, then draft_body.
 void draft(const Model& m, Drafter& D, int anchor_pos, int tok, cudaStream_t st);
 

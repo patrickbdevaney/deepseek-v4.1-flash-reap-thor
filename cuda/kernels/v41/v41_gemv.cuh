@@ -72,6 +72,32 @@ __device__ __forceinline__ void dot_chunk(float (&acc)[MT], const float (&w)[32]
     }
 }
 
+// dot_chunk over RB weight rows at once: each x float4 is read from smem once and used by all RB
+// rows (MT > 1 is smem-bound otherwise: MT*4 B of x per weight). Each row's p runs the same fmaf
+// chain as dot_chunk, so every (row, t) sum is bitwise the one dot_chunk gives.
+template <int MT, int RB>
+__device__ __forceinline__ void dot_chunk_rb(float (&acc)[RB][MT], const float (&w)[RB][32], const float4* xs,
+                                             int c, int Kc) {
+    #pragma unroll
+    for (int t = 0; t < MT; ++t) {
+        const float4* xc = xs + (size_t)t * Kc * 8 + c * 8;
+        float p[RB];
+        #pragma unroll
+        for (int b = 0; b < RB; ++b) p[b] = 0.f;
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const float4 v = xc[j ^ (c & 7)];
+            #pragma unroll
+            for (int b = 0; b < RB; ++b) {
+                p[b] = fmaf(w[b][4 * j + 0], v.x, p[b]); p[b] = fmaf(w[b][4 * j + 1], v.y, p[b]);
+                p[b] = fmaf(w[b][4 * j + 2], v.z, p[b]); p[b] = fmaf(w[b][4 * j + 3], v.w, p[b]);
+            }
+        }
+        #pragma unroll
+        for (int b = 0; b < RB; ++b) acc[b][t] += p[b];
+    }
+}
+
 // ---------------------------------------------------------------- weight decoders
 // Each: __device__ void load(int row, int c, float (&w)[32]) const ; `row` is the GLOBAL output row.
 

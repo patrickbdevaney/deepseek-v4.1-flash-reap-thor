@@ -110,12 +110,13 @@ struct KQTab { const uint8_t* const* w1; const uint8_t* const* w3; const uint8_t
 template <int QT, int MT, class UnitT, bool SOA = false>
 __global__ void __launch_bounds__(256, MT == 1 ? (QT == 3 ? 4 : 2) : 1) k_kq(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                             const UnitT* units, const int* units_n, const int* pair_tok,
-                                            KQTab tab, int N, int K) {
+                                            KQTab tab, int N, int K, int cmin = 1, int cmax = 1 << 30) {
     static_assert(QT == 2 || QT == 3, "Q2_K / Q3_K");
     constexpr int BB = QT == 2 ? 84 : 110;
     const int u = blockIdx.y;
     if (u >= *units_n) return;
     const UnitT U = units[u];
+    if (U.cnt < cmin || U.cnt > cmax) return;            // another launch of this pass owns the unit
     extern __shared__ __align__(16) uint8_t kq_smem[];
     const size_t SB = kq_stage_bytes(K);
     for (int t = 0; t < MT; ++t) {

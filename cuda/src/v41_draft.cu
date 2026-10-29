@@ -320,7 +320,8 @@ static void dblock(const DBlock& w, int bi, Drafter& D, cudaStream_t st) {
     v41k::hc_post(D.h, D.y, D.h2, D.post, D.comb, M, st);
 }
 
-void draft_body(const Model& m, Drafter& D, cudaStream_t st) {
+void draft_body(const Model& m, Drafter& D, cudaStream_t st, int K) {
+    K = (K <= 0 || K > NB) ? NB : K;                     // slots the caller reads; the trunk always runs all NB
     k_draft_inputs<<<1, 32, 0, st>>>(D.d_ids, D.d_pos, D.d_out, D.d_anchor, D.d_tok);
     v41k::embed_expand(D.h, m.embed, D.d_ids, NB, st);
     v41k::hc_identity_pre(D.pre, NB, st);
@@ -328,8 +329,9 @@ void draft_body(const Model& m, Drafter& D, cudaStream_t st) {
     // forward_head: hc_pre with the last FFN's mix, mtp.2.norm, the main head for every slot
     v41k::hc_collapse(D.x, D.h, D.pre, NB, st);
     v41k::rmsnorm(D.x, D.x, D.norm, NB, DIM, NORM_EPS, st);
-    v41k::bf16_linear(D.logits, D.x, m.head, NB, VOCAB, DIM, false, st);
-    for (int i = 0; i < NB; ++i) {                       // the Markov chain, greedy
+    // slot i's logits depend only on trunk row i and d_out[0..i], so the head and the chain stop at K
+    v41k::bf16_linear(D.logits, D.x, m.head, K, VOCAB, DIM, false, st);
+    for (int i = 0; i < K; ++i) {                        // the Markov chain, greedy
         k_mk_gather<<<1, DSPARK_MARKOV_RANK, 0, st>>>(D.mk_e, D.mk_embed, D.d_out, i);
         v41k::bf16_linear(D.mk_bias, D.mk_e, D.mk_head, 1, VOCAB, DSPARK_MARKOV_RANK, false, st);
         k_add<<<(VOCAB + 255) / 256, 256, 0, st>>>(D.logits + (size_t)i * VOCAB, D.mk_bias, VOCAB);
@@ -340,7 +342,7 @@ void draft_body(const Model& m, Drafter& D, cudaStream_t st) {
 void draft(const Model& m, Drafter& D, int anchor_pos, int tok, cudaStream_t st) {
     CK(cudaMemcpyAsync(D.d_anchor, &anchor_pos, 4, cudaMemcpyHostToDevice, st));
     CK(cudaMemcpyAsync(D.d_tok, &tok, 4, cudaMemcpyHostToDevice, st));
-    draft_body(m, D, st);
+    draft_body(m, D, st, NB);
 }
 
 } // namespace v41m

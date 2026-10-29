@@ -73,7 +73,7 @@ struct Engine::Impl {
     cudaGraphExec_t gexec = nullptr;
     // speculation
     std::unique_ptr<v41m::Drafter> D;
-    std::map<int, cudaGraphExec_t> vexec;          // verify graphs by row count; key 0 = the draft
+    std::map<int, cudaGraphExec_t> vexec;          // verify graphs by row count; key -K = the K-slot draft
     int *h_draft = nullptr, *h_tgt = nullptr;
     int active_k = 0;                              // set_spec_k(); cfg.spec_k sizes the drafter
     v41m::LayerHook hook_for(int M) { return D ? v41m::tap_hook(*D, s, M) : v41m::LayerHook(); }
@@ -166,7 +166,7 @@ struct Engine::Impl {
         h_ids[0] = anchor; h_ids[1] = tok;
         CK(cudaMemcpyAsync(D->d_anchor, &h_ids[0], 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(D->d_tok, &h_ids[1], 4, cudaMemcpyHostToDevice, st));
-        launch(&vexec[0], [&] { v41m::draft_body(m, *D, st); });
+        launch(&vexec[-K], [&] { v41m::draft_body(m, *D, st, K); });
         CK(cudaMemcpyAsync(h_draft, D->d_out, (v41::DSPARK_BLOCK + 1) * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         const int M = K + 1;

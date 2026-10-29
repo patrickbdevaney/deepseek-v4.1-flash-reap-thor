@@ -42,6 +42,24 @@ int main() {
         v41k::overlay_register(W, 1.f);
         float ms = time_it([&] { v41k::fp8_linear(y, xq, xs, W, Sc, 1, s.N, s.K, true, 0, s.G); });
         printf("%-5s nvfp4 %6dx%5d  %8.1f us  %6.1f GB/s\n", s.n, s.N, s.K, 1000 * ms, (double)(cb + sb) / ms / 1e6);
+        // verify widths: M rows of distinct x; row m must equal the M=1 result on x_m bitwise
+        const int MM = 6; uint8_t* xm; float *xsm, *ym, *y1;
+        CK(cudaMalloc(&xm, (size_t)MM * s.K * s.G)); CK(cudaMalloc(&xsm, (size_t)MM * s.K * s.G / 32 * 4));
+        CK(cudaMalloc(&ym, (size_t)MM * s.N * 4)); CK(cudaMalloc(&y1, (size_t)s.N * 4)); CK(fill(xm, (size_t)MM * s.K * s.G));
+        std::vector<float> hsm((size_t)MM * s.K * s.G / 32); for (auto& v : hsm) v = 0.5f + (rng() & 3) * 0.25f;
+        CK(cudaMemcpy(xsm, hsm.data(), hsm.size() * 4, cudaMemcpyHostToDevice));
+        std::vector<float> ref((size_t)MM * s.N), got((size_t)MM * s.N);
+        for (int m = 0; m < MM; ++m) {
+            v41k::fp8_linear(y1, xm + (size_t)m * s.K * s.G, xsm + (size_t)m * s.K * s.G / 32, W, Sc, 1, s.N, s.K, true, 0, s.G);
+            CK(cudaMemcpy(ref.data() + (size_t)m * s.N, y1, s.N * 4, cudaMemcpyDeviceToHost));
+        }
+        for (int M = 2; M <= MM; ++M) {
+            float msm = time_it([&] { v41k::fp8_linear(ym, xm, xsm, W, Sc, M, s.N, s.K, true, 0, s.G); });
+            CK(cudaMemcpy(got.data(), ym, (size_t)M * s.N * 4, cudaMemcpyDeviceToHost));
+            printf("      M=%d  %8.1f us  (x%.2f of M=1)  rows %s\n", M, 1000 * msm, msm / ms,
+                   memcmp(got.data(), ref.data(), (size_t)M * s.N * 4) ? "DIFF" : "bitwise");
+        }
+        cudaFree(xm); cudaFree(xsm); cudaFree(ym); cudaFree(y1);
         cudaFree(W); cudaFree(Sc); cudaFree(xq); cudaFree(xs); cudaFree(y);
     }
     return 0;
