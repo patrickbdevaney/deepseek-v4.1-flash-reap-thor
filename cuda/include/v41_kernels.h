@@ -94,6 +94,11 @@ void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float*
             const uint8_t* d_img, int M, int E, int topk, float route_scale, cudaStream_t st,
             float* scratch = nullptr);   // scratch >= router_scratch_bytes(M, E): parallel path; null: one CTA per token
 size_t router_scratch_bytes(int M, int E);
+// Reorder a [E, K] bf16 gate in place for router()'s coalesced path (same sums bit for bit). Load time only.
+// hc_collapse(y, x, pre) + rmsnorm(y, y, w, DIM) + act_quant_fp8(q, qs, y) in one launch, bit-identical.
+void collapse_norm_quant(float* y, uint8_t* q, float* qs, const float* x, const float* pre, const uint16_t* w, int M,
+                         float eps, cudaStream_t st);
+bool router_permute(uint16_t* Wg, int E, int K, cudaStream_t st);
 // NVFP4 dense overlay: after overlay_register(codes, g), fp8_linear(.., W = codes, Ws = e4m3/16 scales, ..)
 // decodes NVFP4 instead of FP8 (DecNVFP4). overlay_count() = registered tensors.
 // N rows, K columns; force_mma -1 = env (V41_NV_MMA), 0 = row-major k_dense, 1 = repack for k_nvm

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 using namespace v41d;
@@ -116,10 +117,104 @@ __global__ void k_router_select(float* wout, int* iout, const float* sc, const f
             iout[m * topk + k] = ids[k];
         }
 }
+
+// Router on a permuted gate (router_permute), bit-identical to k_router_scores + k_router_select.
+// Lane l of an expert's warp sums x[l + 32 j] * W[l + 32 j] for j = 0, 1, ... in order (k_router_scores'
+// chain), but W is stored so that its j = 8i..8i+7 sit in one 16-byte piece at i*512 + 16 l: one warp
+// load is 512 contiguous bytes, where the row-major gate gave 2-byte lane-strided loads (28 us a token
+// for 1.97 MB). x is staged in smem. The last CTA of a token to finish ranks the E selection scores in
+// one pass (rank = how many beat it: higher sel, ties to the lower index -- the repeated-argmax order)
+// instead of k_router_select's topk serial warp passes, then sums the weights in rank order.
+static std::unordered_map<const void*, int>& rperm_map() { static std::unordered_map<const void*, int> m; return m; }
+static int* g_rcnt = nullptr;                          // per-token CTA arrival counters, back to 0 after each call
+static constexpr int RCNT = 1024;
+static constexpr int RP_WARPS = 4;
+__global__ void k_router_permute(uint16_t* W, int K) {   // one row per CTA, in place via smem
+    extern __shared__ uint16_t rp_row[];
+    uint16_t* r = W + (size_t)blockIdx.x * K;
+    for (int k = threadIdx.x; k < K; k += blockDim.x) rp_row[k] = r[k];
+    __syncthreads();
+    for (int p = threadIdx.x; p < K; p += blockDim.x) {      // p = i*256 + l*8 + t  <-  k = l + 32 (8 i + t)
+        const int i = p >> 8, l = (p >> 3) & 31, t = p & 7;
+        r[p] = rp_row[l + 32 * (8 * i + t)];
+    }
+}
+bool router_permute(uint16_t* Wg, int E, int K, cudaStream_t st) {
+    if (K % 256 || rperm_map().count(Wg)) return false;
+    if (!g_rcnt) { if (cudaMalloc(&g_rcnt, RCNT * sizeof(int)) != cudaSuccess) return false; cudaMemset(g_rcnt, 0, RCNT * sizeof(int)); }
+    k_router_permute<<<E, 256, K * sizeof(uint16_t), st>>>(Wg, K);
+    rperm_map()[Wg] = K;
+    return true;
+}
+__global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* iout, float* sc_out, float* sel_out,
+                                                            const float* x, const uint16_t* Wg, const float* bias,
+                                                            const float* bias_vl, const uint8_t* img, int E, int topk,
+                                                            float route_scale, int* rcnt) {
+    constexpr int K = v41::DIM;
+    __shared__ float xs[K];
+    __shared__ int last;
+    const int m = blockIdx.y, warp = threadIdx.x >> 5, lane = threadIdx.x & 31, e = blockIdx.x * RP_WARPS + warp;
+    for (int k = threadIdx.x; k < K; k += blockDim.x) xs[k] = x[(size_t)m * K + k];
+    __syncthreads();
+    if (e < E) {
+        const uint4* wr = reinterpret_cast<const uint4*>(Wg + (size_t)e * K) + lane;
+        float d = 0.f;
+        #pragma unroll 4
+        for (int i = 0; i < K / 256; ++i) {
+            const uint4 u = wr[i * 32];
+            const uint32_t v[4] = {u.x, u.y, u.z, u.w};
+            #pragma unroll
+            for (int t = 0; t < 8; ++t) {
+                const float wv = __uint_as_float(t & 1 ? (v[t >> 1] & 0xFFFF0000u) : (v[t >> 1] << 16));
+                d = fmaf(xs[lane + 32 * (8 * i + t)], wv, d);
+            }
+        }
+        d = warp_sum(d);
+        if (lane == 0) {
+            const float sp = d > 20.f ? d : log1pf(expf(d));
+            const float s = sqrtf(sp);
+            const float* b = (img && img[m] && bias_vl) ? bias_vl : bias;
+            __stcg(sc_out + (size_t)m * E + e, s);
+            __stcg(sel_out + (size_t)m * E + e, s + b[e]);
+        }
+    }
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(rcnt + m, 1) == (int)gridDim.x - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    __shared__ float sv[512]; __shared__ int ids[16];
+    for (int j = threadIdx.x; j < E; j += blockDim.x) sv[j] = __ldcg(sel_out + (size_t)m * E + j);
+    __syncthreads();
+    for (int j = threadIdx.x; j < E; j += blockDim.x) {
+        const float v = sv[j]; int rank = 0;
+        for (int q = 0; q < E; ++q) { const float o = sv[q]; rank += (o > v) || (o == v && q < j); }
+        if (rank < topk) ids[rank] = j;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float ws[16], sum = 0.f;
+        for (int k = 0; k < topk; ++k) { ws[k] = __ldcg(sc_out + (size_t)m * E + ids[k]); sum += ws[k]; }
+        for (int k = 0; k < topk; ++k) {
+            float w = ws[k];
+            if (topk > 1) w = w / (sum + 1e-20f);
+            wout[m * topk + k] = w * route_scale;
+            iout[m * topk + k] = ids[k];
+        }
+        rcnt[m] = 0;
+    }
+}
 size_t router_scratch_bytes(int M, int E) { return (size_t)2 * M * E * sizeof(float); }
 void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float* bias, const float* bias_vl,
             const uint8_t* d_img, int M, int E, int topk, float route_scale, cudaStream_t st, float* scratch) {
     if (!scratch) { k_router<<<M, 512, 0, st>>>(w, idx, x, Wg, bias, bias_vl, d_img, E, topk, route_scale); return; }
+    if (rperm_map().count(Wg)) {
+        if (M > RCNT || E > 512 || topk > 16) { fprintf(stderr, "router: M %d E %d topk %d out of range\n", M, E, topk); abort(); }
+        k_router_p<<<dim3((E + RP_WARPS - 1) / RP_WARPS, M), RP_WARPS * 32, 0, st>>>(
+            w, idx, scratch, scratch + (size_t)M * E, x, Wg, bias, bias_vl, d_img, E, topk, route_scale, g_rcnt);
+        return;
+    }
     float* sc = scratch; float* sel = scratch + (size_t)M * E;
     k_router_scores<<<dim3((E + 7) / 8, M), 256, 0, st>>>(sc, sel, x, Wg, bias, bias_vl, d_img, E);
     k_router_select<<<M, 32, 0, st>>>(w, idx, sc, sel, E, topk, route_scale);

@@ -17,7 +17,9 @@ BYTES = {
     "nvfp4_dense": 3672.0,  # MLA 2848.8 + shared 796.3 + indexer 26.7
     "fp8_dense": 315.0,  # Engram wkv (+ MLA/shared when no overlay, see --no-overlay)
     "kquant_experts": 3002.6,
-    "bf16_head": 1323.8,
+    "bf16_head": 1323.8,  # full head (sampling / V41_HEAD2=0); the two-stage head reads head_nvfp4 instead
+    "head_nvfp4": 372.3,  # 129280 x 5120 x (1/2 + 1/16) B
+    "head_select": 0.0,  # k_h2_max/sel/rescore/pick: a few candidate rows
     "sparse_attn": 25.0,
     "glue": 200.0,  # HC fn 157 + router 79 + norms (rough)
     "topk_index": 30.0,
@@ -25,8 +27,16 @@ BYTES = {
 BYTES_NO_OVERLAY = dict(BYTES, nvfp4_dense=0.0, fp8_dense=315.0 + 5069.6 + 1417.0 + 45.1)
 
 
-def family(name: str) -> str:
+def family(name: str, gx: int = 0) -> str:
+    if "repack" in name:
+        return "load"
+    if "k_h2_" in name:
+        return "head_select"
+    if "k_nvm" in name:
+        return "nvfp4_dense"
     if "k_dense" in name:
+        if "DecNVFP4" in name and gx == 2020:
+            return "head_nvfp4"
         if "DecNVFP4" in name:
             return "nvfp4_dense"
         if "DecFP8" in name:
@@ -67,10 +77,11 @@ def template_args(name: str) -> list:
 
 def is_prefill(name: str, grid_y: int) -> bool:
     # MT > 1 instantiations of k_dense / k_kq / k_experts serve M > 1 (prefill or verify); decode uses MT = 1
-    if not any(k in name for k in ("k_dense<", "k_kq<", "k_kqm<", "k_experts<")):
+    if not any(k in name for k in ("k_dense<", "k_kq<", "k_kqm<", "k_experts<", "k_nvm<")):
         return False
     a = template_args(name)
-    return len(a) >= 2 and a[1].replace("(int)", "").strip() != "1"
+    i = 0 if "k_nvm<" in name else 1                 # k_nvm<MT>; the others <Dec|QT, MT, ...>
+    return len(a) > i and a[i].replace("(int)", "").strip() != "1"
 
 
 def main() -> int:
@@ -84,19 +95,21 @@ def main() -> int:
     q = ("select s.value, k.gridX, k.gridY, k.end - k.start, k.start, k.end from CUPTI_ACTIVITY_KIND_KERNEL k "
          "join StringIds s on k.demangledName = s.id order by k.start")
     rows = list(db.execute(q))
-    # steps: M=1 head launches (vocab 129280 / 64 rows per CTA = 2020 CTAs)
-    steps = sum(1 for n, gx, gy, d, s, e in rows if "DecBF16" in n and gx == 2020 and gy == 1)
+    # steps: M=1 head launches (vocab 129280 / 64 rows per CTA = 2020 CTAs), bf16 or the two-stage head's NVFP4 pass
+    def is_head(n, gx, gy):
+        return ("DecBF16" in n or "DecNVFP4" in n) and gx == 2020 and gy == 1 and not is_prefill(n, gy)
+    steps = sum(1 for n, gx, gy, d, s, e in rows if is_head(n, gx, gy))
     if not steps:
         print("no M=1 head launches found", file=sys.stderr)
         return 1
     t = collections.defaultdict(float)
     pre = collections.defaultdict(float)
     for n, gx, gy, d, s, e in rows:
-        f = family(n)
+        f = family(n, gx)
         if f != "load":
             (pre if is_prefill(n, gy) else t)[f] += d / 1e6
     # wall: first to last M=1 head launch spans the decode
-    heads = [(s, e) for n, gx, gy, d, s, e in rows if "DecBF16" in n and gx == 2020 and gy == 1]
+    heads = [(s, e) for n, gx, gy, d, s, e in rows if is_head(n, gx, gy)]
     wall_ms = (heads[-1][1] - heads[0][1]) / 1e6 / max(1, steps - 1)
     B = BYTES_NO_OVERLAY if a.no_overlay else BYTES
     lines = [f"# ZENITH ledger ({a.sqlite})", "",

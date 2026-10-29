@@ -362,7 +362,8 @@ hashes refer to this repository.
 | shared expert forked before the router; attention KV branch on its own stream (per-stream split-K scratch) | **22.08** (paired: 21.61 → 22.08, +2.2%) | bitwise | 8cfe5b7 |
 | NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | b667022 |
 | k_nvm sums its split-K partials in the last CTA (no `k_ksum` launch) | **22.28** (paired vs 8cfe5b7: 22.27 → 22.28, parity) | bitwise vs b667022 | 5295ecd |
-| two-stage greedy head: NVFP4 shortlist + exact bf16 rescore (`head2_argmax`) | **24.52** (paired: 22.24 → 24.52, +10.3%) | greedy ids exact (T0e: recall by measured error, Δ = 9σ) | (this commit) |
+| two-stage greedy head: NVFP4 shortlist + exact bf16 rescore (`head2_argmax`) | **24.52** (paired: 22.24 → 24.52, +10.3%) | greedy ids exact (T0e: recall by measured error, Δ = 9σ) | c5c5ff2 |
+| hc_collapse + rmsnorm + act_quant fused (`k_cnq`); coalesced router + fused top-k; rmsnorm weight prefetch | **24.55** (paired: 24.44 → 24.55, +0.5%) | bitwise | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
@@ -497,4 +498,25 @@ Sampling (temperature > 0) and the debug and scoring paths keep the full head.
 
 The speed prompt is a chat prompt, so it is the drafter's worst case. S5 (adaptive K) and D1–D4
 (drafter fine-tune) should report per-domain numbers.
+
+**Plain decode is now at the byte floor (2026-10-29).** The nsys ledger at 24.5 tok/s (`ops/logs/prof/h2a.sqlite`):
+
+| family | ms/token | MB/token |
+|---|---|---|
+| NVFP4 dense | 20.8 | 3672 |
+| K-quant experts | 15.4 | 3003 |
+| glue | 7.3 | 200 |
+| sparse attention | 2.2 | 25 |
+| NVFP4 head | 1.6 | 372 |
+
+The kernel times add up to more than the 40.8 ms wall because the side streams overlap them. At
+228 GB/s, the 8.6 GB a token reads takes 39.2 ms, so decode runs at ~96% of the byte floor.
+
+Glue work that shortens launch chains but moves no bytes therefore buys little:
+
+- **Coalesced router** (28 µs a token to a fraction of that): paired change within noise.
+- **Fused collapse/norm/quant** (three launches into one): +0.5% paired.
+
+The remaining AR levers move bytes, and those are quality-tier (T2) decisions. Speed beyond that
+comes from speculation.
 

@@ -447,12 +447,16 @@ __global__ void k_rmsnorm(float* y, const float* x, const uint16_t* w, int dim, 
     // all loads issued before the first fma (the plain loop was latency-bound: 8.7 us for one 5120 row);
     // same per-thread order, so bit-identical. Rows longer than RN strides take the loop.
     constexpr int RN = 16;
-    float v[RN];
+    // the weights too: loaded after the reduction they were a second dependent DRAM round trip
+    float v[RN]; uint16_t wv[RN];
     const bool regs = dim <= RN * (int)blockDim.x;
     float ss = 0.f;
     if (regs) {
         #pragma unroll
-        for (int j = 0; j < RN; ++j) { const int i = threadIdx.x + j * blockDim.x; v[j] = i < dim ? xr[i] : 0.f; }
+        for (int j = 0; j < RN; ++j) {
+            const int i = threadIdx.x + j * blockDim.x;
+            v[j] = i < dim ? xr[i] : 0.f; wv[j] = (w && i < dim) ? w[i] : (uint16_t)0;
+        }
         #pragma unroll
         for (int j = 0; j < RN; ++j) if (threadIdx.x + j * blockDim.x < dim) ss = fmaf(v[j], v[j], ss);
     } else {
@@ -471,7 +475,7 @@ __global__ void k_rmsnorm(float* y, const float* x, const uint16_t* w, int dim, 
         #pragma unroll
         for (int j = 0; j < RN; ++j) {
             const int i = threadIdx.x + j * blockDim.x;
-            if (i < dim) { const float n = v[j] * r; yr[i] = bf16r(w ? bf16f(w[i]) * n : n); }
+            if (i < dim) { const float n = v[j] * r; yr[i] = bf16r(w ? bf16f(wv[j]) * n : n); }
         }
         return;
     }
@@ -619,6 +623,57 @@ __global__ void k_hc_collapse(float* y, const float* x, const float* pre, int M)
 void hc_collapse(float* y, const float* x, const float* pre, int M, cudaStream_t st) {
     size_t n = (size_t)M * v41::DIM;
     k_hc_collapse<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, x, pre, M);
+}
+// hc_collapse -> rmsnorm(w) -> act_quant_fp8 in one launch, bit for bit the three kernels: one CTA of 512 per
+// row (k_rmsnorm's block for DIM, so the sum of squares reduces in the same order); thread t owns elements
+// t + 512 j, so at each j warp w holds exactly the 32-group 16 j + w that k_act_quant gives one warp.
+// Three dependent launches with a DRAM round trip each were ~13 us per sub-layer on the critical path.
+__global__ void __launch_bounds__(512) k_cnq(float* y, uint8_t* q, float* qs, const float* x, const float* pre,
+                                             const uint16_t* w, float eps) {
+    constexpr int D = v41::DIM, NJ = D / 512;
+    static_assert(D % 512 == 0, "k_cnq: DIM % 512");
+    const int m = blockIdx.x, t = threadIdx.x;
+    const float* xr = x + (size_t)m * v41::HC_DIM;
+    __shared__ float red[32];
+    float p[4];
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) p[j] = pre[m * 4 + j];
+    float v[NJ]; uint16_t wv[NJ];
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        float s = 0.f;
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) s += p[k] * xr[(size_t)k * D + i];
+        v[j] = bf16r(s); wv[j] = w[i];
+    }
+    float ss = 0.f;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) ss = fmaf(v[j], v[j], ss);
+    ss = warp_sum(ss);
+    if ((t & 31) == 0) red[t >> 5] = ss;
+    __syncthreads();
+    if (t < 32) {
+        float u = t < 16 ? red[t] : 0.f;
+        u = warp_sum(u); if (t == 0) red[0] = u;
+    }
+    __syncthreads();
+    const float r = rsqrtf(red[0] / D + eps);
+    float* yr = y + (size_t)m * D;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        const float o = bf16r(bf16f(wv[j]) * (v[j] * r));
+        yr[i] = o;
+        const float amax = fmaxf(warp_max(fabsf(o)), 1e-4f);
+        const float sc = pow2_ceil(amax / 448.f);
+        q[(size_t)m * D + i] = f2e4m3(fminf(fmaxf(o / sc, -448.f), 448.f));
+        if ((t & 31) == 0) qs[(size_t)m * (D / 32) + 16 * j + (t >> 5)] = sc;
+    }
+}
+void collapse_norm_quant(float* y, uint8_t* q, float* qs, const float* x, const float* pre, const uint16_t* w, int M,
+                         float eps, cudaStream_t st) {
+    k_cnq<<<M, 512, 0, st>>>(y, q, qs, x, pre, w, eps);
 }
 // y[j] = post[j]*f + sum_i comb[i][j]*res[i]  (the reference sums over the FIRST comb index)
 __global__ void k_hc_post(float* y, const float* f, const float* res, const float* post, const float* comb, int M) {

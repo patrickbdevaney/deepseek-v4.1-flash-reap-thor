@@ -11,12 +11,12 @@ A2	1	nvfp4_dense	T0	-	TODO	ar_ceiling	1.2	0.6	4	bench_dense	small-N shapes: wkv 
 A3a	1	glue	T0	-	DONE	ar_ceiling	1.4	1	0	score cmp	63a9a45 hc_mixes on its own stream (+3.0% paired)
 A3b	1	glue	T0	A3a	DONE	ar_ceiling	0.6	0.8	0	score cmp	shared expert forked before the router (router 23 us x40 hidden)
 A3c	1	glue	T0	A3a	DONE	ar_ceiling	0.9	0.7	0	score cmp	attention KV branch (wkv/norm/rope/ring/compressor/idx keys) on kvs beside the q path; per-stream split-K scratch
-A3d	1	glue	T0	A3c	TODO	ar_ceiling	0.4	0.7	2	score cmp	fuse hc_collapse+rmsnorm+act_quant (warp = contiguous 32-group)
+A3d	1	glue	T0	A3c	DONE	ar_ceiling	0.4	0.7	2	score cmp	fuse hc_collapse+rmsnorm+act_quant (warp = contiguous 32-group); DONE: k_cnq (one 512-thread CTA/row, bit-identical) +0.5% paired 24.44->24.55; router coalesced permute + last-CTA rank select and rmsnorm weight prefetch bitwise but no measurable gain (BW-bound: glue overlaps the streaming kernels; wall is ~96% of the byte floor)
 A3e	1	glue	T0	-	TODO	ar_ceiling	0.4	0.6	2	score cmp	fuse swiglu+act_quant; combine+add_bf16+hc_post
 A4	3	launches	T0	A3d,A3e	TODO	ar_ceiling	4.0	0.3	20	score cmp	persistent decode megakernel (recon first: 0731 megakernel.cu); latency floor of ~1000 small kernels
 A5	1	sparse_attn	T0	-	TODO	ar_ceiling	1.0	0.6	4	gate_sa_split	fuse gather+scores+out into one launch (2.16 ms at 12 GB/s)
 A6	1	host	T0	-	TODO	ar_ceiling	0.2	0.7	2	score cmp	210 us argmax->embed host gap: overlap sync/sample/hash/submit with graph tail
-B1	3	bf16_head	T2	H6	TODO	head_fp4	4.4	0.6	3	score_cmp KL budget	SEPARATE NVFP4 head copy for AR built at load from the bf16 master (drafter's head4 already exists: share it); bf16 master untouched; opt-in env; budget d_kl32 <= +0.018
+B1	3	bf16_head	T2	H6	REJECTED	head_fp4	4.4	0.6	3	score_cmp KL budget	SEPARATE NVFP4 head copy for AR built at load from the bf16 master (drafter's head4 already exists: share it); bf16 master untouched; opt-in env; budget d_kl32 <= +0.018; SUPERSEDED by B2 (c5c5ff2): same 0.37 GiB read, greedy exact, so the lossy AR head buys nothing
 B2	3	bf16_head	T0e	B1,H6	DONE	head_fp4	3.9	0.7	5	shortlist recall = 100% on held-out	two-stage head: NVFP4 shortlist (top-64) + exact bf16 rescore of those rows -> greedy argmax exact; sampling inside shortlist (T1); keeps ~90% of B1's saving with no greedy change; DONE 2026-10-29: shortlist = approx max - 4 logits (not top-64), rescore bit-identical to k_dense; paired AR 22.24 -> 24.52 (+10.3%); held-out 27/27 identical, 0 fallbacks
 S1	2	spec	-	-	DONE	spec	0	1	0	-	spec round profile (ops/zenith/spec_round.py)
 S3	2	spec	T0	S1	DONE	spec	12	1	0	spec identity	draft 24->12 ms: K slots only + NVFP4 draft head

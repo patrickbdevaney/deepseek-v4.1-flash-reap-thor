@@ -255,6 +255,8 @@ void bind_layer(Model& m, int L, bool hw) {
     w.hc_attn_fn = f32("hc_attn_fn"); w.hc_attn_base = f32("hc_attn_base"); w.hc_attn_scale = f32("hc_attn_scale");
     w.hc_ffn_fn = f32("hc_ffn_fn"); w.hc_ffn_base = f32("hc_ffn_base"); w.hc_ffn_scale = f32("hc_ffn_scale");
     w.gate_w = b16("ffn.gate.weight"); w.gate_bias = f32("ffn.gate.bias"); w.gate_bias_vl = S.opt<float>(p + "ffn.gate.bias_vl");
+    if (!getenv("V41_ROUTER_NOPERM"))
+        v41k::router_permute(const_cast<uint16_t*>(w.gate_w), (int)S.get(p + "ffn.gate.weight").shape[0], DIM, 0);
     lin("ffn.shared_experts.w1", w.sh_w1, w.sh_w1s);
     lin("ffn.shared_experts.w2", w.sh_w2, w.sh_w2s);
     lin("ffn.shared_experts.w3", w.sh_w3, w.sh_w3s);
@@ -447,14 +449,14 @@ struct Rows {
 };
 
 // Attention.forward (+ Compressor, Indexer, select_candidate_blocks) for `R` rows. x: attn_norm'd.
-static void attention(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st) {
+static void attention(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st, bool xq_ready = false) {
     const int M = R.M;
     const bool yarn = w.ratio > 0;
     // Two branches after act_quant(x). KV (s.kvs): window kv, compressor, indexer keys, compressed-KV
     // append. Q (st): wq_a, q_norm, indexer queries, wq_b. They join before index_scores / sparse_attn.
     // Same kernels on the same data in the same per-buffer order, so bit-identical; the q branch
     // quantises qr into xq2 because the KV branch still reads act_quant(x) from xq.
-    v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
+    if (!xq_ready) v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
     cudaStream_t ks = s.kvs ? s.kvs : st;
     if (s.kvs) { CK(cudaEventRecord(s.ev_kf, st)); CK(cudaStreamWaitEvent(s.kvs, s.ev_kf, 0)); }
     // ---- KV branch
@@ -547,10 +549,10 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
 }
 
 // MoE.forward: router (bias_vl on image rows), routed experts in ascending order, + shared
-static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st) {
+static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st, bool xq_ready = false) {
     const int M = R.M;
     if (s.side) {                                    // shared expert concurrently with the router and routed experts
-        v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
+        if (!xq_ready) v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
         CK(cudaEventRecord(s.ev_fork, st)); CK(cudaStreamWaitEvent(s.side, s.ev_fork, 0));
         v41k::moe_shared(s.sh_o, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.sh_scratch, s.side);
         CK(cudaEventRecord(s.ev_join, s.side));
@@ -562,7 +564,7 @@ static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float*
         return;
     }
     v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
-    v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
+    if (!xq_ready) v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
     cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
     v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
     v41k::moe_shared_add(out, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.moe_scratch, st);
@@ -596,18 +598,20 @@ static void block(const LayerW& w, State& s, const Rows& R, const Engram& eg, cu
     cudaStream_t hst = s.hcs ? s.hcs : st;
     fork();
     v41k::hc_mixes(s.pre_next, s.post, s.comb, R.h, w.hc_attn_fn, w.hc_attn_scale, w.hc_attn_base, M, hst);
-    v41k::hc_collapse(s.x, R.h, R.pre, M, st);
-    v41k::rmsnorm(s.x, s.x, w.attn_norm, M, DIM, NORM_EPS, st);
-    attention(w, s, R, s.x, s.xa, st);
+    // V41_CNQ=0: the three separate kernels (bit-identical either way)
+    static const bool cnq = [] { const char* e = getenv("V41_CNQ"); return !(e && *e == '0'); }();
+    if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, R.h, R.pre, w.attn_norm, M, NORM_EPS, st);
+    else { v41k::hc_collapse(s.x, R.h, R.pre, M, st); v41k::rmsnorm(s.x, s.x, w.attn_norm, M, DIM, NORM_EPS, st); }
+    attention(w, s, R, s.x, s.xa, st, cnq);
     join();
     v41k::hc_post(h2, s.xa, R.h, s.post, s.comb, M, st);
     // FFN: its own mixes from h2; collapses with the ATTENTION's pre
     float* attn_pre = s.pre_next;
     fork();
     v41k::hc_mixes(R.pre, s.post, s.comb, h2, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base, M, hst);   // R.pre <- ffn_pre
-    v41k::hc_collapse(s.x, h2, attn_pre, M, st);
-    v41k::rmsnorm(s.x, s.x, w.ffn_norm, M, DIM, NORM_EPS, st);
-    moe(w, s, R, s.x, s.y, st);
+    if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, h2, attn_pre, w.ffn_norm, M, NORM_EPS, st);
+    else { v41k::hc_collapse(s.x, h2, attn_pre, M, st); v41k::rmsnorm(s.x, s.x, w.ffn_norm, M, DIM, NORM_EPS, st); }
+    moe(w, s, R, s.x, s.y, st, cnq);
     join();
     v41k::hc_post(R.h, s.y, h2, s.post, s.comb, M, st);
 }
