@@ -34,6 +34,7 @@ struct XSrc {
     const uint8_t* xq = nullptr;
     const float* xs = nullptr;
     int ldx = 0;
+    const uint8_t* stg = nullptr;   // k_kqm only: rows already in kqm staged layout (k_kqm_prep), stride kqm_stage_bytes(K)
 };
 // stage K elements starting at column k0 of activation row `row` into smem slot (float4 granules)
 __device__ __forceinline__ void stage_row(float4* dst, const XSrc& X, int row, int k0, int K) {

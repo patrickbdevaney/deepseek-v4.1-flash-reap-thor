@@ -573,6 +573,13 @@ static void run_kqm(int bits, float* out, int ldo, const XSrc& X, bool by_pair, 
         else launch_kqm<3, 8>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
         return;
     }
+    if (mt == 16) {                                   // 9..16-token units share one expert read; the rest stage 8
+        if (bits == 2) { launch_kqm<2, 8>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 8);
+                         launch_kqm<2, 16>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 9); }
+        else           { launch_kqm<3, 8>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 1, 8);
+                         launch_kqm<3, 16>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, 9); }
+        return;
+    }
     if (bits == 2) { if (mt == 1) launch_kqm<2, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
                      else launch_kqm<2, UNIT_MT>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st); }
     else           { if (mt == 1) launch_kqm<3, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st);
@@ -631,9 +638,11 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     // Prefill on the tensor-core path: an mma tile holds 8 tokens, so 8-token units halve the expert weight
     // reads. Per-element arithmetic does not depend on the unit size, so prefill still equals decode.
     static const bool mt8 = [] { const char* e = getenv("V41_KQ_MT8"); return !(e && *e == '0'); }();
+    // 16-token units (k_kqm NT = 2): at chunk 512 an expert averages 16 tokens, read once instead of twice
+    static const int mtp = [] { const char* e = getenv("V41_KQ_MTP"); return e ? atoi(e) : 16; }();
     const bool all_mma = T.kq_mma && T.fmt13 == ExpertFmt::KQ && T.fmt2 == ExpertFmt::KQ &&
                          (T.bits13 == 2 || T.bits13 == 3) && (T.bits2 == 2 || T.bits2 == 3);
-    const int P = M * topk, mt = (M == 1) ? 1 : (mt8 && all_mma && M > KQ_DUAL_M) ? 8 : UNIT_MT;
+    const int P = M * topk, mt = (M == 1) ? 1 : (mt8 && all_mma && M > KQ_DUAL_M) ? (mtp == 16 ? 16 : 8) : UNIT_MT;
     char* b = (char*)scratch;
     Unit* units = (Unit*)b; b += al(P * sizeof(Unit));
     int* nu = (int*)b; b += al(16);
@@ -664,6 +673,12 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
         k_rht_rows<<<dim3(v41::DIM / 256, M), 256, 0, st>>>(xr13, X, T.rht13, v41::DIM);
         X = XSrc(); X.xf = xr13; X.ldx = v41::DIM;
     }
+    // prefill on the tensor-core path: stage x once per row (xr13 / xr2 are free: they hold KT rotations only)
+    static const bool prep_env = [] { const char* e = getenv("V41_KQM_PREP"); return !(e && *e == '0'); }();
+    const bool prep = prep_env && all_mma && M > KQ_DUAL_M && T.fmt13 == ExpertFmt::KQ;
+    static_assert(v41g::kqm_stage_bytes(v41::DIM) <= (size_t)v41::DIM * 4 &&
+                  v41g::kqm_stage_bytes(v41::MOE_INTER) <= (size_t)v41::MOE_INTER * 4, "staged rows fit the KT scratch");
+    if (prep) { v41g::k_kqm_prep<<<M, 256, 0, st>>>((uint8_t*)xr13, X, v41::DIM); X.stg = (const uint8_t*)xr13; }
     dispatch_pass(0, T, gu, 2 * v41::MOE_INTER, X, false, units, nu, ptok, 2 * v41::MOE_INTER, v41::DIM, P, mt, st);
     swiglu(act, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
     act_quant_fp8(aq, as, act, P, v41::MOE_INTER, st);
@@ -672,6 +687,7 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
         k_rht_rows<<<dim3(v41::MOE_INTER / 256, P), 256, 0, st>>>(xr2, A, T.rht2, v41::MOE_INTER);
         A = XSrc(); A.xf = xr2; A.ldx = v41::MOE_INTER;
     }
+    if (prep) { v41g::k_kqm_prep<<<P, 256, 0, st>>>((uint8_t*)xr2, A, v41::MOE_INTER); A.stg = (const uint8_t*)xr2; }
     dispatch_pass(1, T, down, v41::DIM, A, true, units, nu, ptok, v41::DIM, v41::MOE_INTER, P, mt, st);
     size_t n = (size_t)M * v41::DIM;
     k_combine<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, down, idx, inv, M, topk, T.heal_gain);

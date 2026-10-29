@@ -297,6 +297,59 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
             printf("  MMA MT=4 vs MT=1: %ld / %zu differ %s\n", diff, o1.size(), diff ? "FAIL" : "ok");
             ok = ok && diff == 0; CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice)); cudaFree(o1d); cudaFree(d1u);
         }
+        if (MT_units == 4 && P >= 16) {   // prefill NT = 2 tiles (MT = 16) and MT = 8 vs MT = 1, full and partial units
+            XSrc XP = X; uint8_t* stg; CU(cudaMalloc(&stg, 16 * kqm_stage_bytes(K)));
+            k_kqm_prep<<<16, 256>>>(stg, X, K); XP.stg = stg;
+            auto kq16 = [&](float* o_, const Unit* units, int n, auto kf, int mt, bool pre = false) {
+                const size_t sm = (size_t)mt * kqm_stage_bytes(K);
+                if (sm + 1024 > 48 * 1024) CU(cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm));
+                CU(cudaMemcpy(dnu, &n, 4, cudaMemcpyHostToDevice));
+                kf<<<dim3(gm.x, n), 256, sm>>>(o_, N, pre ? XP : X, true, units, dnu, ptok, tabm, N, K, 1, 1 << 30); CU(cudaGetLastError());
+            };
+            for (int cnt : {16, 11, 9}) {
+                Unit hb{7, 0, cnt}; std::vector<Unit> h1; for (int tt = 0; tt < cnt; ++tt) h1.push_back(Unit{7, tt, 1});
+                std::vector<Unit> h8; for (int tt = 0; tt < cnt; tt += 8) h8.push_back(Unit{7, tt, std::min(8, cnt - tt)});
+                Unit *db, *d1u, *d8u; CU(cudaMalloc(&db, sizeof(Unit))); CU(cudaMalloc(&d1u, cnt * sizeof(Unit))); CU(cudaMalloc(&d8u, 2 * sizeof(Unit)));
+                CU(cudaMemcpy(db, &hb, sizeof(Unit), cudaMemcpyHostToDevice));
+                CU(cudaMemcpy(d1u, h1.data(), cnt * sizeof(Unit), cudaMemcpyHostToDevice));
+                CU(cudaMemcpy(d8u, h8.data(), h8.size() * sizeof(Unit), cudaMemcpyHostToDevice));
+                float *oa, *ob, *oc; CU(cudaMalloc(&oa, (size_t)16 * N * 4)); CU(cudaMalloc(&ob, (size_t)16 * N * 4)); CU(cudaMalloc(&oc, (size_t)16 * N * 4));
+                kq16(oa, db, 1, k_kqm<QT, 16, Unit>, 16); kq16(ob, d1u, cnt, k_kqm<QT, 1, Unit>, 1);
+                kq16(oc, d8u, (int)h8.size(), k_kqm<QT, 8, Unit>, 8, true); kq16(oa, db, 1, k_kqm<QT, 16, Unit>, 16, true);
+                CU(cudaDeviceSynchronize());
+                std::vector<float> va((size_t)cnt * N), vb(va.size()), vc(va.size());
+                CU(cudaMemcpy(va.data(), oa, va.size() * 4, cudaMemcpyDeviceToHost)); CU(cudaMemcpy(vb.data(), ob, vb.size() * 4, cudaMemcpyDeviceToHost));
+                CU(cudaMemcpy(vc.data(), oc, vc.size() * 4, cudaMemcpyDeviceToHost));
+                long d16 = 0, d8 = 0; for (size_t i = 0; i < va.size(); ++i) { d16 += memcmp(&va[i], &vb[i], 4) != 0; d8 += memcmp(&vc[i], &vb[i], 4) != 0; }
+                printf("  MMA cnt %2d: MT=16 vs MT=1 %ld, MT=8 vs MT=1 %ld / %zu differ %s\n", cnt, d16, d8, va.size(), d16 || d8 ? "FAIL" : "ok");
+                ok = ok && !d16 && !d8; cudaFree(oa); cudaFree(ob); cudaFree(oc); cudaFree(db); cudaFree(d1u); cudaFree(d8u);
+            }
+            {   // weight-read timing: 48 experts x 16 tokens as 2 x MT8 units vs 1 x MT16 unit
+                std::vector<Unit> u8, u16;
+                for (int e = 0; e < POOL; ++e) { u8.push_back(Unit{e, 0, 8}); u8.push_back(Unit{e, 8, 8}); u16.push_back(Unit{e, 0, 16}); }
+                Unit *d8u, *d16u; CU(cudaMalloc(&d8u, u8.size() * sizeof(Unit))); CU(cudaMalloc(&d16u, u16.size() * sizeof(Unit)));
+                CU(cudaMemcpy(d8u, u8.data(), u8.size() * sizeof(Unit), cudaMemcpyHostToDevice));
+                CU(cudaMemcpy(d16u, u16.data(), u16.size() * sizeof(Unit), cudaMemcpyHostToDevice));
+                float* ot; CU(cudaMalloc(&ot, (size_t)16 * N * 4));
+                cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b); float m8 = 0, m16 = 0;
+                for (int w = 0; w < 2; ++w) {
+                    cudaEventRecord(a); for (int i = 0; i < 10; ++i) kq16(ot, d8u, (int)u8.size(), k_kqm<QT, 8, Unit>, 8);
+                    cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&m8, a, b);
+                    cudaEventRecord(a); for (int i = 0; i < 10; ++i) kq16(ot, d16u, (int)u16.size(), k_kqm<QT, 16, Unit>, 16);
+                    cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&m16, a, b);
+                }
+                printf("  bench 48 experts x 16 tok: MT8 %.0f us  MT16 %.0f us  %.2fx\n", 100 * m8, 100 * m16, m8 / m16);
+                for (int w = 0; w < 2; ++w) {
+                    cudaEventRecord(a); for (int i = 0; i < 10; ++i) kq16(ot, d8u, (int)u8.size(), k_kqm<QT, 8, Unit>, 8, true);
+                    cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&m8, a, b);
+                    cudaEventRecord(a); for (int i = 0; i < 10; ++i) kq16(ot, d16u, (int)u16.size(), k_kqm<QT, 16, Unit>, 16, true);
+                    cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&m16, a, b);
+                }
+                printf("  bench prestaged:          MT8 %.0f us  MT16 %.0f us  %.2fx\n", 100 * m8, 100 * m16, m8 / m16);
+                cudaFree(ot); cudaFree(d8u); cudaFree(d16u); cudaFree(stg);
+            }
+            CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice));
+        }
         if (bench) {
             const int SETS = POOL / 6, REPS = 200;
             std::vector<Unit*> sets(SETS);

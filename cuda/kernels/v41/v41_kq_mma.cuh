@@ -37,6 +37,12 @@ __host__ __device__ constexpr size_t kqm_stage_bytes(int K) { return kqm_xb_byte
 
 // x bytes of superblock s, lane t, sub-block sb at word (s*4 + t)*16 + sb
 __device__ __forceinline__ void kqm_stage_row(uint8_t* dst, const XSrc& X, int row, int K) {
+    if (X.stg) {                                      // prestaged by k_kqm_prep: the same bytes, copied
+        const uint4* src = reinterpret_cast<const uint4*>(X.stg + (size_t)row * kqm_stage_bytes(K));
+        uint4* d = reinterpret_cast<uint4*>(dst);
+        for (int i = threadIdx.x; i < (int)(kqm_stage_bytes(K) / 16); i += blockDim.x) d[i] = src[i];
+        return;
+    }
     uint32_t* xb = reinterpret_cast<uint32_t*>(dst);
     float* xs = reinterpret_cast<float*>(dst + kqm_xb_bytes(K));
     float* xm = xs + K / 32;
@@ -55,19 +61,38 @@ __device__ __forceinline__ void kqm_stage_row(uint8_t* dst, const XSrc& X, int r
     }
 }
 
+// one CTA per row: the staged layout once into global memory, so k_kqm's ceil(N / 128) CTAs per unit
+// copy it instead of each re-deriving the B-fragment order and the xm sums (prefill)
+static __global__ void k_kqm_prep(uint8_t* dst, XSrc X, int K) {
+    kqm_stage_row(dst + (size_t)blockIdx.x * kqm_stage_bytes(K), X, blockIdx.x, K);
+}
+
 __device__ __forceinline__ void mma_e4m3(float (&d)[4], uint32_t a0, uint32_t a1, uint32_t b0) {
     d[0] = d[1] = d[2] = d[3] = 0.f;
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.e4m3.e4m3.f32 {%0,%1,%2,%3},{%4,%5},{%6},{%0,%1,%2,%3};"
                  : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]) : "r"(a0), "r"(a1), "r"(b0));
 }
 
-// grid (ceil(N / 128), max units); same unit contract as k_kq (MT = most tokens a unit may hold, <= 8)
+// code-free term: m[n] += c[i] * xm[n][i] for i = 0..3 in order (one float4 of 4 consecutive sub-blocks per token)
+template <int MT>
+__device__ __forceinline__ void kqm_mt_acc(float (&m)[MT], const float (&c)[4], const float* xm, int stride) {
+    #pragma unroll
+    for (int n = 0; n < MT; ++n) {
+        const float4 v = *reinterpret_cast<const float4*>(xm + n * stride);
+        m[n] = fmaf(c[0], v.x, m[n]); m[n] = fmaf(c[1], v.y, m[n]); m[n] = fmaf(c[2], v.z, m[n]); m[n] = fmaf(c[3], v.w, m[n]);
+    }
+}
+
+// grid (ceil(N / 128), max units); same unit contract as k_kq (MT = most tokens a unit may hold, <= 8,
+// or a multiple of 8: NT = MT / 8 n8 tiles share each A fragment -- prefill units read an expert once
+// for up to MT tokens; every column's fmaf sequence is the MT <= 8 one, so rows stay bitwise)
 template <int QT, int MT, class UnitT>
 __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                              const UnitT* units, const int* units_n, const int* pair_tok,
                                              KQTab tab, int N, int K, int cmin = 1, int cmax = 1 << 30) {
     static_assert(QT == 2 || QT == 3, "Q2_K / Q3_K");
-    static_assert(MT >= 1 && MT <= 8, "one n8 tile");
+    static_assert(MT >= 1 && (MT <= 8 || MT % 8 == 0), "one n8 tile or whole n8 tiles");
+    constexpr int NT = MT <= 8 ? 1 : MT / 8;
     const int u = blockIdx.y;
     if (u >= *units_n) return;
     const UnitT U = units[u];
@@ -89,20 +114,24 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
     } else { W = tab.w2[U.e]; lt = tile; mrows = N; }
     const int nsb = K / 256;
     const size_t cnt = (size_t)(mrows / 16) * nsb;
-    // B source: token g for the mma (clamped), columns 2t, 2t+1 for the scaling (clamped)
-    const uint8_t* xg = kqm_smem + min(g, MT - 1) * SB;
-    int cn[2]; cn[0] = min(2 * t, MT - 1); cn[1] = min(2 * t + 1, MT - 1);
-    const float* xsn[2]; const float* xmc[MT];
+    // B source per tile j: token 8j + g for the mma (clamped), columns 8j + 2t (+1) for the scaling (clamped)
+    const uint8_t* xg[NT]; const float* xsn[NT][2];
     #pragma unroll
-    for (int e = 0; e < 2; ++e) xsn[e] = reinterpret_cast<const float*>(kqm_smem + cn[e] * SB + kqm_xb_bytes(K));
-    #pragma unroll
-    for (int n = 0; n < MT; ++n) xmc[n] = reinterpret_cast<const float*>(kqm_smem + n * SB + kqm_xb_bytes(K)) + K / 32;
-    constexpr int NE = MT == 1 ? 1 : 2;                  // C-fragment columns this lane can own
-    float acc[2][NE], mt[2][MT];
+    for (int j = 0; j < NT; ++j) {
+        xg[j] = kqm_smem + min(8 * j + g, MT - 1) * SB;
+        #pragma unroll
+        for (int e = 0; e < 2; ++e)
+            xsn[j][e] = reinterpret_cast<const float*>(kqm_smem + min(8 * j + 2 * t + e, MT - 1) * SB + kqm_xb_bytes(K));
+    }
+    const float* xm0 = reinterpret_cast<const float*>(kqm_smem + kqm_xb_bytes(K)) + K / 32;   // token n at + n * SB / 4
+    constexpr int NE = MT == 1 ? 1 : 2;                  // C-fragment columns this lane can own per tile
+    float acc[NT][2][NE], mt[2][MT];
     #pragma unroll
     for (int h = 0; h < 2; ++h) {
         #pragma unroll
-        for (int e = 0; e < NE; ++e) acc[h][e] = 0.f;
+        for (int j = 0; j < NT; ++j)
+            #pragma unroll
+            for (int e = 0; e < NE; ++e) acc[j][h][e] = 0.f;
         #pragma unroll
         for (int n = 0; n < MT; ++n) mt[h][n] = 0.f;
     }
@@ -128,13 +157,13 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
                 const uint32_t sw = *reinterpret_cast<const uint32_t*>(W + 1024 * cnt + idx * 256 + r * 16 + 4 * t);
                 const uint32_t dd = *reinterpret_cast<const uint32_t*>(W + 1280 * cnt + idx * 64 + r * 4);
                 const float d = f16_lo(dd), dm = f16_lo(dd >> 16);
+                float mm[4];
                 #pragma unroll
                 for (int i = 0; i < 4; ++i) {
                     scf[h][i] = d * (float)((sw >> (8 * i)) & 0xF);
-                    const float mm = dm * (float)((sw >> (8 * i + 4)) & 0xF);
-                    #pragma unroll
-                    for (int n = 0; n < MT; ++n) mt[h][n] = fmaf(mm, xmc[n][s * 16 + 4 * t + i], mt[h][n]);
+                    mm[i] = dm * (float)((sw >> (8 * i + 4)) & 0xF);
                 }
+                kqm_mt_acc<MT>(mt[h], mm, xm0 + s * 16 + 4 * t, (int)(SB / 4));
             } else {
                 const uint32_t* s12 = reinterpret_cast<const uint32_t*>(W + 1536 * cnt + idx * 192 + r * 12);
                 const uint32_t lo = s12[t & 1] >> (4 * (t >> 1)), hi = s12[2] >> (2 * t);
@@ -143,23 +172,23 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
                 for (int i = 0; i < 4; ++i) {
                     const int sc = (int)(((lo >> (8 * i)) & 0xF) | (((hi >> (8 * i)) & 3) << 4)) - 32;
                     scf[h][i] = d * (float)sc;
-                    #pragma unroll
-                    for (int n = 0; n < MT; ++n) mt[h][n] = fmaf(scf[h][i], xmc[n][s * 16 + 4 * t + i], mt[h][n]);
                 }
+                kqm_mt_acc<MT>(mt[h], scf[h], xm0 + s * 16 + 4 * t, (int)(SB / 4));
             }
         }
-        uint32_t xb[16];
-        {
-            const uint4* x4 = reinterpret_cast<const uint4*>(xg + (size_t)(s * 4 + t) * 64);
-            #pragma unroll
-            for (int i = 0; i < 4; ++i) { const uint4 v = x4[i]; xb[4 * i] = v.x; xb[4 * i + 1] = v.y; xb[4 * i + 2] = v.z; xb[4 * i + 3] = v.w; }
-        }
-        float xs[2][8];
+        uint32_t xb[NT][16];
+        float xs[NT][2][8];
         #pragma unroll
-        for (int e = 0; e < NE; ++e) {
-            const float4* p = reinterpret_cast<const float4*>(xsn[e] + s * 8);
-            const float4 a = p[0], b = p[1];
-            xs[e][0] = a.x; xs[e][1] = a.y; xs[e][2] = a.z; xs[e][3] = a.w; xs[e][4] = b.x; xs[e][5] = b.y; xs[e][6] = b.z; xs[e][7] = b.w;
+        for (int j = 0; j < NT; ++j) {
+            const uint4* x4 = reinterpret_cast<const uint4*>(xg[j] + (size_t)(s * 4 + t) * 64);
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) { const uint4 v = x4[i]; xb[j][4 * i] = v.x; xb[j][4 * i + 1] = v.y; xb[j][4 * i + 2] = v.z; xb[j][4 * i + 3] = v.w; }
+            #pragma unroll
+            for (int e = 0; e < NE; ++e) {
+                const float4* p = reinterpret_cast<const float4*>(xsn[j][e] + s * 8);
+                const float4 a = p[0], b = p[1];
+                xs[j][e][0] = a.x; xs[j][e][1] = a.y; xs[j][e][2] = a.z; xs[j][e][3] = a.w; xs[j][e][4] = b.x; xs[j][e][5] = b.y; xs[j][e][6] = b.z; xs[j][e][7] = b.w;
+            }
         }
         #pragma unroll
         for (int sb = 0; sb < 16; ++sb) {
@@ -169,14 +198,17 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
                 const uint32_t hv = hw[sb >> 2] >> (2 * (sb & 3));
                 a0 |= (hv & 0x01010101u) << 2; a1 |= ((hv >> 1) & 0x01010101u) << 2;
             }
-            float D[4];
-            mma_e4m3(D, a0, a1, xb[sb]);
             const float s0 = __shfl_sync(0xffffffffu, scf[0][sb & 3], src_q | (sb >> 2));
             const float s1 = __shfl_sync(0xffffffffu, scf[1][sb & 3], src_q | (sb >> 2));
             #pragma unroll
-            for (int e = 0; e < NE; ++e) {
-                acc[0][e] = fmaf(s0, D[e] * xs[e][sb >> 1], acc[0][e]);
-                acc[1][e] = fmaf(s1, D[2 + e] * xs[e][sb >> 1], acc[1][e]);
+            for (int j = 0; j < NT; ++j) {
+                float D[4];
+                mma_e4m3(D, a0, a1, xb[j][sb]);
+                #pragma unroll
+                for (int e = 0; e < NE; ++e) {
+                    acc[j][0][e] = fmaf(s0, D[e] * xs[j][e][sb >> 1], acc[j][0][e]);
+                    acc[j][1][e] = fmaf(s1, D[2 + e] * xs[j][e][sb >> 1], acc[j][1][e]);
+                }
             }
         }
     }
@@ -191,15 +223,17 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
             mt[h][n] = v;
         }
     #pragma unroll
+    for (int j = 0; j < NT; ++j)
+    #pragma unroll
     for (int h = 0; h < 2; ++h)
         #pragma unroll
         for (int e = 0; e < NE; ++e) {
-            const int n = 2 * t + e, row = tile * 16 + g + 8 * h;
+            const int n = 8 * j + 2 * t + e, row = tile * 16 + g + 8 * h;
             if (n >= MT || n >= U.cnt || row >= N) continue;
             float m = 0.f;
             #pragma unroll
             for (int q = 0; q < MT; ++q) if (q == n) m = mt[h][q];
-            const float v = QT == 2 ? fmaf(512.f, acc[h][e], -m) : fmaf(512.f, acc[h][e], -4.f * m);
+            const float v = QT == 2 ? fmaf(512.f, acc[j][h][e], -m) : fmaf(512.f, acc[j][h][e], -4.f * m);
             out[(size_t)(U.start + n) * ldo + row] = bf16r(v);
         }
 }
