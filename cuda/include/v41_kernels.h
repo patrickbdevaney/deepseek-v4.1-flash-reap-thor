@@ -32,6 +32,8 @@ void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, 
 // y[M,N] = x[M,K] @ W[N,K]^T with W bf16, fp32 accumulate. Covers the bf16 linears (compressor,
 // indexer wk/weights_proj, router, head) — the reference's fp32-promoted ones are numerically the
 // same product because their weights are bf16 values.
+// Reorder W in place for coalesced loads (DecBF16P) and route bf16_linear(W) through it. Exact.
+bool bf16_permute(uint16_t* W, int N, int K, cudaStream_t st);
 void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int K,
                  bool round_bf16, cudaStream_t st, float out_scale = 1.0f);
 // y = bf16(w * x * rsqrt(mean(x^2) + eps)); w bf16 or null. rows independent.
@@ -158,6 +160,7 @@ size_t topk_scratch_bytes(int M);
 // indices cidx[m][0..ncomp) (already shifted by `coff`; -1 = masked). o is bf16-rounded.
 // Scratch for the split decode/verify form (M <= 8); without it sparse_attn uses the one-kernel form.
 void sparse_attn_reserve(int max_m);
+void topk_serial_set(bool on);           // gate use: the thread-0 scan form of topk_rows
 void sparse_attn_split_set(bool on);
 void sparse_attn(float* o, const float* q, const float* win_ring, int ring, const uint8_t* ccodes,
                  const uint8_t* cscales, const int* cidx, int ncomp, int coff, const float* sink,

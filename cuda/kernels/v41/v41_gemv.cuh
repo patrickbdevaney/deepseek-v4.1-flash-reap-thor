@@ -94,6 +94,25 @@ struct DecFP8 {                 // e4m3 [N,K], e8m0 per 32x32 block [ceil(N/32),
     }
 };
 
+// DecBF16 on a row layout permuted by bf16_permute(): in each group of 32 chunks (128 uint4), the
+// piece lane `slot` reads on trip h sits at h*32 + slot, so one warp-wide load is 512 contiguous bytes
+// instead of 32 strided 16-byte pieces. Same values to the same lane in the same order as DecBF16.
+struct DecBF16P {
+    const uint16_t* W; int K;
+    __device__ __forceinline__ void load(int row, int c, float (&w)[32]) const {
+        const uint4* p = reinterpret_cast<const uint4*>(W + (size_t)row * K) + (size_t)(c >> 5) * 128 + (c & 31);
+        #pragma unroll
+        for (int h = 0; h < 4; ++h) {
+            const uint4 u = p[32 * h];
+            const uint32_t v[4] = {u.x, u.y, u.z, u.w};
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                w[8 * h + 2 * i + 0] = __uint_as_float(v[i] << 16);
+                w[8 * h + 2 * i + 1] = __uint_as_float(v[i] & 0xFFFF0000u);
+            }
+        }
+    }
+};
 struct DecBF16 {                // bf16 [N,K]
     const uint16_t* W; int K;
     __device__ __forceinline__ void load(int row, int c, float (&w)[32]) const {

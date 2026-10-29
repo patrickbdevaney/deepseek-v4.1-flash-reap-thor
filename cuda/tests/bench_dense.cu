@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <vector>
 #include <random>
+#include <cstring>
 #include "v41_kernels.h"
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { printf("CUDA %s line %d\n", cudaGetErrorString(e_), __LINE__); return 1; } } while (0)
 static float time_it(auto f, int it = 30) {
@@ -23,6 +24,12 @@ int main() {
       CK(fill(W, (size_t)N * K * 2)); CK(fill(x, K * 4));
       float ms = time_it([&] { v41k::bf16_linear(y, x, W, 1, N, K, false, 0, 1.f); }, 10);
       printf("head  bf16 %6dx%5d  %8.1f us  %6.1f GB/s\n", N, K, 1000 * ms, (double)N * K * 2 / ms / 1e6);
+      std::vector<float> y0(N), y1(N); cudaMemcpy(y0.data(), y, N * 4, cudaMemcpyDeviceToHost);
+      v41k::bf16_permute(W, N, K, 0);
+      ms = time_it([&] { v41k::bf16_linear(y, x, W, 1, N, K, false, 0, 1.f); }, 10);
+      cudaMemcpy(y1.data(), y, N * 4, cudaMemcpyDeviceToHost);
+      printf("head  bf16P %5dx%5d  %8.1f us  %6.1f GB/s  bitwise %s\n", N, K, 1000 * ms, (double)N * K * 2 / ms / 1e6,
+             memcmp(y0.data(), y1.data(), N * 4) ? "DIFF" : "same");
       cudaFree(W); }
     struct S { const char* n; int N, K, G; };
     for (S s : {S{"wq_a", 1280, 5120, 1}, S{"wq_b", 32768, 1280, 1}, S{"wo_a", 8192, 4096, 8}, S{"wo_b", 5120, 8192, 1},

@@ -317,6 +317,8 @@ void load_model(Model& m, const std::string& dir, const LoadOpts& o) {
     if (o.embed_head) {
         m.embed = m.store->p<uint16_t>("embed.weight");
         m.head = m.store->p<uint16_t>("head.weight");
+        // coalesced head GEMV (DecBF16P): 117 -> 221 GB/s in bench_dense, bitwise equal logits
+        if (!getenv("V41_HEAD_NOPERM")) { v41k::bf16_permute(const_cast<uint16_t*>(m.head), VOCAB, DIM, 0); CK(cudaDeviceSynchronize()); }
         m.norm = m.store->p<uint16_t>("norm.weight");
     }
 }

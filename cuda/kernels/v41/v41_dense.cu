@@ -1,3 +1,4 @@
+#include <type_traits>
 // v41_dense.cu — dense linears, norms, RoPE, QAT-sim quantisers, hyper-connections, embedding.
 // Reference semantics are cited per kernel; see include/v41_kernels.h for the conventions.
 #include "v41_kernels.h"
@@ -30,7 +31,9 @@ static int nsm() { if (!g_nsm) { int d; cudaGetDevice(&d); cudaDeviceGetAttribut
 
 // --------------------------------------------------------------------------- dense GEMV
 // grid (ceil(N/64), ceil(M/MT), ksplit). Group g = row / Ng reads x columns [g*K, (g+1)*K).
-template <class Dec, int MT>
+// RB rows' weights are loaded before any of their dots run, so a warp keeps RB rows of loads in
+// flight (ncu: RB=1 sat at 20% of DRAM, 149 cycles/instruction on L1TEX). Each row's sum is unchanged.
+template <class Dec, int MT, int RB = 1>
 __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, Dec dec, int M, int N, int K,
                                                int Ng, int ksplit, float out_scale, int round, float* __restrict__ part) {
     extern __shared__ float4 xs4[];
@@ -52,18 +55,25 @@ __global__ void __launch_bounds__(256) k_dense(float* __restrict__ y, XSrc X, De
         #pragma unroll
         for (int t = 0; t < MT; ++t) acc[r][t] = 0.f;
     #pragma unroll
-    for (int r = 0; r < ROWS_PER_WARP; ++r) {
-        const int row = min(row0 + warp * ROWS_PER_WARP + r, N - 1);
+    for (int r0 = 0; r0 < ROWS_PER_WARP; r0 += RB) {
+        int rows[RB];
+        #pragma unroll
+        for (int b = 0; b < RB; ++b) rows[b] = min(row0 + warp * ROWS_PER_WARP + r0 + b, N - 1);
         for (int cb = c_lo; cb < c_hi; cb += 32) {           // every lane takes every trip (shuffle-safe)
             const int c = cb + lane, cc = min(c, c_hi - 1);
-            float w[32]; dec.load(row, cc, w);
-            float a[MT];
+            float w[RB][32];
             #pragma unroll
-            for (int t = 0; t < MT; ++t) a[t] = 0.f;
-            dot_chunk<MT>(a, w, xs4, cc, nch);
-            if (c < c_hi) {
+            for (int b = 0; b < RB; ++b) dec.load(rows[b], cc, w[b]);
+            #pragma unroll
+            for (int b = 0; b < RB; ++b) {
+                float a[MT];
                 #pragma unroll
-                for (int t = 0; t < MT; ++t) acc[r][t] += a[t];
+                for (int t = 0; t < MT; ++t) a[t] = 0.f;
+                dot_chunk<MT>(a, w[b], xs4, cc, nch);
+                if (c < c_hi) {
+                    #pragma unroll
+                    for (int t = 0; t < MT; ++t) acc[r0 + b][t] += a[t];
+                }
             }
         }
     }
@@ -108,7 +118,10 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     }
     dim3 grid(ntile, mtile, ks);
     const size_t smem = (size_t)mt * K * sizeof(float);
-    #define V41_LAUNCH(MTV) do { auto kf = k_dense<Dec, MTV>; \
+    // RB per decoder from bench_dense: NVFP4 gains ~10% at 2; bf16/FP8 lose at 2 (V41_DENSE_RB overrides)
+    static const int rb_env = [] { const char* e = getenv("V41_DENSE_RB"); return e ? atoi(e) : 0; }();
+    const int rb = rb_env ? rb_env : (std::is_same<Dec, DecNVFP4>::value ? 2 : 1);
+    #define V41_LAUNCH(MTV) do { auto kf = (MTV == 1 && rb == 4) ? k_dense<Dec, MTV, 4> : (MTV == 1 && rb == 2) ? k_dense<Dec, MTV, 2> : k_dense<Dec, MTV, 1>; \
         if (smem > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, dec, M, N, K, Ng, ks, out_scale, round ? 1 : 0, g_part); } while (0)
     if (mt == 1) V41_LAUNCH(1); else if (mt == 2) V41_LAUNCH(2); else if (mt == 4) V41_LAUNCH(4); else V41_LAUNCH(8);
@@ -139,9 +152,31 @@ void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, 
     DecFP8 d{W, Ws, K};
     launch_dense(y, X, d, M, N, K, G, round_bf16, 1.0f, st);
 }
+// bf16_permute: in-place reorder of each row's 2 KB chunk groups for DecBF16P, then registered so
+// bf16_linear serves the pointer with it. K must be a multiple of 1024 (one group = 32 chunks of 32).
+__global__ void k_bf16_permute(uint4* W, int K) {
+    __shared__ uint4 t[128];
+    uint4* g = W + (size_t)blockIdx.x * (K / 8) + (size_t)blockIdx.y * 128;
+    t[threadIdx.x] = g[threadIdx.x];
+    __syncthreads();
+    const int n = threadIdx.x;                    // new slot h*32+lane <- old piece 4*lane+h
+    g[n] = t[4 * (n & 31) + (n >> 5)];
+}
+static std::unordered_map<const void*, int>& perm_map() { static std::unordered_map<const void*, int> m; return m; }
+bool bf16_permute(uint16_t* W, int N, int K, cudaStream_t st) {
+    if (K % 1024 || perm_map().count(W)) return false;
+    k_bf16_permute<<<dim3(N, K / 1024), 128, 0, st>>>(reinterpret_cast<uint4*>(W), K);
+    perm_map()[W] = K;
+    return true;
+}
 void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int K, bool round_bf16,
                  cudaStream_t st, float out_scale) {
     XSrc X; X.xf = x; X.ldx = K;
+    if (!perm_map().empty() && perm_map().count(W)) {
+        DecBF16P d{W, K};
+        launch_dense(y, X, d, M, N, K, 1, round_bf16, out_scale, st);
+        return;
+    }
     DecBF16 d{W, K};
     launch_dense(y, X, d, M, N, K, 1, round_bf16, out_scale, st);
 }
