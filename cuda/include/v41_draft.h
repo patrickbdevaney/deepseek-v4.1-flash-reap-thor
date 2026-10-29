@@ -49,7 +49,7 @@ struct Drafter {
     std::string desc;                    // "<dir> (<arm>, <experts>/block, <qtype>)" for logs and JSON
     double gib = 0;
     // state
-    static constexpr int RING = 256;
+    static constexpr int RING = v41m::State::RING;   // tap rows of a whole prefill chunk land here too
     float* ring[v41::N_MTP] = {};        // [RING, 512] main_kv per position (slot pos % RING)
     int max_rows = 0;
     float* taps = nullptr;               // [max_rows, 3, DIM] bf16 values (hc-mean entering 37/38/39)

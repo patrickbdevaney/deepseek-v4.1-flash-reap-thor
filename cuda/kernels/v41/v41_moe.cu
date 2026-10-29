@@ -283,6 +283,41 @@ __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_par(Unit* units, int* u
     if (p == 0) *units_n = total;
 }
 
+// k_units_par for P up to UNITS_BIG_MAX (prefill chunks above 170 tokens): the same two passes with
+// UB_IPT pairs per thread, the per-pair arrays in dynamic smem and a blocked BlockScan.
+static constexpr int UB_IPT = 4, UNITS_BIG_MAX = UNITS_PAR_MAX * UB_IPT;
+__global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_big(Unit* units, int* units_n, int* pair_tok, int* pair_slot,
+                                                              int* inv, const int* idx, int M, int topk, int mt) {
+    __shared__ typename UScan::TempStorage ts;
+    extern __shared__ int ub[];
+    int* se = ub; int* so_e = ub + UNITS_BIG_MAX; int* so_left = ub + 2 * UNITS_BIG_MAX; int* so_off = ub + 3 * UNITS_BIG_MAX;
+    const int P = M * topk;
+    for (int p = threadIdx.x; p < P; p += blockDim.x) se[p] = idx[p];
+    __syncthreads();
+    for (int p = threadIdx.x; p < P; p += blockDim.x) {
+        const int e = se[p], t = p / topk;
+        int r = 0, s = 0, run = 0;
+        for (int q = 0; q < P; ++q) {
+            const int eq = se[q], tq = q / topk;
+            s += eq < e; run += eq == e;
+            r += eq < e || (eq == e && (tq < t || (tq == t && q < p)));
+        }
+        pair_tok[r] = t; pair_slot[r] = p % topk; inv[p] = r;
+        so_e[r] = e; so_off[r] = r - s; so_left[r] = run - (r - s);
+    }
+    __syncthreads();
+    int st[UB_IPT], u[UB_IPT], total;
+    #pragma unroll
+    for (int i = 0; i < UB_IPT; ++i) { const int p = threadIdx.x * UB_IPT + i; st[i] = p < P && so_off[p] % mt == 0; }
+    UScan(ts).ExclusiveSum(st, u, total);
+    #pragma unroll
+    for (int i = 0; i < UB_IPT; ++i) {
+        const int p = threadIdx.x * UB_IPT + i;
+        if (st[i]) units[u[i]] = Unit{so_e[p], p, min(mt, so_left[p])};
+    }
+    if (threadIdx.x == 0) *units_n = total;
+}
+
 // --------------------------------------------------------------------------- expert GEMV
 // grid (row tiles, max units). Unit u: expert e, pairs [start, start+cnt). Input rows: for the
 // gate/up pass, token rows of x (pair_tok); for the down pass, pair rows of act (identity).
@@ -615,6 +650,12 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     float* xr2 = (float*)b;
     static const bool units_serial = [] { const char* e = getenv("V41_UNITS_SERIAL"); return e && *e == '1'; }();
     if (P <= UNITS_PAR_MAX && !units_serial) k_units_par<<<1, UNITS_PAR_MAX, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    else if (P <= UNITS_BIG_MAX && !units_serial) {
+        const int smem = 4 * UNITS_BIG_MAX * (int)sizeof(int);
+        static const bool attr = [smem] { return cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess; }();
+        (void)attr;
+        k_units_big<<<1, UNITS_PAR_MAX, smem, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    }
     else k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
     g_kq_m = M;
     k_pair_w<<<(P + 127) / 128, 128, 0, st>>>(wp, w, ptok, pslot, P, topk);
@@ -673,8 +714,9 @@ int units_selftest() {
     auto rnd = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
     for (int topk : {6, 3})
         for (int mt : {1, 4})
-            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128}) {
-                const int P = M * topk; if (P > UNITS_PAR_MAX) continue;
+            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128, 200, 341, 512}) {
+                const int P = M * topk; if (P > UNITS_BIG_MAX) continue;
+                const bool big = P > UNITS_PAR_MAX;          // k_units_big against the serial reference
                 for (int rep = 0; rep < 20; ++rep) {
                     const int E = rep % 2 ? 16 : 192;               // few experts: long runs
                     std::vector<int> h(P);
@@ -691,7 +733,11 @@ int units_selftest() {
                                                   un[k] = (Unit*)b; b += P * sizeof(Unit); }
                     cudaMemcpy(idx, h.data(), P * 4, cudaMemcpyHostToDevice);
                     k_units<<<1, 1>>>(un[0], buf[0][3], buf[0][0], buf[0][1], buf[0][2], idx, M, topk, mt);
-                    k_units_par<<<1, UNITS_PAR_MAX>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
+                    if (big) {
+                        const int smem = 4 * UNITS_BIG_MAX * (int)sizeof(int);
+                        cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+                        k_units_big<<<1, UNITS_PAR_MAX, smem>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
+                    } else k_units_par<<<1, UNITS_PAR_MAX>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
                     if (cudaDeviceSynchronize() != cudaSuccess) { cudaFree(d); return -1; }
                     std::vector<int> a(3 * P + 1), c(3 * P + 1);
                     for (int k = 0; k < 2; ++k) {
@@ -707,7 +753,7 @@ int units_selftest() {
                         cudaMemcpy(uc.data(), un[1], nu * sizeof(Unit), cudaMemcpyDeviceToHost);
                         for (int i = 0; i < nu; ++i) diff |= ua[i].e != uc[i].e || ua[i].start != uc[i].start || ua[i].cnt != uc[i].cnt;
                     }
-                    if (diff && bad < 5) printf("units mismatch: topk %d mt %d M %d rep %d\n", topk, mt, M, rep);
+                    if (diff && bad < 5) printf("units mismatch: topk %d mt %d M %d rep %d%s\n", topk, mt, M, rep, big ? " (big)" : "");
                     bad += diff;
                     cudaFree(d);
                 }

@@ -1,7 +1,7 @@
 // v41_decode.cu — command-line greedy generation and tok/s bench over the V4.1 engine.
 //
 //   build/v41_decode --ckpt DIR [--keepset s04/keepset.json] [--engram DIR] [--prompt TEXT | --chat TEXT [--thinking] | --ids 1,2,3 | --ids-file F]
-//                    [--n 128] [--seqmax 8192] [--chunk 64] [--no-graph] [--sw-mxfp4] [--temp T --seed S]
+//                    [--n 128] [--seqmax 8192] [--chunk 256] [--no-graph] [--sw-mxfp4] [--temp T --seed S]
 //                    [--repeat R] [--json OUT] [--logits OUT]
 //                    [--spec K [--draft HEAD_DIR] [--spec-sweep 1,2,3,4]]
 //
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
-    ec.seqmax = 8192; ec.ext_chunk = 64;
+    ec.seqmax = 8192; ec.ext_chunk = 256;            // prefill chunk (8k prefill: 64 -> 79.4, 256 -> 88.0 tok/s, ids identical)
     std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, chat_file;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
@@ -168,7 +168,9 @@ int main(int argc, char** argv) {
                 if (diff >= 0) ++gross;                     // near-tie classification lives in --spec-sweep
                 const double ratio = g0.tok_per_s > 0 ? g.tok_per_s / g0.tok_per_s : 0.0;
                 dom_k[dom][k].first += ratio; dom_k[dom][k].second += g.tok_per_verify;
-                ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tok_per_verify", g.tok_per_verify}, {"first_diff", diff}});
+                json kh = json::array();                    // rounds per realised width (adaptive K)
+                for (int w = 0; w < dsv4srv::SpecProfile::MAXW; ++w) { int c = 0; for (int a = 0; a < dsv4srv::SpecProfile::MAXW; ++a) c += g.spec.accept_joint[w][a]; kh.push_back(c); }
+                ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tok_per_verify", g.tok_per_verify}, {"first_diff", diff}, {"width_rounds", kh}});
                 char b[96]; snprintf(b, sizeof b, "  K=%d %.2f (x%.3f, %.2f/verify%s)", k, g.tok_per_s, ratio, g.tok_per_verify, diff >= 0 ? ", DIFF" : "");
                 ks_txt += b;
             }

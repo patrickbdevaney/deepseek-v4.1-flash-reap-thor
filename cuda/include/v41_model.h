@@ -103,7 +103,10 @@ struct State {
     int seqmax = 0, max_rows = 0;
     // per-layer window ring (256 slots: a prefill chunk of <=128 rows never overwrites a slot a
     // row of the same chunk still needs)
-    static constexpr int RING = 2 * v41::WINDOW;
+    // a chunk of M rows reads the 127 positions before its first row and writes M slots, so chunks may be
+    // up to RING - WINDOW rows (prefill re-reads every touched expert once per chunk: bigger chunks)
+    static constexpr int MAX_CHUNK = 512;
+    static constexpr int RING = v41::WINDOW + MAX_CHUNK;
     std::vector<float*> ring;            // [N_LAYERS] -> [RING, 512]
     // per kv_source: compressed KV (fp4 codes 256 B + E4M3 scales 32 B) and index keys (64 + 4 B)
     struct Src { uint8_t *ckv = nullptr, *ckv_s = nullptr, *ik = nullptr, *ik_s = nullptr;

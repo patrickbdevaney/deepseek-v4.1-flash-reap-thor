@@ -78,6 +78,37 @@ struct Engine::Impl {
     std::map<int, cudaGraphExec_t> vexec, vexec2;  // verify graphs by row count; key -K = the K-slot draft
     int *h_draft = nullptr, *h_tgt = nullptr;
     int active_k = 0;                              // set_spec_k(); cfg.spec_k sizes the drafter
+    // S5 adaptive K (V41_SPEC_ADAPT=1): per round pick K in [0, active_k] maximising expected tokens per
+    // ms, E(K) = 1 + sum_{i<=K} prod_{j<=i} pa[j] over T(K). T = EMA of the measured round wall time at
+    // that K (persists across requests); pa[i] = EMA (0.2) of P(draft i accepted | drafts < i accepted),
+    // reset to 0.65 per request. Every 8th round below kmax runs kmax, so every position keeps learning
+    // (probing K+1, with pa kept across requests, left the deep positions stale after a chat prompt and
+    // under-drafted code by 0.1x). Greedy ids are the same at every K (spec identity), so this only
+    // changes speed.
+    struct AdaptK {
+        static constexpr int MK = 8;
+        double T[MK + 1] = {}, pa[MK + 1] = {};
+        int cnt[MK + 1] = {};                       // rounds timed per K; the first is dropped (graph capture)
+        int round = 0;
+        void reset_accept() { for (int i = 0; i <= MK; ++i) pa[i] = 0.65; round = 0; }
+        int pick(int kmax) {
+            kmax = std::min(kmax, MK);
+            for (int k = 0; k <= kmax; ++k) if (cnt[k] < 2) return k;           // time every K (after its capture)
+            int best = 0; double bv = -1, e = 1, prod = 1;
+            for (int k = 0; k <= kmax; ++k) {
+                if (k > 0) { prod *= pa[k]; e += prod; }
+                const double v = e / T[k];
+                if (v > bv) { bv = v; best = k; }
+            }
+            if (++round % 8 == 0) best = kmax;
+            return best;
+        }
+        void update(int k, int a, double ms) {
+            if (cnt[k]++ > 0) T[k] = T[k] > 0 ? 0.9 * T[k] + 0.1 * ms : ms;
+            for (int i = 1; i <= std::min(a + 1, k); ++i) pa[i] = 0.8 * pa[i] + 0.2 * (i <= a ? 1.0 : 0.0);
+        }
+    } adapt;
+    bool adapt_on = [] { const char* e = getenv("V41_SPEC_ADAPT"); return e && *e == '1'; }();
     v41m::LayerHook hook_for(int M) { return D ? v41m::tap_hook(*D, s, M) : v41m::LayerHook(); }
 
     void stage_rows(const int* ids, int n, int pos0) {
@@ -308,7 +339,7 @@ void Engine::load() {
     if (!I.cfg.quiet)
         printf("[engine] weights %.2f GiB (%zu tensors), %d routed experts/layer, experts %s, %.0f s\n",
                I.m.store->gib(), I.m.store->count(), I.m.n_routed, I.m.quant_format.c_str(), ms_since(t0) / 1e3);
-    I.chunk = std::max(1, std::min({I.cfg.ext_chunk, v41::WINDOW}));
+    I.chunk = std::max(1, std::min({I.cfg.ext_chunk, v41m::State::MAX_CHUNK}));
     if (const char* e = getenv("V41_DEC_MARGIN")) I.dec_margin = std::max(0, atoi(e));
     v41m::alloc_state(I.s, I.cfg.seqmax, I.chunk);
     I.chunk = std::min(I.chunk, v41m::max_chunk(I.s));
@@ -390,6 +421,7 @@ GenStats Engine::generate(const std::vector<int>& ids, const GenParams& p, const
     const bool spec = I.D != nullptr && I.active_k > 0;
     int emitted_by_spec = 0;
     const long fb0 = I.h2_fallbacks;
+    if (I.adapt_on) I.adapt.reset_accept();
     for (int n = 0; n < p.max_tokens; ++n) {
         const int tok = q.front(); q.pop_front();
         ++gs.completion_tokens;
@@ -401,17 +433,22 @@ GenStats Engine::generate(const std::vector<int>& ids, const GenParams& p, const
         const int pos = (int)I.ctx.size();
         I.ctx.push_back(tok);
         if (!q.empty()) continue;                   // an accepted draft: the verify wrote its KV
-        const int K = std::min(I.active_k, p.max_tokens - (n + 1) - 1);
+        const int kcap = std::min(I.active_k, p.max_tokens - (n + 1) - 1);
+        const bool adapt = spec && I.adapt_on && kcap == I.active_k;      // the tail's capped rounds are not timed
+        const int K = adapt ? I.adapt.pick(kcap) : kcap;
+        const auto tr = clk::now();
         if (spec && K > 0) {
             const int a = I.verify(tok, pos, K, p, rng, q);
             emitted_by_spec += a + 1;
             if (K < SpecProfile::MAXW) ++gs.spec.accept_joint[K][a];
+            if (adapt) I.adapt.update(K, a, ms_since(tr));
         } else {
             const bool greedy = p.temperature <= 0.f;
             I.step(tok, pos, greedy);
             I.kv_len = pos + 1;
             q.push_back(I.sample(p, rng, greedy && I.h2));
             if (spec) ++gs.spec.accept_joint[0][0];
+            if (adapt) I.adapt.update(0, 0, ms_since(tr));
         }
         ++gs.verifies;
     }

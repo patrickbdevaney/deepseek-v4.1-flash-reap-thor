@@ -361,12 +361,13 @@ template <class T> static T* dalloc(State& s, size_t n) {
 }
 void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int shared_rows) {
     if (seqmax > MAX_CTX) throw std::runtime_error("seqmax above 1M (YaRN x16 of 64K)");
-    if (max_rows > WINDOW) throw std::runtime_error("max_rows > 128: the 256-slot window ring needs chunks <= 128");
+    if (max_rows > State::MAX_CHUNK) throw std::runtime_error("max_rows > State::MAX_CHUNK (window ring RING = WINDOW + MAX_CHUNK)");
     s.seqmax = seqmax; s.max_rows = max_rows;
     v41k::rope_set_tables();
     v41k::hc_reserve(max_rows);
     v41k::sparse_attn_reserve(max_rows);
-    v41k::v41k_init((size_t)1 << 22);
+    // split-K partials: ks * max(M, 8) * N floats; the largest ks * N over the dense shapes is ~10240 (wo_b)
+    v41k::v41k_init(std::max<size_t>((size_t)1 << 22, (size_t)max_rows * 16384));
     s.ring.assign(N_LAYERS, nullptr);
     for (int L = 0; L < N_LAYERS; ++L) s.ring[L] = dalloc<float>(s, (size_t)State::RING * HEAD_DIM);
     for (int L : KV_SOURCES) {
