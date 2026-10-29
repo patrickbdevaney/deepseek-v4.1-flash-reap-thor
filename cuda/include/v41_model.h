@@ -133,6 +133,7 @@ struct State {
     void* moe_scratch = nullptr; void* cand_scratch = nullptr;
     // shared expert on a forked stream, joined before its bf16 add (bit-identical to the serial order)
     cudaStream_t side = nullptr; cudaEvent_t ev_fork = nullptr, ev_join = nullptr;
+    cudaStream_t hcs = nullptr; cudaEvent_t ev_hf = nullptr, ev_hj = nullptr;   // hc_mixes overlap (V41_HC_OVERLAP)
     float* sh_o = nullptr; void* sh_scratch = nullptr;
     std::vector<void*> allocs;
     size_t bytes = 0;

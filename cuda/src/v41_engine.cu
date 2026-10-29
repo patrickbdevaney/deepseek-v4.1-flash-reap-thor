@@ -94,6 +94,13 @@ struct Engine::Impl {
         if (!engram_on) return;
         std::string err;
         if (!store.complete(&err)) throw std::runtime_error("Engram row store: " + err);
+        static const bool stats = [] { const char* e = getenv("V41_ENGRAM_STATS"); return e && *e == '1'; }();
+        if (stats) {
+            static int n = 0; static double a = 0, b = 0, c = 0;
+            a += store.layer_us(0); b += store.layer_us(1); c += store.last_us();
+            if (++n % 64 == 0) fprintf(stderr, "[engram] %d batches: submit->L1 %.0f us, ->L14 %.0f us, ->all %.0f us (mean)\n",
+                                       n, a / n, b / n, c / n);
+        }
     }
 
     // rows [k, n) of ids; logits of row n-1 land in s.logits

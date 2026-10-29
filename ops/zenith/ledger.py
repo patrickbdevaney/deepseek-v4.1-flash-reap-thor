@@ -34,7 +34,7 @@ def family(name: str) -> str:
         if "DecBF16" in name:
             return "bf16_head"
         return "dense_other"
-    if "k_kq_soa" in name:
+    if "k_kq_soa" in name or "k_kq_mma_repack" in name:
         return "load"
     if "k_kq" in name or "k_experts" in name:
         return "kquant_experts"
@@ -67,7 +67,7 @@ def template_args(name: str) -> list:
 
 def is_prefill(name: str, grid_y: int) -> bool:
     # MT > 1 instantiations of k_dense / k_kq / k_experts serve M > 1 (prefill or verify); decode uses MT = 1
-    if not any(k in name for k in ("k_dense<", "k_kq<", "k_experts<")):
+    if not any(k in name for k in ("k_dense<", "k_kq<", "k_kqm<", "k_experts<")):
         return False
     a = template_args(name)
     return len(a) >= 2 and a[1].replace("(int)", "").strip() != "1"

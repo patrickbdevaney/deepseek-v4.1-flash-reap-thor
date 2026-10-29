@@ -357,7 +357,8 @@ hashes refer to this repository.
 | verify-width fixes (spec only); AR re-measured | 19.07 | bitwise | 96819b5 |
 | dense 8 lanes/row where K/32 underfills the warp | 19.82 | T1 reassociation | cab548a |
 | decode == prefill (M-independent split-K), kq 16-lane down pass | 20.16 | T1, then bitwise decode/prefill | 4e0478c |
-| fp8 tensor-core Q2_K/Q3_K experts (`v41_kq_mma.cuh`); 8-token prefill units | **21.15** | T1 (KL to exact 0.018 vs half2 0.021) | (this commit) |
+| fp8 tensor-core Q2_K/Q3_K experts (`v41_kq_mma.cuh`); 8-token prefill units | 21.15 | T1 (KL to exact 0.018 vs half2 0.021) | 335135c |
+| hc_mixes on its own stream beside collapse/norm/attention and MoE; hc_partial x reuse; rmsnorm loads batched | **21.71** (paired: 21.07 → 21.71, +3.0%) | bitwise (teacher-forced logits identical) | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
@@ -408,4 +409,21 @@ how many tokens share a unit. The consistency gate (33 positions, 0 mismatches) 
 
 The new ids reference is `ops/logs/bench/mma2_arm0.json`. `V41_KQ_MMA=0` restores the SOA half2
 kernel, and `V41_KQ_MT8=0` restores 4-token prefill units.
+
+**Glue (2026-10-29).** The block defers the pre-mix: each collapse uses the previous mix's `pre`. So
+a sub-layer's `hc_mixes` is first needed by `hc_post`, and the `hc_partial` + `hc_finish` pair (about
+18 µs, 80 per step) now runs on `State::hcs` beside the collapse, the norm and the attention or MoE.
+`V41_HC_OVERLAP=0` turns this off. The result is bitwise identical, at +3.0% in a paired binary A/B
+(`ops/bench/ab_bin.sh`, A/B alternated over 3 rounds). One attempt was rejected: running Sinkhorn on
+one lane in registers made `hc_finish` go from 6 to 30 µs, because 640 serial IEEE divides cost more
+than the shuffles they replace.
+
+Two other findings from the same profile:
+
+- **Not real gaps:**
+  - Engram layer 1 sat idle for 1.07 ms under nsys. Without the profiler its rows land
+    1.08 ms after submit (`V41_ENGRAM_STATS=1`), about when layer 1 needs them.
+  - Shared-expert NVFP4 launches run at 87 GB/s in the trace only because they overlap the routed
+    experts on the side stream. The same shape in `bench_dense` runs at 203 GB/s.
+- **A trap:** single runs swing ±0.5 tok/s between loads, so judge sub-5% levers by paired A/B only.
 

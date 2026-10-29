@@ -197,7 +197,10 @@ bool EngramStore::complete(std::string* err) {
             if (pending_[layer] == 0 && !err_) {
                 bool layer_backlogged = false;
                 for (auto& b : backlog_) layer_backlogged |= b.first == layer;
-                if (!layer_backlogged) __atomic_store_n((uint32_t*)flag_host_[layer], 1u, __ATOMIC_RELEASE);
+                if (!layer_backlogged) {
+                    __atomic_store_n((uint32_t*)flag_host_[layer], 1u, __ATOMIC_RELEASE);
+                    layer_us_[layer] = (now_ns() - t0_ns_) / 1000.0;
+                }
             }
             ++head;
         }

@@ -93,6 +93,7 @@ public:
 
     // Latency telemetry (last fetch), microseconds.
     double last_us() const { return last_us_; }
+    double layer_us(int l) const { return layer_us_[l]; }   // submit -> flag[l] set, last batch
 
 private:
     bool setup_ring(int entries, std::string* err);
@@ -125,6 +126,7 @@ private:
     std::vector<int64_t> backlog_ids_;
     int64_t t0_ns_ = 0;
     double last_us_ = 0;
+    double layer_us_[2] = {0, 0};
     bool err_ = false;
     std::string errmsg_;
     void queue_read(int layer, int slot, int64_t row);

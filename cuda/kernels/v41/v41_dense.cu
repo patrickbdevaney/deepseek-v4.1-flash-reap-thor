@@ -207,7 +207,8 @@ static void launch_dense(float* y, const XSrc& X, const Dec& dec, int M, int N, 
     static const bool legacy = [] { const char* e = getenv("V41_KSPLIT_LEGACY"); return e && *e == '1'; }();
     constexpr int SPEC_M = 8;
     int ks = 1;
-    const int ctas = ntile * (legacy && M > SPEC_M ? (M + 3) / 4 : 1), want = 2 * nsm();
+    static const int want_x = [] { const char* e = getenv("V41_KSPLIT_WANT"); return e ? atoi(e) : 2; }();
+    const int ctas = ntile * (legacy && M > SPEC_M ? (M + 3) / 4 : 1), want = want_x * nsm();
     if (ctas < want) {
         ks = std::min((want + ctas - 1) / ctas, std::max(1, nch / 8));
         if ((size_t)ks * std::max(M, SPEC_M) * N > g_part_cap) {
@@ -373,8 +374,20 @@ void add_bf16(float* y, const float* a, size_t n, cudaStream_t st) { k_add_bf16<
 __global__ void k_rmsnorm(float* y, const float* x, const uint16_t* w, int dim, float eps) {
     const float* xr = x + (size_t)blockIdx.x * dim; float* yr = y + (size_t)blockIdx.x * dim;
     __shared__ float red[32];
+    // all loads issued before the first fma (the plain loop was latency-bound: 8.7 us for one 5120 row);
+    // same per-thread order, so bit-identical. Rows longer than RN strides take the loop.
+    constexpr int RN = 16;
+    float v[RN];
+    const bool regs = dim <= RN * (int)blockDim.x;
     float ss = 0.f;
-    for (int i = threadIdx.x; i < dim; i += blockDim.x) ss = fmaf(xr[i], xr[i], ss);
+    if (regs) {
+        #pragma unroll
+        for (int j = 0; j < RN; ++j) { const int i = threadIdx.x + j * blockDim.x; v[j] = i < dim ? xr[i] : 0.f; }
+        #pragma unroll
+        for (int j = 0; j < RN; ++j) if (threadIdx.x + j * blockDim.x < dim) ss = fmaf(v[j], v[j], ss);
+    } else {
+        for (int i = threadIdx.x; i < dim; i += blockDim.x) ss = fmaf(xr[i], xr[i], ss);
+    }
     ss = warp_sum(ss);
     if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = ss;
     __syncthreads();
@@ -384,6 +397,14 @@ __global__ void k_rmsnorm(float* y, const float* x, const uint16_t* w, int dim, 
     }
     __syncthreads();
     const float r = rsqrtf(red[0] / dim + eps);
+    if (regs) {
+        #pragma unroll
+        for (int j = 0; j < RN; ++j) {
+            const int i = threadIdx.x + j * blockDim.x;
+            if (i < dim) { const float n = v[j] * r; yr[i] = bf16r(w ? bf16f(w[i]) * n : n); }
+        }
+        return;
+    }
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         const float n = xr[i] * r;
         yr[i] = bf16r(w ? bf16f(w[i]) * n : n);
@@ -445,19 +466,34 @@ void rope(float* x, int rows, int heads, int row_stride, int off, const int* d_p
 // --------------------------------------------------------------------------- hyper-connections
 // hc_mixes: grid (M, 24 mixes + 1 sumsq, KS) partial dots over 20480 -> finalize (fixed order) + Sinkhorn.
 static constexpr int HC_KS = 8;
-__global__ void k_hc_partial(float* part, const float* x, const float* fn) {
-    const int m = blockIdx.x, j = blockIdx.y, z = blockIdx.z;   // j == 24 -> sum of squares
-    const int span = v41::HC_DIM / HC_KS;
+// grid (M, HC_JG, KS): a CTA computes HC_JPG of the 25 dots over its z span, reading its x slice once
+// (it was read once per mix). Each dot keeps the original per-thread order and block reduction, so
+// the partials are bit-identical to one CTA per mix.
+static constexpr int HC_JPG = 5, HC_JG = 25 / HC_JPG;
+__global__ void __launch_bounds__(256) k_hc_partial(float* part, const float* x, const float* fn) {
+    const int m = blockIdx.x, jg = blockIdx.y, z = blockIdx.z;
+    constexpr int span = v41::HC_DIM / HC_KS, PT = span / 256;
+    static_assert(span % 256 == 0, "x slice per thread");
     const float* xr = x + (size_t)m * v41::HC_DIM + z * span;
-    const float* fr = fn + (size_t)(j < 24 ? j : 0) * v41::HC_DIM + z * span;
-    float acc = 0.f;
-    for (int i = threadIdx.x; i < span; i += blockDim.x) acc = fmaf(xr[i], j < 24 ? fr[i] : xr[i], acc);
-    __shared__ float red[8];
-    acc = warp_sum(acc);
-    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = acc;
+    float xv[PT];
+    #pragma unroll
+    for (int k = 0; k < PT; ++k) xv[k] = xr[threadIdx.x + k * 256];
+    __shared__ float red[HC_JPG][8];
+    #pragma unroll
+    for (int jj = 0; jj < HC_JPG; ++jj) {
+        const int j = jg * HC_JPG + jj;                 // j == 24 -> sum of squares
+        const float* fr = fn + (size_t)(j < 24 ? j : 0) * v41::HC_DIM + z * span;
+        float acc = 0.f;
+        #pragma unroll
+        for (int k = 0; k < PT; ++k) acc = fmaf(xv[k], j < 24 ? fr[threadIdx.x + k * 256] : xv[k], acc);
+        acc = warp_sum(acc);
+        if ((threadIdx.x & 31) == 0) red[jj][threadIdx.x >> 5] = acc;
+    }
     __syncthreads();
-    if (threadIdx.x == 0) { float s = 0.f; for (int w = 0; w < (int)(blockDim.x >> 5); ++w) s += red[w];
-        part[((size_t)m * 25 + j) * HC_KS + z] = s; }
+    if (threadIdx.x < HC_JPG) {
+        float s = 0.f; for (int w = 0; w < 8; ++w) s += red[threadIdx.x][w];
+        part[((size_t)m * 25 + jg * HC_JPG + threadIdx.x) * HC_KS + z] = s;
+    }
 }
 // One warp per token. Bit-identical to the single-thread version it replaced (which ran 24 reductions
 // and 20 Sinkhorn iterations serially, 80x per token): lane j < 24 reduces mix j in the same z order;
@@ -494,7 +530,7 @@ static float* g_hcpart = nullptr; static int g_hcpart_m = 0;
 void hc_mixes(float* pre, float* post, float* comb, const float* x, const float* fn, const float* scale,
               const float* base, int M, cudaStream_t st) {
     if (M > g_hcpart_m) { fprintf(stderr, "hc_mixes: M=%d exceeds reserved %d (call hc_reserve)\n", M, g_hcpart_m); abort(); }
-    k_hc_partial<<<dim3(M, 25, HC_KS), 256, 0, st>>>(g_hcpart, x, fn);
+    k_hc_partial<<<dim3(M, HC_JG, HC_KS), 256, 0, st>>>(g_hcpart, x, fn);
     k_hc_finish<<<M, 32, 0, st>>>(pre, post, comb, g_hcpart, scale, base);
 }
 void hc_reserve(int max_m) {

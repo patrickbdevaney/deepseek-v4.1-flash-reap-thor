@@ -345,6 +345,9 @@ State::~State() {
     if (ev_fork) cudaEventDestroy(ev_fork);
     if (ev_join) cudaEventDestroy(ev_join);
     if (side) cudaStreamDestroy(side);
+    if (ev_hf) cudaEventDestroy(ev_hf);
+    if (ev_hj) cudaEventDestroy(ev_hj);
+    if (hcs) cudaStreamDestroy(hcs);
 }
 template <class T> static T* dalloc(State& s, size_t n) {
     void* p = nullptr; CK(cudaMalloc(&p, n * sizeof(T) + 256)); CK(cudaMemset(p, 0, n * sizeof(T) + 256));
@@ -399,6 +402,11 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
         CK(cudaStreamCreateWithFlags(&s.side, cudaStreamNonBlocking));
         CK(cudaEventCreateWithFlags(&s.ev_fork, cudaEventDisableTiming));
         CK(cudaEventCreateWithFlags(&s.ev_join, cudaEventDisableTiming));
+    }
+    if (!(getenv("V41_HC_OVERLAP") && *getenv("V41_HC_OVERLAP") == '0')) {
+        CK(cudaStreamCreateWithFlags(&s.hcs, cudaStreamNonBlocking));
+        CK(cudaEventCreateWithFlags(&s.ev_hf, cudaEventDisableTiming));
+        CK(cudaEventCreateWithFlags(&s.ev_hj, cudaEventDisableTiming));
     }
     s.cand_scratch = dalloc<uint8_t>(s, v41k::candidate_scratch_bytes(R, s.ld_cand));
     s.ld_score = seqmax;
@@ -553,17 +561,26 @@ static void block(const LayerW& w, State& s, const Rows& R, const Engram& eg, cu
     const int M = R.M;
     if (engram_slot(w.L) >= 0) engram(w, s, R, eg, st);
     float* h2 = s.h2;                                                       // rows [0, M) of this call
-    v41k::hc_mixes(s.pre_next, s.post, s.comb, R.h, w.hc_attn_fn, w.hc_attn_scale, w.hc_attn_base, M, st);
+    // The collapse uses the PREVIOUS mix's pre, so this sub-layer's mixes (pre_next/post/comb) are first
+    // read by hc_post: with s.hcs they run beside collapse/norm/attention (same kernels, same data).
+    auto fork = [&] { if (s.hcs) { CK(cudaEventRecord(s.ev_hf, st)); CK(cudaStreamWaitEvent(s.hcs, s.ev_hf, 0)); } };
+    auto join = [&] { if (s.hcs) { CK(cudaEventRecord(s.ev_hj, s.hcs)); CK(cudaStreamWaitEvent(st, s.ev_hj, 0)); } };
+    cudaStream_t hst = s.hcs ? s.hcs : st;
+    fork();
+    v41k::hc_mixes(s.pre_next, s.post, s.comb, R.h, w.hc_attn_fn, w.hc_attn_scale, w.hc_attn_base, M, hst);
     v41k::hc_collapse(s.x, R.h, R.pre, M, st);
     v41k::rmsnorm(s.x, s.x, w.attn_norm, M, DIM, NORM_EPS, st);
     attention(w, s, R, s.x, s.xa, st);
+    join();
     v41k::hc_post(h2, s.xa, R.h, s.post, s.comb, M, st);
     // FFN: its own mixes from h2; collapses with the ATTENTION's pre
     float* attn_pre = s.pre_next;
-    v41k::hc_mixes(R.pre, s.post, s.comb, h2, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base, M, st);   // R.pre <- ffn_pre
+    fork();
+    v41k::hc_mixes(R.pre, s.post, s.comb, h2, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base, M, hst);   // R.pre <- ffn_pre
     v41k::hc_collapse(s.x, h2, attn_pre, M, st);
     v41k::rmsnorm(s.x, s.x, w.ffn_norm, M, DIM, NORM_EPS, st);
     moe(w, s, R, s.x, s.y, st);
+    join();
     v41k::hc_post(R.h, s.y, h2, s.post, s.comb, M, st);
 }
 
