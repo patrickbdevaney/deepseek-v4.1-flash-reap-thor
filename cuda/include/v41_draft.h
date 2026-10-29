@@ -64,7 +64,7 @@ struct Drafter {
     float *og = nullptr, *y = nullptr, *rw = nullptr; int* ridx = nullptr; float* rscr = nullptr;
     void* moe_scratch = nullptr;
     float *logits = nullptr, *mk_e = nullptr, *mk_bias = nullptr;
-    // NVFP4 copy of the main head for drafting (V41_DRAFT_HEAD_FP4=1); null = draft with the bf16 head
+    // NVFP4 copy of the main head for drafting (default; V41_DRAFT_HEAD_FP4=0 drafts with the bf16 head)
     uint8_t *head4 = nullptr, *head4s = nullptr; float head4g = 0.f;
     std::vector<void*> allocs;
     size_t bytes = 0;
@@ -75,7 +75,7 @@ struct Drafter {
 // checkpoint's own (native, unpruned) blocks. Throws with the missing tensor's name.
 void load_drafter(Drafter& D, const std::string& ckpt, const std::string& head_dir, bool mxfp4_hw);
 void alloc_drafter(Drafter& D, int max_rows);
-// V41_DRAFT_HEAD_FP4=1: quantize the model's head to NVFP4 for the draft (acceptance only; verify is bf16)
+// Quantize the model's head to NVFP4 for the draft (acceptance only; verify is bf16). V41_DRAFT_HEAD_FP4=0: off
 void prepare_draft_head(const Model& m, Drafter& D, cudaStream_t st);
 void reset_drafter(Drafter& D, cudaStream_t st);
 // A LayerHook for forward_layers over `M_total` rows: records the taps (after layers 36, 37, 38) and,
