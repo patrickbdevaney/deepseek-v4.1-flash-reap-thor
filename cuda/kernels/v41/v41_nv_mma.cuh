@@ -45,11 +45,12 @@ __device__ __forceinline__ uint32_t e2m1_lo_e4m3(uint32_t w) { return ((w << 2) 
 __device__ __forceinline__ uint32_t e2m1_hi_e4m3(uint32_t w) { return ((w >> 2) & 0x1C1C1C1Cu) | (w & 0x80808080u); }
 
 // grid (ceil(N/128), ceil(M/MT), ks). Group gi = row / Ng reads x columns [gi*K, (gi+1)*K). ks > 1 writes
-// part[z][m][n] (already x 64 g) for k_ksum; else y directly.
+// part[z][m][n] (already x 64 g); with kcnt the last CTA of a (row tile, m tile) to arrive sums them in z
+// order (k_ksum's order, so the sums are unchanged), else k_ksum does.
 template <int MT>
 __global__ void __launch_bounds__(256) k_nvm(float* __restrict__ y, XSrc X, const uint8_t* __restrict__ W,
                                              const uint8_t* __restrict__ S, float g, int M, int N, int K, int Ng,
-                                             int ks, int round, float* __restrict__ part) {
+                                             int ks, int round, float* __restrict__ part, int* __restrict__ kcnt) {
     const int nsb = K / 256, z = blockIdx.z;
     const int s0 = (int)((long)nsb * z / ks), s1 = (int)((long)nsb * (z + 1) / ks), nk = (s1 - s0) * 256;
     const int m0 = blockIdx.y * MT, mrows = min(MT, M - m0);
@@ -72,7 +73,7 @@ __global__ void __launch_bounds__(256) k_nvm(float* __restrict__ y, XSrc X, cons
     if (live) load(s0, cw, sw);
     for (int n = 0; n < MT; ++n) nvm_stage_row(nvm_smem + n * SB, X, m0 + min(n, mrows - 1), gi * K + s0 * 256, nk);
     __syncthreads();
-    if (!live) return;
+    if (live) {
     const uint8_t* xg = nvm_smem + min(gg, MT - 1) * SB;
     const float* xsn[2];
     #pragma unroll
@@ -138,6 +139,24 @@ __global__ void __launch_bounds__(256) k_nvm(float* __restrict__ y, XSrc X, cons
             if (ks > 1) part[((size_t)z * M + m0 + n) * N + row] = v;
             else y[(size_t)(m0 + n) * N + row] = round ? bf16r(v) : v;
         }
+    }
+    if (ks == 1 || !kcnt) return;
+    __shared__ int last;
+    __threadfence();
+    __syncthreads();
+    int* c = kcnt + blockIdx.y * gridDim.x + blockIdx.x;
+    if (threadIdx.x == 0) last = atomicAdd(c, 1) == ks - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    for (int i = threadIdx.x; i < NVM_ROWS_PER_CTA * MT; i += blockDim.x) {
+        const int row = row0 + (i % NVM_ROWS_PER_CTA), m = m0 + i / NVM_ROWS_PER_CTA;
+        if (row >= N || m >= M) continue;
+        float v = 0.f;
+        for (int zz = 0; zz < ks; ++zz) v += __ldcg(part + ((size_t)zz * M + m) * N + row);
+        y[(size_t)m * N + row] = round ? bf16r(v) : v;
+    }
+    if (threadIdx.x == 0) *c = 0;
 }
 
 // row-major codes [N][K/2] (low nibble first) + scales [N][K/16] -> the layout above, via tmp

@@ -311,11 +311,13 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     const size_t smem = (size_t)mt * ((v41g::nvm_stage_bytes(nk_max) + 15) & ~(size_t)15);
     dim3 grid(ntile, (M + mt - 1) / mt, ks);
     #define V41_NVM(MTV) do { auto kf = v41g::k_nvm<MTV>; \
+    static const bool ks_fuse_env = [] { const char* e = getenv("V41_KSUM_FUSE"); return !(e && *e == '0'); }();
+    const bool fuse = ks > 1 && ks_fuse_env && kcnt && (size_t)grid.x * grid.y <= (size_t)KS_TILES;
         if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
-        kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part); } while (0)
+        kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part, fuse ? kcnt : nullptr); } while (0)
     switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; default: V41_NVM(8); }
     #undef V41_NVM
-    if (ks > 1) {
+    if (ks > 1 && !fuse) {
         const size_t MN = (size_t)M * N;
         k_ksum<<<(unsigned)((MN + 255) / 256), 256, 0, st>>>(y, part, ks, MN, 1.0f, round ? 1 : 0);
     }

@@ -360,7 +360,8 @@ hashes refer to this repository.
 | fp8 tensor-core Q2_K/Q3_K experts (`v41_kq_mma.cuh`); 8-token prefill units | 21.15 | T1 (KL to exact 0.018 vs half2 0.021) | 335135c |
 | hc_mixes on its own stream beside collapse/norm/attention and MoE; hc_partial x reuse; rmsnorm loads batched | 21.71 (paired: 21.07 → 21.71, +3.0%) | bitwise (teacher-forced logits identical) | 63a9a45 |
 | shared expert forked before the router; attention KV branch on its own stream (per-stream split-K scratch) | **22.08** (paired: 21.61 → 22.08, +2.2%) | bitwise | 8cfe5b7 |
-| NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | (this commit) |
+| NVFP4 dense on fp8 mma, every M (`v41_nv_mma.cuh`) | 21.98 AR (paired −0.8%); **spec K=3 25.93** (1.19x); 8k prefill 80.0 | T1 (KL to exact 0.0173) | b667022 |
+| k_nvm sums its split-K partials in the last CTA (no `k_ksum` launch) | **22.28** (paired vs 8cfe5b7: 22.27 → 22.28, parity) | bitwise vs b667022 | (this commit) |
 
 The audit's AR wall for these bytes is 20.1 tok/s, computed with the head counted at bf16 and the
 FP8 dense read in full. With the overlay the step reads 8.57 GB, so the wall is 37.6 ms, or 26.6 tok/s
