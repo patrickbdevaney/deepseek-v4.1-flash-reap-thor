@@ -1,0 +1,28 @@
+id	ring	family	tier	deps	status	goal	expected_ms	p	cost_h	gate	notes
+H1	0	harness	-	-	DONE	all	0	1	0	-	ops/zenith/ledger.py: nsys -> per-family t/bytes/floor/gap (LEDGER.md)
+H2	0	harness	-	-	DONE	all	0	1	0	-	ops/bench/ab_bin.sh: paired A/B of two binaries, alternated; single runs swing +-0.5 tok/s
+H3	0	harness	-	-	DONE	all	0	1	0	-	v41_decode --score + ops/bench/score_{arms.sh,cmp.py}: teacher-forced logits; cmp = T0 proof, KL = T1/T2 measure
+H4	0	harness	-	-	TODO	all	0	1	1	-	ops/zenith/gpuq.sh: one GPU lane (pgrep -x v41_decode guard, drop_caches, receipts)
+H5	0	harness	-	-	TODO	all	0	1	1	-	RATCHET.tsv + ratchet.py: max-only banking of AR tok/s, spec best-K, 8k prefill, resident GiB
+H6	0	harness	-	-	TODO	all	0	1	2	-	held-out multi-domain prompt set (chat/code/math/agentic/long), licence-clean; never the speed prompt
+A1	1	kquant_experts	T1	-	DONE	ar_ceiling	2.0	1	0	gate_kq_fast	335135c fp8 mma K-quant experts: 164->182 GB/s in-engine, 200 in gate
+A1b	1	kquant_experts	T1	A1	TODO	ar_ceiling	1.5	0.6	4	gate_kq_fast	k_kqm: next-superblock prefetch, 2 tiles/warp (B reuse), occupancy sweep; target 210 GB/s in-engine
+A2	1	nvfp4_dense	T0	-	TODO	ar_ceiling	1.2	0.6	4	bench_dense	small-N shapes: wkv 116, wq_a 158, sh_w2 143 GB/s; fuse wq_a||wkv (same x), RB/LPR per shape
+A3a	1	glue	T0	-	DONE	ar_ceiling	1.4	1	0	score cmp	63a9a45 hc_mixes on its own stream (+3.0% paired)
+A3b	1	glue	T0	A3a	IN_PROGRESS	ar_ceiling	0.6	0.8	0	score cmp	shared expert forked before the router (router 23 us x40 hidden)
+A3c	1	glue	T0	A3a	IN_PROGRESS	ar_ceiling	0.9	0.7	0	score cmp	attention KV branch (wkv/norm/rope/ring/compressor/idx keys) on kvs beside the q path; per-stream split-K scratch
+A3d	1	glue	T0	A3c	TODO	ar_ceiling	0.4	0.7	2	score cmp	fuse hc_collapse+rmsnorm+act_quant (warp = contiguous 32-group)
+A3e	1	glue	T0	-	TODO	ar_ceiling	0.4	0.6	2	score cmp	fuse swiglu+act_quant; combine+add_bf16+hc_post
+A4	3	launches	T0	A3d,A3e	TODO	ar_ceiling	4.0	0.3	20	score cmp	persistent decode megakernel (recon first: 0731 megakernel.cu); latency floor of ~1000 small kernels
+A5	1	sparse_attn	T0	-	TODO	ar_ceiling	1.0	0.6	4	gate_sa_split	fuse gather+scores+out into one launch (2.16 ms at 12 GB/s)
+A6	1	host	T0	-	TODO	ar_ceiling	0.2	0.7	2	score cmp	210 us argmax->embed host gap: overlap sync/sample/hash/submit with graph tail
+B1	3	bf16_head	T2	H6	TODO	head_fp4	4.4	0.6	3	score_cmp KL budget	SEPARATE NVFP4 head copy for AR built at load from the bf16 master (drafter's head4 already exists: share it); bf16 master untouched; opt-in env; budget d_kl32 <= +0.018
+B2	3	bf16_head	T0	B1,H6	TODO	head_fp4	3.9	0.7	5	shortlist recall = 100% on held-out	two-stage head: NVFP4 shortlist (top-64) + exact bf16 rescore of those rows -> greedy argmax exact; sampling inside shortlist (T1); keeps ~90% of B1's saving with no greedy change
+S1	2	spec	-	-	DONE	spec	0	1	0	-	spec round profile (ops/zenith/spec_round.py)
+S3	2	spec	T0	S1	DONE	spec	12	1	0	spec identity	draft 24->12 ms: K slots only + NVFP4 draft head
+S4	2	spec	T0	A3c	TODO	spec	10	0.5	4	spec identity	verify round: re-profile after A1/A3; verify dense at MT=K+1, mma experts MT up to 8 per unit
+S5	2	spec	T0	S4	TODO	spec	5	0.5	3	spec identity	adaptive K per round from draft confidence / recent acceptance (K=2..4)
+D1	2	draft_ft	-	H6	TODO	draft_ft	0	1	3	-	acceptance baseline: per-position alpha on held-out set, K=1..4, 128 and 8k ctx (today alpha ~0.62 at K=2, 128 ctx)
+D2	2	draft_ft	-	D1	TODO	draft_ft	0	1	12	-	trace corpus: target generations on licence-clean prompts with hidden-state taps at the drafter target layers (37,38,39 inputs) + top-k logits; no transcripts published
+D3	2	draft_ft	T0	D2	TODO	draft_ft	0	0.7	24	held-out alpha	fine-tune drafter (3 MTP blocks + Markov head) on D2: KD to target top-k + tap targets; bf16 master, requantize experts to MXFP4 for serving; GPU lane exclusive
+D4	2	draft_ft	T0	D3	TODO	draft_ft	15	0.6	3	spec identity + alpha +0.10	ship: load fine-tuned drafter, spec sweep 128/8k; output stays exact (verify), so the gate is speed + identity

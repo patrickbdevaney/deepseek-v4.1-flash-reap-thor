@@ -125,6 +125,20 @@ id  ring  family  tier  model_floor  deps  status  target_row  expected_ms  gate
 Picker: `IN_PROGRESS` first (crash resume), else the selector score in §2 over `TODO` nodes whose deps are
 `DONE`.
 
+Live graph (2026-10-29): `docs/zenith/GRAPH.tsv` is grouped by `goal`, and `ops/zenith/next.py
+[--goal G] [--all]` picks from it. Each goal has its own decode target:
+
+- `ar_ceiling` — about 41-42 ms/step, roughly 24 tok/s. Exact kernels only (A*).
+- `head_fp4` — bytes. B1 adds a separate NVFP4 head copy built from the bf16 master, which stays
+  untouched (T2). B2 adds an NVFP4 shortlist plus an exact bf16 rescore, which keeps greedy output
+  exact.
+- `spec` — round cost (S*).
+- `draft_ft` — drafter fine-tune (D1-D4). Verify keeps the output exact, so its gate is acceptance,
+  speed and spec identity.
+
+Together these give an estimated (not measured) 32-35 tok/s on predictable text with exact weights,
+and 35-38 tok/s with the NVFP4 head.
+
 ---
 
 ## 4. One tick (the commit protocol)
