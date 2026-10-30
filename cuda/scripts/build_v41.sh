@@ -9,13 +9,13 @@ KOBJ=""
 obj() {  # obj <src> -> build/obj/<name>.o, only when stale
   local o=build/obj/$(basename "${1%.*}").o
   if [ ! -f "$o" ] || [ "$1" -nt "$o" ] || [ -n "$(find include kernels/v41 -newer "$o" -name '*.h*' -print -quit)" ]; then
-    local extra=""; case "$1" in *v41_tc5.cu) extra="-I $HOME/cutlass/include -I $HOME/cutlass/tools/util/include --expt-relaxed-constexpr -Xcompiler -Wno-all";; esac
+    local extra=""; case "$1" in *v41_tc5.cu|*v41_kqt.cu) extra="-I $HOME/cutlass/include -I $HOME/cutlass/tools/util/include --expt-relaxed-constexpr -Xcompiler -Wno-all";; esac
     echo "  nvcc $1"; $NVCC $extra -c "$1" -o "$o" || exit 255      # 255 stops xargs, and so the build
   fi
   KOBJ="$KOBJ $o"
 }
 # kernels + model + engram (in parallel, at most 4)
-SRCS="kernels/v41/v41_dense.cu kernels/v41/v41_tc5.cu kernels/v41/v41_moe.cu kernels/v41/v41_attn.cu kernels/v41/v41_engram.cu
+SRCS="kernels/v41/v41_dense.cu kernels/v41/v41_tc5.cu kernels/v41/v41_kqt.cu kernels/v41/v41_moe.cu kernels/v41/v41_attn.cu kernels/v41/v41_engram.cu
       src/v41_model.cu src/v41_draft.cu src/v41_engine.cu src/engram_store.cpp src/engram_hash.cpp"
 export -f obj; export NVCC
 echo $SRCS | tr ' ' '\n' | grep . | xargs -P4 -I{} bash -c 'obj {}'
@@ -36,6 +36,7 @@ if want "$1" bench_dense; then $NVCC tests/bench_dense.cu $KOBJ $LIBS -o build/b
 if want "$1" gate_is_mma; then $NVCC tests/gate_is_mma.cu $KOBJ $LIBS -o build/gate_is_mma; echo "built build/gate_is_mma"; fi
 if want "$1" gate_tc5; then $NVCC tests/gate_tc5.cu $KOBJ $LIBS -o build/gate_tc5; echo "built build/gate_tc5"; fi
 if want "$1" gate_kqm_rt; then $NVCC -I kernels/v41 tests/gate_kqm_rt.cu $KOBJ $LIBS -o build/gate_kqm_rt; echo "built build/gate_kqm_rt"; fi
+if want "$1" gate_kqt; then $NVCC -I kernels/v41 -I $HOME/cutlass/include -I $HOME/cutlass/tools/util/include --expt-relaxed-constexpr -Xcompiler -Wno-all tests/gate_kqt.cu $KOBJ $LIBS -o build/gate_kqt; echo "built build/gate_kqt"; fi
 if want "$1" gate_f8m; then $NVCC tests/gate_f8m.cu $KOBJ $LIBS -o build/gate_f8m; echo "built build/gate_f8m"; fi
 if want "$1" gate_topk; then $NVCC tests/gate_topk.cu $KOBJ $LIBS -o build/gate_topk; echo "built build/gate_topk"; fi
 if want "$1" gate_kq_fast; then $NVCC -I kernels/v41 tests/gate_kq_fast.cu $KOBJ $LIBS -o build/gate_kq_fast; echo "built build/gate_kq_fast"; fi

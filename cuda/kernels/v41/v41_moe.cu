@@ -17,6 +17,7 @@
 #include <cub/block/block_radix_sort.cuh>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -128,7 +129,7 @@ __global__ void k_router_select(float* wout, int* iout, const float* sc, const f
 // instead of k_router_select's topk serial warp passes, then sums the weights in rank order.
 static std::unordered_map<const void*, int>& rperm_map() { static std::unordered_map<const void*, int> m; return m; }
 static int* g_rcnt = nullptr;                          // per-token CTA arrival counters, back to 0 after each call
-static constexpr int RCNT = 1024;
+static constexpr int RCNT = 4096;                     // per-row completion counters: rows of one call (State::MAX_CHUNK 2048)
 static constexpr int RP_WARPS = 4;
 __global__ void k_router_permute(uint16_t* W, int K) {   // one row per CTA, in place via smem
     extern __shared__ uint16_t rp_row[];
@@ -310,20 +311,25 @@ __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_par(Unit* units, int* u
 // a token's top-k experts are distinct, so key e << 12 | t is unique and a BlockRadixSort of the pairs by
 // it gives k_units_par's sorted position r without the O(P^2) rank loop (2.2 ms per layer at P = 3072).
 // Run offsets come from a per-expert histogram (counts are order-free, so the result is deterministic).
-static constexpr int UB_IPT = 4, UNITS_BIG_MAX = UNITS_PAR_MAX * UB_IPT, UB_EMAX = 511, UB_TBITS = 12;
-using URSort = cub::BlockRadixSort<int, UNITS_PAR_MAX, UB_IPT, int>;
+// IPT 4 up to P = 4096 (chunk 682), IPT 12 up to 12288 (chunk 2048); the sort storage is dynamic smem (> 48 KB
+// at IPT 12) after the per-expert counts.
+static constexpr int UB_EMAX = 511, UB_TBITS = 12, UNITS_BIG_MAX = UNITS_PAR_MAX * 12;
+template <int IPT> union UBStore { typename cub::BlockRadixSort<int, UNITS_PAR_MAX, IPT, int>::TempStorage rs; typename UScan::TempStorage sc; };
+template <int IPT> constexpr int ub_smem() { return 2 * (UB_EMAX + 1) * (int)sizeof(int) + (int)sizeof(UBStore<IPT>); }
+template <int IPT>
 __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_big(Unit* units, int* units_n, int* pair_tok, int* pair_slot,
                                                               int* inv, const int* idx, int M, int topk, int mt) {
-    __shared__ union { typename URSort::TempStorage rs; typename UScan::TempStorage sc; } ts;
-    extern __shared__ int ub[];
+    using URSort = cub::BlockRadixSort<int, UNITS_PAR_MAX, IPT, int>;
+    extern __shared__ __align__(16) int ub[];
     int* cnt = ub; int* first = ub + (UB_EMAX + 1);
+    UBStore<IPT>& ts = *reinterpret_cast<UBStore<IPT>*>(ub + 2 * (UB_EMAX + 1));
     const int P = M * topk;
     for (int e = threadIdx.x; e <= UB_EMAX; e += blockDim.x) cnt[e] = 0;
     __syncthreads();
-    int key[UB_IPT], val[UB_IPT];
+    int key[IPT], val[IPT];
     #pragma unroll
-    for (int i = 0; i < UB_IPT; ++i) {
-        const int p = threadIdx.x * UB_IPT + i;
+    for (int i = 0; i < IPT; ++i) {
+        const int p = threadIdx.x * IPT + i;
         if (p < P) { const int e = idx[p]; key[i] = e << UB_TBITS | (p / topk); val[i] = p; atomicAdd(&cnt[e], 1); }
         else { key[i] = (UB_EMAX << UB_TBITS) | ((1 << UB_TBITS) - 1); val[i] = -1; }   // pads sort last
     }
@@ -331,10 +337,10 @@ __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_big(Unit* units, int* u
     __syncthreads();                                     // cnt complete; ts free for the scan
     if (threadIdx.x == 0) { int s = 0; for (int e = 0; e <= UB_EMAX; ++e) { first[e] = s; s += cnt[e]; } }
     __syncthreads();
-    int st[UB_IPT], u[UB_IPT], total, ue[UB_IPT], ul[UB_IPT];
+    int st[IPT], u[IPT], total, ue[IPT], ul[IPT];
     #pragma unroll
-    for (int i = 0; i < UB_IPT; ++i) {
-        const int r = threadIdx.x * UB_IPT + i, p = val[i];
+    for (int i = 0; i < IPT; ++i) {
+        const int r = threadIdx.x * IPT + i, p = val[i];
         st[i] = 0;
         if (r >= P) continue;
         const int e = key[i] >> UB_TBITS, off = r - first[e];
@@ -343,9 +349,20 @@ __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_big(Unit* units, int* u
     }
     UScan(ts.sc).ExclusiveSum(st, u, total);
     #pragma unroll
-    for (int i = 0; i < UB_IPT; ++i)
-        if (st[i]) units[u[i]] = Unit{ue[i], (int)threadIdx.x * UB_IPT + i, min(mt, ul[i])};
+    for (int i = 0; i < IPT; ++i)
+        if (st[i]) units[u[i]] = Unit{ue[i], (int)threadIdx.x * IPT + i, min(mt, ul[i])};
     if (threadIdx.x == 0) *units_n = total;
+}
+template <int IPT> static bool units_big_launch(Unit* units, int* nu, int* ptok, int* pslot, int* inv, const int* idx, int M,
+                                                int topk, int mt, cudaStream_t st) {
+    static const bool attr = cudaFuncSetAttribute(k_units_big<IPT>, cudaFuncAttributeMaxDynamicSharedMemorySize, ub_smem<IPT>()) == cudaSuccess;
+    if (attr) k_units_big<IPT><<<1, UNITS_PAR_MAX, ub_smem<IPT>(), st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
+    return attr;
+}
+static bool units_big(Unit* units, int* nu, int* ptok, int* pslot, int* inv, const int* idx, int M, int topk, int mt, cudaStream_t st) {
+    const int P = M * topk;
+    if (P <= UNITS_PAR_MAX * 4) return units_big_launch<4>(units, nu, ptok, pslot, inv, idx, M, topk, mt, st);
+    return units_big_launch<12>(units, nu, ptok, pslot, inv, idx, M, topk, mt, st);
 }
 
 // --------------------------------------------------------------------------- expert GEMV
@@ -491,7 +508,8 @@ size_t moe_scratch_bytes(int M, int topk) {
     const size_t P = (size_t)M * topk;
     return al(P * sizeof(Unit)) + al(16) + 3 * al(P * 4) + al(P * 2 * v41::MOE_INTER * 4) + al(P * v41::MOE_INTER * 4)
          + al(P * v41::MOE_INTER) + al(P * (v41::MOE_INTER / 32) * 4) + al(P * v41::DIM * 4) + al(P * 4)
-         + al((size_t)M * v41::DIM * 4) + al(P * v41::MOE_INTER * 4);          // KT rotated x (pass 0) / act (pass 1)
+         + al((size_t)M * v41::DIM * 4) + al(P * v41::MOE_INTER * 4)            // KT rotated x (pass 0) / act (pass 1)
+         + al((size_t)M * kqt_stage_bytes(v41::DIM)) + al(P * kqt_stage_bytes(v41::MOE_INTER));   // k_kqt staged rows
 }
 __global__ void k_pair_w(float* wp, const float* w, const int* pair_tok, const int* pair_slot, int P, int topk) {
     int p = blockIdx.x * blockDim.x + threadIdx.x; if (p < P) wp[p] = w[pair_tok[p] * topk + pair_slot[p]];
@@ -683,7 +701,13 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     static const int mtp = [] { const char* e = getenv("V41_KQ_MTP"); return e ? atoi(e) : 16; }();
     const bool all_mma = T.kq_mma && T.fmt13 == ExpertFmt::KQ && T.fmt2 == ExpertFmt::KQ &&
                          (T.bits13 == 2 || T.bits13 == 3) && (T.bits2 == 2 || T.bits2 == 3);
-    const int P = M * topk, mt = (M == 1) ? 1 : (mt8 && all_mma && M > KQ_DUAL_M) ? (mtp == 16 ? 16 : 8) : UNIT_MT;
+    // P8: Q2_K layers on tcgen05 (k_kqt) for units of V41_KQT_MIN..64 tokens, k_kqm below (units of <= 64).
+    // Default on (V41_KQT=0 off): 8k prefill 291.1 -> 328.1 tok/s at chunk 512, T1 (KL vs default at the
+    // default-vs-exact level on the 4-offset protocol with every unit forced onto k_kqt, NLL unchanged)
+    static const bool kqt_env = [] { const char* e = getenv("V41_KQT"); return !(e && *e == '0'); }();
+    static const int kqt_min = [] { const char* e = getenv("V41_KQT_MIN"); const int v = e ? atoi(e) : 9; return v < 1 ? 1 : v > 17 ? 17 : v; }();
+    const bool kqt = kqt_env && all_mma && M > KQ_DUAL_M && T.fmt13 == ExpertFmt::KQ;   // all_mma: bits 2 / 3, both passes
+    const int P = M * topk, mt = (M == 1) ? 1 : kqt ? 64 : (mt8 && all_mma && M > KQ_DUAL_M) ? (mtp == 16 ? 16 : 8) : UNIT_MT;
     char* b = (char*)scratch;
     Unit* units = (Unit*)b; b += al(P * sizeof(Unit));
     int* nu = (int*)b; b += al(16);
@@ -697,15 +721,28 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     float* down = (float*)b; b += al((size_t)P * v41::DIM * 4);
     float* wp = (float*)b; b += al((size_t)P * 4);
     float* xr13 = (float*)b; b += al((size_t)M * v41::DIM * 4);
-    float* xr2 = (float*)b;
+    float* xr2 = (float*)b; b += al((size_t)P * v41::MOE_INTER * 4);
+    uint8_t* xt13 = (uint8_t*)b; b += al((size_t)M * kqt_stage_bytes(v41::DIM));
+    uint8_t* xt2 = (uint8_t*)b;
+    // k_kqm for the small units (cnt < kqt_min), k_kqt for the rest
+    auto kqt_pass = [&](int pass, float* out, int ldo, const XSrc& Xp, const uint8_t* stg, bool by_pair, int N, int K) {
+        const KQTab tab{T.w1, T.w3, T.w2, pass};
+        const int bits = pass == 0 ? T.bits13 : T.bits2;
+        if (kqt_min > 1) {
+            if (bits == 2) launch_kqm<2, 8>(out, ldo, Xp, by_pair, units, nu, ptok, tab, N, K, P, st, 1, std::min(8, kqt_min - 1));
+            else launch_kqm<3, 8>(out, ldo, Xp, by_pair, units, nu, ptok, tab, N, K, P, st, 1, std::min(8, kqt_min - 1));
+        }
+        if (kqt_min > 9) {
+            if (bits == 2) launch_kqm<2, 16>(out, ldo, Xp, by_pair, units, nu, ptok, tab, N, K, P, st, 9, kqt_min - 1);
+            else launch_kqm<3, 16>(out, ldo, Xp, by_pair, units, nu, ptok, tab, N, K, P, st, 9, kqt_min - 1);
+        }
+        if (!kqt_run(bits, out, ldo, stg, by_pair, units, nu, ptok, T.w1, T.w3, T.w2, pass, N, K, kqt_min, st)) {
+            fprintf(stderr, "kqt_run: not applicable (N %d K %d)\n", N, K); abort();
+        }
+    };
     static const bool units_serial = [] { const char* e = getenv("V41_UNITS_SERIAL"); return e && *e == '1'; }();
     if (P <= UNITS_PAR_MAX && !units_serial) k_units_par<<<1, UNITS_PAR_MAX, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
-    else if (P <= UNITS_BIG_MAX && !units_serial) {
-        const int smem = 2 * (UB_EMAX + 1) * (int)sizeof(int);
-        static const bool attr = [smem] { return cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess; }();
-        (void)attr;
-        k_units_big<<<1, UNITS_PAR_MAX, smem, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
-    }
+    else if (P <= UNITS_BIG_MAX && !units_serial && units_big(units, nu, ptok, pslot, inv, idx, M, topk, mt, st)) {}
     else k_units<<<1, 1, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
     g_kq_m = M;
     k_pair_w<<<(P + 127) / 128, 128, 0, st>>>(wp, w, ptok, pslot, P, topk);
@@ -720,7 +757,10 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     static_assert(v41g::kqm_stage_bytes(v41::DIM) <= (size_t)v41::DIM * 4 &&
                   v41g::kqm_stage_bytes(v41::MOE_INTER) <= (size_t)v41::MOE_INTER * 4, "staged rows fit the KT scratch");
     if (prep) { v41g::k_kqm_prep<<<M, 256, 0, st>>>((uint8_t*)xr13, X, v41::DIM); X.stg = (const uint8_t*)xr13; }
-    dispatch_pass(0, T, gu, 2 * v41::MOE_INTER, X, false, units, nu, ptok, 2 * v41::MOE_INTER, v41::DIM, P, mt, st);
+    if (kqt) {
+        kqt_prep(T.bits13, xt13, X.xq, X.xs, X.ldx, M, v41::DIM, st);
+        kqt_pass(0, gu, 2 * v41::MOE_INTER, X, xt13, false, 2 * v41::MOE_INTER, v41::DIM);
+    } else dispatch_pass(0, T, gu, 2 * v41::MOE_INTER, X, false, units, nu, ptok, 2 * v41::MOE_INTER, v41::DIM, P, mt, st);
     swiglu(act, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
     act_quant_fp8(aq, as, act, P, v41::MOE_INTER, st);
     XSrc A; A.xq = aq; A.xs = as; A.ldx = v41::MOE_INTER;
@@ -729,7 +769,10 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
         A = XSrc(); A.xf = xr2; A.ldx = v41::MOE_INTER;
     }
     if (prep) { v41g::k_kqm_prep<<<P, 256, 0, st>>>((uint8_t*)xr2, A, v41::MOE_INTER); A.stg = (const uint8_t*)xr2; }
-    dispatch_pass(1, T, down, v41::DIM, A, true, units, nu, ptok, v41::DIM, v41::MOE_INTER, P, mt, st);
+    if (kqt) {
+        kqt_prep(T.bits2, xt2, A.xq, A.xs, A.ldx, P, v41::MOE_INTER, st);
+        kqt_pass(1, down, v41::DIM, A, xt2, true, v41::DIM, v41::MOE_INTER);
+    } else dispatch_pass(1, T, down, v41::DIM, A, true, units, nu, ptok, v41::DIM, v41::MOE_INTER, P, mt, st);
     size_t n = (size_t)M * v41::DIM;
     k_combine<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, down, idx, inv, M, topk, T.heal_gain);
 }
@@ -770,11 +813,11 @@ int units_selftest() {
     unsigned seed = 12345;
     auto rnd = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
     for (int topk : {6, 3})
-        for (int mt : {1, 4, 8, 16})
-            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128, 200, 341, 512, 682}) {
+        for (int mt : {1, 4, 8, 16, 64})
+            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128, 200, 341, 512, 682, 683, 1024, 2048}) {
                 const int P = M * topk; if (P > UNITS_BIG_MAX) continue;
                 const bool big = P > UNITS_PAR_MAX;          // k_units_big against the serial reference
-                for (int rep = 0; rep < 20; ++rep) {
+                for (int rep = 0; rep < (M >= 1024 ? 2 : 20); ++rep) {   // the serial reference is O(P^2)
                     const int E = rep % 2 ? 16 : 192;               // few experts: long runs
                     std::vector<int> h(P);
                     for (int m = 0; m < M; ++m)
@@ -791,9 +834,7 @@ int units_selftest() {
                     cudaMemcpy(idx, h.data(), P * 4, cudaMemcpyHostToDevice);
                     k_units<<<1, 1>>>(un[0], buf[0][3], buf[0][0], buf[0][1], buf[0][2], idx, M, topk, mt);
                     if (big) {
-                        const int smem = 2 * (UB_EMAX + 1) * (int)sizeof(int);
-                        cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-                        k_units_big<<<1, UNITS_PAR_MAX, smem>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
+                        if (!units_big(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt, 0)) { cudaFree(d); return -1; }
                     } else k_units_par<<<1, UNITS_PAR_MAX>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
                     if (cudaDeviceSynchronize() != cudaSuccess) { cudaFree(d); return -1; }
                     std::vector<int> a(3 * P + 1), c(3 * P + 1);

@@ -113,6 +113,15 @@ bool f8m_register(uint8_t* W, int N, int K);
 bool tc5_on();
 bool tc5_nvfp4(float* y, const uint8_t* xq, const float* xs, int ldx, const uint8_t* W, const uint8_t* S, float g,
                int M, int N, int K, int G, bool round, cudaStream_t st);
+// P8 stage 2b: Q2_K / Q3_K (bits 2 / 3) prefill experts on tcgen05 (v41_kqt.cu). kqt_prep stages e4m3 x rows
+// (x, xm hi/lo in bf16 for Q2 / f16 for Q3, fp32 xsum) at stride kqt_stage_bytes(K); kqt_run serves the units
+// (v41_moe.cu Unit, kq_mma layout weights) with cmin <= cnt <= 64 on a persistent grid (V41_KQT_GY rows).
+// T1 vs k_kqm (fp32 summation order, x rounded to the operand type).
+size_t kqt_stage_bytes(int K);
+void kqt_prep(int bits, uint8_t* dst, const uint8_t* xq, const float* xs, int ldx, int rows, int K, cudaStream_t st);
+bool kqt_run(int bits, float* out, int ldo, const uint8_t* stg, bool by_pair, const void* units, const int* units_n, const int* pair_tok,
+             const uint8_t* const* w1, const uint8_t* const* w3, const uint8_t* const* w2, int pass, int N, int K, int cmin,
+             cudaStream_t st);
 // Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
 // bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
 void kq_fast_set(bool on);

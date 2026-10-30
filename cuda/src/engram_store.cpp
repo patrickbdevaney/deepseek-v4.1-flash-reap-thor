@@ -127,10 +127,28 @@ EngramStore::~EngramStore() {
     if (ring_fd_ >= 0) close(ring_fd_);
 }
 
+// at most sq_entries_ reads in flight (the CQ is 2x that); the rest wait in the backlog, in order
 void EngramStore::queue_read(int layer, int slot, int64_t row) {
+    if (bl_pos_ < backlog_.size() || pending_[0] + pending_[1] >= (int)sq_entries_ ||
+        *sq_tail_ - __atomic_load_n(sq_head_, __ATOMIC_ACQUIRE) >= sq_entries_) {
+        backlog_.push_back({layer, slot}); backlog_ids_.push_back(row); ++bl_left_[layer]; return;
+    }
+    issue_read(layer, slot, row);
+}
+
+void EngramStore::refill() {
+    while (bl_pos_ < backlog_.size() && pending_[0] + pending_[1] < (int)sq_entries_ &&
+           *sq_tail_ - __atomic_load_n(sq_head_, __ATOMIC_ACQUIRE) < sq_entries_) {
+        const int layer = backlog_[bl_pos_].first;
+        issue_read(layer, backlog_[bl_pos_].second, backlog_ids_[bl_pos_]);
+        --bl_left_[layer]; ++bl_pos_;
+    }
+    if (bl_pos_ == backlog_.size() && bl_pos_) { backlog_.clear(); backlog_ids_.clear(); bl_pos_ = 0; }
+    flush();
+}
+
+void EngramStore::issue_read(int layer, int slot, int64_t row) {
     const unsigned tail = *sq_tail_;
-    const unsigned head = __atomic_load_n(sq_head_, __ATOMIC_ACQUIRE);
-    if (tail - head >= sq_entries_) { backlog_.push_back({layer, slot}); backlog_ids_.push_back(row); return; }
     // rows are packed (no page padding): a <= 264 B row crosses at most one 512 B boundary, so the
     // aligned window is <= 1 KiB at read_gran 512 -- one arena slot
     const int64_t off = data_off_ + row * row_bytes_;
@@ -175,14 +193,9 @@ void EngramStore::submit(const int64_t* ids, int n) {
 }
 
 bool EngramStore::complete(std::string* err) {
-    while (pending_[0] + pending_[1] > 0 || !backlog_.empty()) {
-        if (pending_[0] + pending_[1] == 0) { // drain the backlog into the now-empty SQ
-            std::vector<std::pair<int, int>> b; b.swap(backlog_);
-            std::vector<int64_t> ids; ids.swap(backlog_ids_);
-            for (size_t i = 0; i < b.size(); ++i) queue_read(b[i].first, b[i].second, ids[i]);
-            flush();
-            continue;
-        }
+    while (pending_[0] + pending_[1] > 0 || bl_pos_ < backlog_.size()) {
+        refill();                                 // keep sq_entries_ reads in flight while any wait
+        if (pending_[0] + pending_[1] == 0) continue;
         int r = sys_enter(ring_fd_, 0, 1, IORING_ENTER_GETEVENTS);
         if (r < 0 && errno != EINTR) { if (err) *err = std::string("io_uring wait: ") + strerror(errno); return false; }
         unsigned head = *cq_head_;
@@ -194,13 +207,9 @@ bool EngramStore::complete(std::string* err) {
             if (cqe->res < 0) { err_ = true; errmsg_ = std::string("engram read: ") + strerror(-cqe->res); }
             else if (cqe->res < need_[layer][slot]) { err_ = true; errmsg_ = "engram read: short read"; }
             --pending_[layer];
-            if (pending_[layer] == 0 && !err_) {
-                bool layer_backlogged = false;
-                for (auto& b : backlog_) layer_backlogged |= b.first == layer;
-                if (!layer_backlogged) {
-                    __atomic_store_n((uint32_t*)flag_host_[layer], 1u, __ATOMIC_RELEASE);
-                    layer_us_[layer] = (now_ns() - t0_ns_) / 1000.0;
-                }
+            if (pending_[layer] == 0 && bl_left_[layer] == 0 && !err_) {
+                __atomic_store_n((uint32_t*)flag_host_[layer], 1u, __ATOMIC_RELEASE);
+                layer_us_[layer] = (now_ns() - t0_ns_) / 1000.0;
             }
             ++head;
         }

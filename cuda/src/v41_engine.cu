@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <fstream>
 #include <map>
 #include <random>
@@ -136,6 +137,25 @@ struct Engine::Impl {
         }
     }
 
+    // Prefill chunk: launch the forward while a host thread reaps the Engram reads. The forward waits
+    // on-stream for each Engram layer's flag (cuStreamWaitValue32), so layer 0 runs while layer 1's rows
+    // land and layers 1..13 while layer 14's land; the reaper being a separate thread keeps a forward that
+    // blocks the host (a grow-only scratch's cudaFree) from deadlocking on a flag only the host can set.
+    // V41_ENGRAM_OVERLAP=0: reap first (the old order).
+    void forward_chunk(int M, int n, int c0) {
+        static const bool overlap = [] { const char* e = getenv("V41_ENGRAM_OVERLAP"); return !(e && *e == '0'); }();
+        if (!engram_on || !overlap) {
+            reap();
+            v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, n, c0, eg, st, hook_for(M), dec_margin);
+            return;
+        }
+        auto reaper = std::async(std::launch::async, [this] { reap(); });
+        try {
+            v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, n, c0, eg, st, hook_for(M), dec_margin);
+        } catch (...) { reaper.wait(); throw; }
+        reaper.get();                                  // rethrows an Engram I/O error
+    }
+
     // rows [k, n) of ids; logits of row n-1 land in s.logits
     void prefill(const std::vector<int>& ids, int k) {
         const int n = (int)ids.size();
@@ -143,8 +163,7 @@ struct Engine::Impl {
             const int M = std::min(chunk, n - c0);
             stage_rows(ids.data() + c0, M, c0);
             v41m::embed_rows(m, s, M, st);
-            reap();                                    // flags go to 1 as the reads land; stream waits on them
-            v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, n, c0, eg, st, hook_for(M), dec_margin);
+            forward_chunk(M, n, c0);                   // flags go to 1 as the reads land; stream waits on them
             if (c0 + M == n) {                        // greedy sample() reads d_tok: without the argmax here the
                 v41m::head_row(m, s, M - 1, st);       // first token after a prefill was the previous step's
                 v41m::argmax_logits(s, d_tok, st);
@@ -501,8 +520,7 @@ std::vector<uint16_t> Engine::debug_taps(const std::vector<int>& ids, int from) 
         const int M = std::min(I.chunk, n - c0);
         I.stage_rows(ids.data() + c0, M, c0);
         v41m::embed_rows(I.m, I.s, M, I.st);
-        I.reap();
-        v41m::forward_layers(I.m, I.s, 0, v41::N_LAYERS - 1, M, n, c0, I.eg, I.st, I.hook_for(M), I.dec_margin);
+        I.forward_chunk(M, n, c0);
         const int lo = std::max(c0, from);
         if (lo >= c0 + M) continue;
         const size_t cnt = (size_t)(c0 + M - lo) * row;

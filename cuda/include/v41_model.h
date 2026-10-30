@@ -104,8 +104,9 @@ struct State {
     // per-layer window ring (256 slots: a prefill chunk of <=128 rows never overwrites a slot a
     // row of the same chunk still needs)
     // a chunk of M rows reads the 127 positions before its first row and writes M slots, so chunks may be
-    // up to RING - WINDOW rows (prefill re-reads every touched expert once per chunk: bigger chunks)
-    static constexpr int MAX_CHUNK = 512;
+    // up to RING - WINDOW rows (prefill re-reads every touched expert once per chunk: bigger chunks; P8 k_kqt
+    // wants ~64 tokens per expert, i.e. chunk 2048)
+    static constexpr int MAX_CHUNK = 2048;
     static constexpr int RING = v41::WINDOW + MAX_CHUNK;
     std::vector<float*> ring;            // [N_LAYERS] -> [RING, 512]
     // per kv_source: compressed KV (fp4 codes 256 B + E4M3 scales 32 B) and index keys (64 + 4 B)

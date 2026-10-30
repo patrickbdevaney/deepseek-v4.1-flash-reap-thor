@@ -122,13 +122,20 @@ private:
     // in-flight bookkeeping
     int pending_[2] = {0, 0};
     int queued_ = 0;                      // SQEs written but not yet submitted
-    std::vector<std::pair<int, int>> backlog_;   // (layer, slot) not yet queued (SQ full)
+    // reads beyond sq_entries_ in flight wait here, FIFO from bl_pos_; complete() refills the SQ as
+    // completions arrive (a prefill chunk of 2048 tokens is ~98K reads: refilling only once the ring
+    // had drained to zero ran ~96 latency-bound rounds per chunk)
+    std::vector<std::pair<int, int>> backlog_;   // (layer, slot)
     std::vector<int64_t> backlog_ids_;
+    size_t bl_pos_ = 0;
+    int bl_left_[2] = {0, 0};             // backlogged reads per layer (its flag waits for them too)
     int64_t t0_ns_ = 0;
     double last_us_ = 0;
     double layer_us_[2] = {0, 0};
     bool err_ = false;
     std::string errmsg_;
     void queue_read(int layer, int slot, int64_t row);
+    void issue_read(int layer, int slot, int64_t row);
+    void refill();
     void flush();
 };
