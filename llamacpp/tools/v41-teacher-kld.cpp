@@ -50,6 +50,7 @@ static void write_all(const std::string & path, const std::vector<T> & v) {
 int main(int argc, char ** argv) {
     std::string model_path, in_dir, out_dir;
     int n_ctx = 8192, n_batch = 2048, n_ubatch = 512, ngl = 999;
+    std::vector<llama_model_kv_override> kv;
     long max_rows = -1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -62,10 +63,17 @@ int main(int argc, char ** argv) {
         else if (a == "-ub")    n_ubatch   = std::stoi(next());
         else if (a == "-ngl")   ngl        = std::stoi(next());
         else if (a == "--rows") max_rows   = std::stol(next());
+        else if (a == "--override-kv") {   // KEY=int:V (the 0007 candidate keys on GGUFs written without them)
+            const std::string s = next(); const size_t eq = s.find('=');
+            if (eq == std::string::npos || s.compare(eq + 1, 4, "int:") != 0 || eq >= 127) { fprintf(stderr, "--override-kv KEY=int:V\n"); return 1; }
+            llama_model_kv_override o{}; o.tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+            snprintf(o.key, sizeof o.key, "%s", s.substr(0, eq).c_str()); o.val_i64 = std::stoll(s.substr(eq + 5));
+            kv.push_back(o);
+        }
         else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 1; }
     }
     if (model_path.empty() || in_dir.empty() || out_dir.empty()) {
-        fprintf(stderr, "usage: %s -m MODEL.gguf -i IN_DIR -o OUT_DIR [-c N] [-b N] [-ub N] [-ngl N] [--rows N]\n", argv[0]);
+        fprintf(stderr, "usage: %s -m MODEL.gguf -i IN_DIR -o OUT_DIR [-c N] [-b N] [-ub N] [-ngl N] [--rows N] [--override-kv KEY=int:V ...]\n", argv[0]);
         return 1;
     }
 
@@ -86,6 +94,7 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     auto mparams = llama_model_default_params();
     mparams.n_gpu_layers = ngl;
+    if (!kv.empty()) { kv.push_back(llama_model_kv_override{}); mparams.kv_overrides = kv.data(); }   // key[0] == 0 ends the list
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!model) {
         fprintf(stderr, "failed to load %s\n", model_path.c_str());

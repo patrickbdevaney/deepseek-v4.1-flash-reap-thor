@@ -639,4 +639,37 @@ std::vector<float> Engine::debug_forced_logits(const std::vector<int>& ids, cons
     return out;
 }
 
+// -log p(forced[i]) per forced token (the debug_forced_logits stepping, one logits row on the host): long
+// reference runs whose full logits would not fit beside the weights (0007 candidate-mask check at 32K)
+std::vector<float> Engine::debug_forced_nll(const std::vector<int>& ids, const std::vector<int>& forced,
+                                            std::vector<float>* top_lp, std::vector<int>* top_id) {
+    Impl& I = *p_;
+    I.reset_all();
+    I.prefill(ids, 0);
+    I.ctx.assign(ids.begin(), ids.end());
+    std::vector<float> row(v41::VOCAB), nll(forced.size());
+    std::vector<int> ord(v41::VOCAB);
+    if (top_lp) { top_lp->assign(forced.size() * 32, 0.f); top_id->assign(forced.size() * 32, 0); }
+    for (size_t i = 0; i < forced.size(); ++i) {
+        CK(cudaMemcpyAsync(row.data(), I.s.logits, v41::VOCAB * 4, cudaMemcpyDeviceToHost, I.st));
+        CK(cudaStreamSynchronize(I.st));
+        float mx = row[0]; for (float v : row) mx = std::max(mx, v);
+        double se = 0; for (float v : row) se += std::exp((double)v - mx);
+        const double lse = mx + std::log(se);
+        nll[i] = (float)(lse - row[forced[i]]);
+        if (top_lp) {                                  // top-32 log-probs (s03 teacher format for v41-teacher-kld)
+            for (int r = 0; r < v41::VOCAB; ++r) ord[r] = r;
+            std::partial_sort(ord.begin(), ord.begin() + 32, ord.end(), [&](int a, int b) { return row[a] > row[b] || (row[a] == row[b] && a < b); });
+            for (int j = 0; j < 32; ++j) { (*top_lp)[i * 32 + j] = (float)(row[ord[j]] - lse); (*top_id)[i * 32 + j] = ord[j]; }
+        }
+        if (i + 1 == forced.size()) break;
+        const int pos = (int)I.ctx.size();
+        I.ctx.push_back(forced[i]);
+        I.step(forced[i], pos);
+        I.kv_len = pos + 1;
+    }
+    I.reset_all(); I.ctx.clear(); I.kv_len = 0;
+    return nll;
+}
+
 } // namespace dsv4srv
