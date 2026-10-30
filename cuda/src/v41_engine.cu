@@ -51,6 +51,9 @@ struct Engine::Impl {
     v41m::Model m;
     v41m::State s;
     EngramStore store;
+    EngramStore store2;                                // prefill prefetch: the next chunk's rows (V41_ENGRAM_PREFETCH=0 off)
+    bool engram_prefetch = false;
+    std::vector<uint8_t> img0;                         // is_image = 0 for hashed prompt rows
     bool engram_on = false;
     std::unique_ptr<EngramHasher> hasher;
     v41m::Engram eg;
@@ -112,22 +115,30 @@ struct Engine::Impl {
     bool adapt_on = [] { const char* e = getenv("V41_SPEC_ADAPT"); return e && *e == '1'; }();
     v41m::LayerHook hook_for(int M) { return D ? v41m::tap_hook(*D, s, M) : v41m::LayerHook(); }
 
-    void stage_rows(const int* ids, int n, int pos0) {
+    void stage_dev(const int* ids, int n, int pos0) {
         CK(cudaStreamSynchronize(st));                 // the staging buffers and the Engram arena are reused
         for (int i = 0; i < n; ++i) { h_pos[i] = pos0 + i; h_ids[i] = ids[i]; h_img[i] = 0; }
         CK(cudaMemcpyAsync(s.d_pos, h_pos, n * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(s.d_ids, h_ids, n * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(s.d_img, h_img, n, cudaMemcpyHostToDevice, st));
-        if (engram_on) {
-            hasher->truncate(pos0);
-            hasher->hash(ids, h_img, n, pos0, hid.data());
-            store.submit(hid.data(), n);
-        }
+    }
+    void submit_engram(EngramStore& t, const int* ids, int n, int pos0) {
+        if (img0.size() < (size_t)n) img0.assign(n, 0);
+        hasher->truncate(pos0);
+        hasher->hash(ids, img0.data(), n, pos0, hid.data());
+        t.submit(hid.data(), n);
+    }
+    void stage_rows(const int* ids, int n, int pos0) {
+        stage_dev(ids, n, pos0);
+        if (engram_on) submit_engram(store, ids, n, pos0);
+    }
+    static void reap_store(EngramStore& t) {
+        std::string err;
+        if (!t.complete(&err)) throw std::runtime_error("Engram row store: " + err);
     }
     void reap() {
         if (!engram_on) return;
-        std::string err;
-        if (!store.complete(&err)) throw std::runtime_error("Engram row store: " + err);
+        reap_store(store);
         static const bool stats = [] { const char* e = getenv("V41_ENGRAM_STATS"); return e && *e == '1'; }();
         if (stats) {
             static int n = 0; static double a = 0, b = 0, c = 0;
@@ -156,10 +167,39 @@ struct Engine::Impl {
         reaper.get();                                  // rethrows an Engram I/O error
     }
 
+    // Multi-chunk prefill with Engram prefetch: chunk i+1's rows are read into the other store while
+    // chunk i runs. Overlapping a chunk's own reads hid only ~0.6 s of its ~1.2 s (2048 rows x 48 reads):
+    // the forward reaches layer 1 first (nsys pf7: 4 x 0.63 s stalled before k_engram_dequant).
+    // stage_dev syncs the stream, so chunk i-1 -- the other store's last user -- is done before its
+    // arena is refilled; each forward re-arms the flags of the store it waited on.
+    void prefill_prefetch(const int* ids, int k, int n) {
+        EngramStore* S[2] = {&store, &store2};
+        auto start = [&](EngramStore& t, int c0) {
+            submit_engram(t, ids + c0, std::min(chunk, n - c0), c0);
+            return std::async(std::launch::async, [&t] { reap_store(t); });
+        };
+        std::future<void> cur = start(*S[0], k), nxt;
+        for (int c0 = k, i = 0; c0 < n; c0 += chunk, ++i) {
+            const int M = std::min(chunk, n - c0);
+            stage_dev(ids + c0, M, c0);
+            if (c0 + M < n) nxt = start(*S[(i + 1) & 1], c0 + M);
+            v41m::embed_rows(m, s, M, st);
+            eg.store = S[i & 1];
+            try {
+                v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, n, c0, eg, st, hook_for(M), dec_margin);
+            } catch (...) { eg.store = &store; throw; }   // the futures' destructors wait for the reapers
+            eg.store = &store;
+            cur.get();                                     // rethrows an Engram I/O error
+            cur = std::move(nxt);
+            if (c0 + M == n) { v41m::head_row(m, s, M - 1, st); v41m::argmax_logits(s, d_tok, st); }
+        }
+    }
+
     // rows [k, n) of ids; logits of row n-1 land in s.logits
     void prefill(const std::vector<int>& ids, int k) {
         const int n = (int)ids.size();
-        for (int c0 = k; c0 < n; c0 += chunk) {
+        if (engram_prefetch && n - k > chunk) prefill_prefetch(ids.data(), k, n);
+        else for (int c0 = k; c0 < n; c0 += chunk) {
             const int M = std::min(chunk, n - c0);
             stage_rows(ids.data() + c0, M, c0);
             v41m::embed_rows(m, s, M, st);
@@ -404,6 +444,11 @@ void Engine::load() {
         }
         std::string err;
         if (!I.store.open(ec, &err)) throw std::runtime_error("Engram row store at " + ec.dir + ": " + err);
+        const char* pf = getenv("V41_ENGRAM_PREFETCH");
+        if (!(pf && *pf == '0')) {
+            if (!I.store2.open(ec, &err)) throw std::runtime_error("Engram row store (prefetch) at " + ec.dir + ": " + err);
+            I.engram_prefetch = true;
+        }
         I.hasher.reset(new EngramHasher(I.store.tables()));
         I.engram_on = true;
         I.eg.store = &I.store; I.eg.graph_wait = true;

@@ -108,3 +108,9 @@ Engram reap before each chunk (the forward waits on the per-layer flags anyway).
 - Decode ids IDENTICAL to P7a in both arms; decode after 8k 24.33 tok/s.
 
 Stage 2b total: 8k prefill 291.1 -> 476.4 tok/s (1.64x), chat decode 25.1-25.3 tok/s.
+
+Engram prefetch (nsys pf7 after the overlap: 4 x 0.63 s still stalled before k_engram_dequant -- the
+forward reaches layer 1 ~0.6 s into a chunk whose own ~1.2 s of reads it overlaps): a second EngramStore
+(own ring, arena, flags; +48 MB pinned at chunk 1024) and `prefill_prefetch` reads chunk i+1's rows while
+chunk i runs (V41_ENGRAM_PREFETCH=0 off). 8k prefill: chunk 2048 476.4 -> **503.8**, chunk 1024 458.0 ->
+**502.5** tok/s, ids IDENTICAL both. Chunk 1024 (the default, 1.97 GiB state) now equals 2048.
