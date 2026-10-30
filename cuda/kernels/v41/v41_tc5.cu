@@ -94,6 +94,30 @@ __global__ void k_tc5_round(float* y, size_t n) {
     const size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
     if (i < n) y[i] = __bfloat162float(__float2bfloat16(y[i]));
 }
+// 8 / 4 elements per thread (the scalar kernels moved 1 B / 4 B per thread: ~64 GB/s, 0.78 s of 8k prefill);
+// same per-element math. n8 = n / 8 (n % 32 == 0: one scale per 4 threads)
+__global__ void k_tc5_act8(uint4* __restrict__ dst, const uint2* __restrict__ xq, const float* __restrict__ xs, size_t n8) {
+    const size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= n8) return;
+    const uint2 c = xq[i];
+    const float s = xs[i / 4];
+    uint32_t r[4];
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const uint32_t w = k < 2 ? c.x : c.y, sh = 16 * (k & 1);
+        const __nv_bfloat162 b = __floats2bfloat162_rn(v41d::e4m3f((uint8_t)(w >> sh)) * s, v41d::e4m3f((uint8_t)(w >> (sh + 8))) * s);
+        r[k] = *reinterpret_cast<const uint32_t*>(&b);
+    }
+    dst[i] = make_uint4(r[0], r[1], r[2], r[3]);
+}
+__global__ void k_tc5_round4(float4* y, size_t n4) {
+    const size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= n4) return;
+    float4 v = y[i];
+    v.x = __bfloat162float(__float2bfloat16(v.x)); v.y = __bfloat162float(__float2bfloat16(v.y));
+    v.z = __bfloat162float(__float2bfloat16(v.z)); v.w = __bfloat162float(__float2bfloat16(v.w));
+    y[i] = v;
+}
 
 struct Scratch { void* p = nullptr; size_t cap = 0; };
 void* grow(Scratch& s, size_t bytes) {
@@ -123,7 +147,9 @@ bool tc5_nvfp4(float* y, const uint8_t* xq, const float* xs, int ldx, const uint
     Scratch &g_act = B.act, &g_codes = B.codes, &g_scales = B.scales, &g_ws = B.ws, &g_sgrp = B.sgrp;
     __nv_bfloat16* xb = (__nv_bfloat16*)grow(g_act, (size_t)M * ldx * 2);
     const size_t nx = (size_t)M * ldx;
-    k_tc5_act<<<(unsigned)((nx + 255) / 256), 256, 0, st>>>(xb, xq, xs, nx);
+    if (nx % 32 == 0 && ((uintptr_t)xq & 7) == 0)
+        k_tc5_act8<<<(unsigned)((nx / 8 + 255) / 256), 256, 0, st>>>(reinterpret_cast<uint4*>(xb), reinterpret_cast<const uint2*>(xq), xs, nx / 8);
+    else k_tc5_act<<<(unsigned)((nx + 255) / 256), 256, 0, st>>>(xb, xq, xs, nx);
     uint8_t* wc = (uint8_t*)grow(g_codes, (size_t)N * K / 2);
     __nv_bfloat16* sc = (__nv_bfloat16*)grow(g_scales, (size_t)N * (K / 16) * 2);
     {
@@ -165,7 +191,11 @@ bool tc5_nvfp4(float* y, const uint8_t* xq, const float* xs, int ldx, const uint
             abort();
         }
     }
-    if (round) k_tc5_round<<<(unsigned)(((size_t)M * N + 255) / 256), 256, 0, st>>>(y, (size_t)M * N);
+    if (round) {
+        const size_t ny = (size_t)M * N;
+        if (ny % 4 == 0 && ((uintptr_t)y & 15) == 0) k_tc5_round4<<<(unsigned)((ny / 4 + 255) / 256), 256, 0, st>>>(reinterpret_cast<float4*>(y), ny / 4);
+        else k_tc5_round<<<(unsigned)((ny + 255) / 256), 256, 0, st>>>(y, ny);
+    }
     return true;
 }
 

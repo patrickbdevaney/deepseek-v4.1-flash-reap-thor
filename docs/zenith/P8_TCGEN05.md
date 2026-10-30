@@ -129,3 +129,8 @@ k_sam_gather materialized Eb[m][640][512] bf16 (655 KB a row) for K2R / K3P to r
   M = 256, ne = 640: K2 + K3 8.13, row form 4.80, fused **2.74 ms**.
 - 8k prefill (chunk 1024): 502.5 -> **549.8 tok/s**, decode ids IDENTICAL to P7a; chat decode 25.15 / 25.24
   (fused off), chat ids identical, consistency PASS. V41_SAM_FUSED=0 = the row form.
+
+tc5 helpers vectorized (k_tc5_act8: 8 e4m3 -> bf16 per thread; k_tc5_round4): the scalar forms moved 1 B /
+4 B per thread (~64 GB/s, 0.78 s of 8k prefill). Same per-element math, gate_tc5 maxerr unchanged.
+8k prefill (chunk 1024) 549.8 -> **580.7 tok/s**, ids IDENTICAL. Re-check of the stage 1 default at chunk
+1024: V41_TC5=0 = 335.7 tok/s (gate_tc5's M=256 timings, ~1.0x, do not reflect the engine).
