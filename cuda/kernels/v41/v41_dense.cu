@@ -5,6 +5,7 @@
 #include "v41_config.h"
 #include "v41_gemv.cuh"
 #include "v41_nv_mma.cuh"
+#include "v41_f8_mma.cuh"
 #include <cuda_fp4.h>
 #include <cstring>
 #include <algorithm>
@@ -331,9 +332,38 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     }
 }
 size_t overlay_count() { return ov_map().size(); }
+
+// P6 FP8 tensor-core weights: a pointer registered here was repacked in place for k_f8m (v41_f8_mma.cuh)
+static std::unordered_map<const void*, int>& f8m_map() { static std::unordered_map<const void*, int> m; return m; }
+bool f8m_register(uint8_t* W, int N, int K) {
+    if (N % 32 || K % 256 || f8m_map().count(W)) return false;
+    const size_t bytes = (size_t)N * K;
+    uint8_t* tmp = nullptr;
+    if (cudaMalloc(&tmp, bytes) != cudaSuccess) { fprintf(stderr, "f8m_register: tmp alloc\n"); abort(); }
+    const size_t th = (size_t)(N / 16) * (K / 256) * 1024;
+    v41g::k_f8m_repack<<<(unsigned)((th + 255) / 256), 256>>>(tmp, W, N, K);
+    cudaMemcpy(W, tmp, bytes, cudaMemcpyDeviceToDevice);
+    if (cudaDeviceSynchronize() != cudaSuccess) { fprintf(stderr, "f8m_register: repack failed\n"); abort(); }
+    cudaFree(tmp);
+    f8m_map()[W] = K;
+    return true;
+}
+static void launch_f8m(float* y, const XSrc& X, const uint8_t* W, const uint8_t* Ws, int M, int N, int K, bool round,
+                       cudaStream_t st) {
+    static const int nt_max = [] { const char* e = getenv("V41_F8M_NT"); return e ? atoi(e) : 8; }();
+    const int nt = M <= 8 ? 1 : M <= 16 ? 2 : (M <= 32 || nt_max < 8) ? 4 : 8;
+    const size_t SB = (v41g::nvm_stage_bytes(v41g::F8M_KC) + 15) & ~(size_t)15, smem = (size_t)8 * nt * SB;
+    dim3 grid((N + v41g::F8M_ROWS_PER_CTA - 1) / v41g::F8M_ROWS_PER_CTA, (M + 8 * nt - 1) / (8 * nt));
+    #define V41_F8M(NTV) do { auto kf = v41g::k_f8m<NTV>; \
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
+        kf<<<grid, 256, smem, st>>>(y, X, W, Ws, M, N, K, round ? 1 : 0); } while (0)
+    switch (nt) { case 1: V41_F8M(1); break; case 2: V41_F8M(2); break; case 4: V41_F8M(4); break; default: V41_F8M(8); }
+    #undef V41_F8M
+}
 void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, const uint8_t* Ws,
                 int M, int N, int K, bool round_bf16, cudaStream_t st, int G) {
     XSrc X; X.xq = xq; X.xs = xs; X.ldx = K * G;
+    if (G == 1 && !f8m_map().empty() && f8m_map().count(W)) { launch_f8m(y, X, W, Ws, M, N, K, round_bf16, st); return; }
     if (!ov_map().empty()) {
         auto it = ov_map().find(W);
         if (it != ov_map().end()) {

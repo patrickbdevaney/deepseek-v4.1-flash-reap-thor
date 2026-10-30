@@ -105,6 +105,9 @@ bool router_permute(uint16_t* Wg, int E, int K, cudaStream_t st);
 // decodes NVFP4 instead of FP8 (DecNVFP4). overlay_count() = registered tensors.
 // N rows, K columns; force_mma -1 = env (V41_NV_MMA), 0 = row-major k_dense, 1 = repack for k_nvm
 void overlay_register(const uint8_t* codes, const uint8_t* scales, float g, int N, int K, int force_mma = -1);
+// P6: repack an FP8 [N, K] weight in place for the fp8 tensor-core path (k_f8m); fp8_linear then serves it
+// with k_f8m at every M (T1 vs k_dense, decode == prefill). N % 32, K % 256.
+bool f8m_register(uint8_t* W, int N, int K);
 // Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
 // bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
 void kq_fast_set(bool on);
