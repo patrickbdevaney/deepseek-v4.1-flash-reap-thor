@@ -274,8 +274,9 @@ void bind_layer(Model& m, int L, bool hw) {
             w.eg_wkv = c; w.eg_wkv_s = sc;
         }
         // P6 (T1): the same FP8 bytes repacked in place for k_f8m, fp8 tensor cores at every M (prefill 3.3x
-        // per launch, decode at parity); V41_F8M=0 keeps k_dense<DecFP8>
-        static const bool f8m = [] { const char* e = getenv("V41_F8M"); return e && *e == '1'; }();
+        // per launch, decode at parity); default on after the 4-offset wide KL/NLL check matched TC5 (2026-10-30);
+        // V41_F8M=0 keeps k_dense<DecFP8>
+        static const bool f8m = [] { const char* e = getenv("V41_F8M"); return !(e && *e == '0'); }();
         if (f8m && !eg_nv) v41k::f8m_register(const_cast<uint8_t*>(w.eg_wkv), ENGRAM_KV_OUT, ENGRAM_KV_IN);
         w.eg_q = b16("engram.q_weight"); w.eg_k = b16("engram.k_weight");
     }

@@ -14,6 +14,7 @@
 #include "v41_kq_fast.cuh"
 #include "v41_kq_mma.cuh"
 #include <cub/block/block_scan.cuh>
+#include <cub/block/block_radix_sort.cuh>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -305,38 +306,45 @@ __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_par(Unit* units, int* u
     if (p == 0) *units_n = total;
 }
 
-// k_units_par for P up to UNITS_BIG_MAX (prefill chunks above 170 tokens): the same two passes with
-// UB_IPT pairs per thread, the per-pair arrays in dynamic smem and a blocked BlockScan.
-static constexpr int UB_IPT = 4, UNITS_BIG_MAX = UNITS_PAR_MAX * UB_IPT;
+// k_units_par for P up to UNITS_BIG_MAX (prefill chunks above 170 tokens). The order is (expert, token):
+// a token's top-k experts are distinct, so key e << 12 | t is unique and a BlockRadixSort of the pairs by
+// it gives k_units_par's sorted position r without the O(P^2) rank loop (2.2 ms per layer at P = 3072).
+// Run offsets come from a per-expert histogram (counts are order-free, so the result is deterministic).
+static constexpr int UB_IPT = 4, UNITS_BIG_MAX = UNITS_PAR_MAX * UB_IPT, UB_EMAX = 511, UB_TBITS = 12;
+using URSort = cub::BlockRadixSort<int, UNITS_PAR_MAX, UB_IPT, int>;
 __global__ void __launch_bounds__(UNITS_PAR_MAX) k_units_big(Unit* units, int* units_n, int* pair_tok, int* pair_slot,
                                                               int* inv, const int* idx, int M, int topk, int mt) {
-    __shared__ typename UScan::TempStorage ts;
+    __shared__ union { typename URSort::TempStorage rs; typename UScan::TempStorage sc; } ts;
     extern __shared__ int ub[];
-    int* se = ub; int* so_e = ub + UNITS_BIG_MAX; int* so_left = ub + 2 * UNITS_BIG_MAX; int* so_off = ub + 3 * UNITS_BIG_MAX;
+    int* cnt = ub; int* first = ub + (UB_EMAX + 1);
     const int P = M * topk;
-    for (int p = threadIdx.x; p < P; p += blockDim.x) se[p] = idx[p];
+    for (int e = threadIdx.x; e <= UB_EMAX; e += blockDim.x) cnt[e] = 0;
     __syncthreads();
-    for (int p = threadIdx.x; p < P; p += blockDim.x) {
-        const int e = se[p], t = p / topk;
-        int r = 0, s = 0, run = 0;
-        for (int q = 0; q < P; ++q) {
-            const int eq = se[q], tq = q / topk;
-            s += eq < e; run += eq == e;
-            r += eq < e || (eq == e && (tq < t || (tq == t && q < p)));
-        }
-        pair_tok[r] = t; pair_slot[r] = p % topk; inv[p] = r;
-        so_e[r] = e; so_off[r] = r - s; so_left[r] = run - (r - s);
-    }
-    __syncthreads();
-    int st[UB_IPT], u[UB_IPT], total;
-    #pragma unroll
-    for (int i = 0; i < UB_IPT; ++i) { const int p = threadIdx.x * UB_IPT + i; st[i] = p < P && so_off[p] % mt == 0; }
-    UScan(ts).ExclusiveSum(st, u, total);
+    int key[UB_IPT], val[UB_IPT];
     #pragma unroll
     for (int i = 0; i < UB_IPT; ++i) {
         const int p = threadIdx.x * UB_IPT + i;
-        if (st[i]) units[u[i]] = Unit{so_e[p], p, min(mt, so_left[p])};
+        if (p < P) { const int e = idx[p]; key[i] = e << UB_TBITS | (p / topk); val[i] = p; atomicAdd(&cnt[e], 1); }
+        else { key[i] = (UB_EMAX << UB_TBITS) | ((1 << UB_TBITS) - 1); val[i] = -1; }   // pads sort last
     }
+    URSort(ts.rs).Sort(key, val, 0, UB_TBITS + 9);
+    __syncthreads();                                     // cnt complete; ts free for the scan
+    if (threadIdx.x == 0) { int s = 0; for (int e = 0; e <= UB_EMAX; ++e) { first[e] = s; s += cnt[e]; } }
+    __syncthreads();
+    int st[UB_IPT], u[UB_IPT], total, ue[UB_IPT], ul[UB_IPT];
+    #pragma unroll
+    for (int i = 0; i < UB_IPT; ++i) {
+        const int r = threadIdx.x * UB_IPT + i, p = val[i];
+        st[i] = 0;
+        if (r >= P) continue;
+        const int e = key[i] >> UB_TBITS, off = r - first[e];
+        pair_tok[r] = p / topk; pair_slot[r] = p % topk; inv[p] = r;
+        st[i] = off % mt == 0; ue[i] = e; ul[i] = cnt[e] - off;
+    }
+    UScan(ts.sc).ExclusiveSum(st, u, total);
+    #pragma unroll
+    for (int i = 0; i < UB_IPT; ++i)
+        if (st[i]) units[u[i]] = Unit{ue[i], (int)threadIdx.x * UB_IPT + i, min(mt, ul[i])};
     if (threadIdx.x == 0) *units_n = total;
 }
 
@@ -536,14 +544,25 @@ void kq_mma_repack(uint8_t* W, int rows, int K, int bits, void* tmp, cudaStream_
     k_kq_mma_repack<<<(unsigned)((th + 255) / 256), 256, 0, st>>>((uint8_t*)tmp, W, rows, K / 256, bits);
     cudaMemcpyAsync(W, tmp, bytes, cudaMemcpyDeviceToDevice, st);
 }
+// gate_kqm_rt (2026-10-30), RT 4 vs 1, bitwise: Q2_K 1.03x gate|up, 1.11x down; Q3_K 0.88x / 0.82x -> Q2_K only
+static constexpr int KQM_RT_DEFAULT = 4;
+template <int QT, int MT, int RT = 1>
+static void launch_kqm_(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
+                        const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin, int cmax) {
+    dim3 grid((N + KQM_ROWS_PER_CTA * RT - 1) / (KQM_ROWS_PER_CTA * RT), max_units);
+    const size_t smem = (size_t)MT * kqm_stage_bytes(K);
+    auto kf = k_kqm<QT, MT, Unit, RT>;
+    if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
+}
+// Q2_K prefill tiles (MT >= 8) run V41_KQM_RT row tiles per warp; bitwise for every RT
 template <int QT, int MT>
 static void launch_kqm(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
                        const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin = 1, int cmax = 1 << 30) {
-    dim3 grid((N + KQM_ROWS_PER_CTA - 1) / KQM_ROWS_PER_CTA, max_units);
-    const size_t smem = (size_t)MT * kqm_stage_bytes(K);
-    auto kf = k_kqm<QT, MT, Unit>;
-    if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-    kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
+    static const int rt = [] { const char* e = getenv("V41_KQM_RT"); return e ? atoi(e) : KQM_RT_DEFAULT; }();
+    if (QT == 2 && MT >= 8 && rt == 2) launch_kqm_<QT, MT, 2>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, cmin, cmax);
+    else if (QT == 2 && MT >= 8 && rt == 4) launch_kqm_<QT, MT, 4>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, cmin, cmax);
+    else launch_kqm_<QT, MT, 1>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, max_units, st, cmin, cmax);
 }
 template <int QT, int MT, bool SOA>
 static void launch_kq(float* out, int ldo, const XSrc& X, bool by_pair, const Unit* units, const int* nu, const int* ptok,
@@ -682,7 +701,7 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
     static const bool units_serial = [] { const char* e = getenv("V41_UNITS_SERIAL"); return e && *e == '1'; }();
     if (P <= UNITS_PAR_MAX && !units_serial) k_units_par<<<1, UNITS_PAR_MAX, 0, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
     else if (P <= UNITS_BIG_MAX && !units_serial) {
-        const int smem = 4 * UNITS_BIG_MAX * (int)sizeof(int);
+        const int smem = 2 * (UB_EMAX + 1) * (int)sizeof(int);
         static const bool attr = [smem] { return cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess; }();
         (void)attr;
         k_units_big<<<1, UNITS_PAR_MAX, smem, st>>>(units, nu, ptok, pslot, inv, idx, M, topk, mt);
@@ -751,8 +770,8 @@ int units_selftest() {
     unsigned seed = 12345;
     auto rnd = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
     for (int topk : {6, 3})
-        for (int mt : {1, 4})
-            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128, 200, 341, 512}) {
+        for (int mt : {1, 4, 8, 16})
+            for (int M : {1, 2, 3, 4, 5, 6, 8, 16, 64, 128, 200, 341, 512, 682}) {
                 const int P = M * topk; if (P > UNITS_BIG_MAX) continue;
                 const bool big = P > UNITS_PAR_MAX;          // k_units_big against the serial reference
                 for (int rep = 0; rep < 20; ++rep) {
@@ -772,7 +791,7 @@ int units_selftest() {
                     cudaMemcpy(idx, h.data(), P * 4, cudaMemcpyHostToDevice);
                     k_units<<<1, 1>>>(un[0], buf[0][3], buf[0][0], buf[0][1], buf[0][2], idx, M, topk, mt);
                     if (big) {
-                        const int smem = 4 * UNITS_BIG_MAX * (int)sizeof(int);
+                        const int smem = 2 * (UB_EMAX + 1) * (int)sizeof(int);
                         cudaFuncSetAttribute(k_units_big, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
                         k_units_big<<<1, UNITS_PAR_MAX, smem>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);
                     } else k_units_par<<<1, UNITS_PAR_MAX>>>(un[1], buf[1][3], buf[1][0], buf[1][1], buf[1][2], idx, M, topk, mt);

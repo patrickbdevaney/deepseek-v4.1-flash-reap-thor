@@ -6,7 +6,10 @@ examples patched only for the `props.major` / CUDA-version checks).
 ## Why
 
 8k prefill (193.5 tok/s, pf3 profile) is compute-bound on `mma.sync`: k_nvm_big 10.2 s, k_kqm 14.2 s,
-Engram k_dense / k_f8m 2.9 / 0.85 s. Our fp8 `mma.sync` kernels reach ~6-10 TFLOPS. tcgen05 + TMEM (the
+Engram k_dense / k_f8m 2.9 / 0.85 s. Our fp8 `mma.sync` kernels reach ~6-11 TFLOPS. That is NOT the
+mma.sync peak (scratch `mmarate.cu`, 160 CTAs x 8 warps x 4 independent chains): bf16 m16n8k16 64,
+e4m3 m16n8k16 119, e4m3 m16n8k32 226 TFLOPS (8.0 / 4.3 / 4.6 cycles per mma per SMSP). Our kernels lose
+to the scalar work around each mma (scale epilogues, operand building), not to the tensor pipe. tcgen05 + TMEM (the
 only Blackwell-class tensor path on Thor; `mma.sync ... block_scale` is sm_120a-only) reaches:
 
 | kernel (CUTLASS example) | shape M x N x K | runtime | TFLOPS |
@@ -42,3 +45,18 @@ order (consistency check becomes a near-tie check, judged by teacher-forced KL a
 2. Engram FP8 via block-scaled MXFP8 (exact operands): 13.2 -> ~1.1 ms/launch.
 3. Experts (k_kqm 14.2 s): grouped GEMM (CUTLASS 92 MoE / 75 grouped) on bf16-dequantized tiles; largest
    remaining share; T1/T2 with KL gate.
+
+## Stage 2 (experts) findings, 2026-10-30
+
+- `tests/bench_kqm_units.cu`: k_kqm at MT = 16 costs the same per token whether 8 units of one expert
+  re-read it (L2) or 96 distinct experts stream from DRAM -> issue-bound (~89 GB/s, ~11 TFLOPS), so
+  bigger units / chunks cannot help by themselves.
+- k_kqb (bf16 m16n8k16, A = bf16(128 + q*sc) built with IMUL + 2 PRMT, code-free term as a second mma on
+  bf16 m and hi/lo xm; T1): correct (gate vs fp64 at k_kqm's error), 2.7x fewer instructions, but the
+  bf16 x stage (11.6 KB/token) allows 1 CTA/SM and the A build is still ~7 int ops per HMMA because one
+  converted weight serves only 16 tokens. Best variant (RT 8, 2-ahead LDG prefetch, 4 accumulator chains)
+  1.11x gate|up, 1.28x down vs k_kqm; 7-11% over the bitwise k_kqm RT fix. Not shipped.
+- Shipped: k_kqm RT = 4 row tiles per warp for Q2_K (stage copied once per 512 rows; bitwise), radix-sort
+  k_units_big (bitwise), k_f8m default on.
+- What would move experts: tcgen05 with the K-quant -> bf16 conversion done once per 128-row smem tile and
+  consumed by UMMA across all tokens of the unit (conversion cost / token falls with MT), or MT >= 64.

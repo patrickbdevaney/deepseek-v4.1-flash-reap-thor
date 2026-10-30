@@ -86,7 +86,10 @@ __device__ __forceinline__ void kqm_mt_acc(float (&m)[MT], const float (&c)[4], 
 // grid (ceil(N / 128), max units); same unit contract as k_kq (MT = most tokens a unit may hold, <= 8,
 // or a multiple of 8: NT = MT / 8 n8 tiles share each A fragment -- prefill units read an expert once
 // for up to MT tokens; every column's fmaf sequence is the MT <= 8 one, so rows stay bitwise)
-template <int QT, int MT, class UnitT>
+// RT: each warp runs RT 16-row tiles (grid x = ceil(N / (128 RT))), so prefill stages its MT token rows once
+// per 128 RT rows (the 16-token stage is 113 KB at K = 5120, half the bytes of a 128-row weight slice).
+// Per-element arithmetic is unchanged: bitwise for every RT.
+template <int QT, int MT, class UnitT, int RT = 1>
 __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                              const UnitT* units, const int* units_n, const int* pair_tok,
                                              KQTab tab, int N, int K, int cmin = 1, int cmax = 1 << 30) {
@@ -105,7 +108,8 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
     }
     __syncthreads();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    const int tile = blockIdx.x * 8 + warp;
+    for (int rr = 0; rr < RT; ++rr) {
+    const int tile = (blockIdx.x * RT + rr) * 8 + warp;
     if (tile * 16 >= N) return;
     const uint8_t* W; int lt, mrows;
     if (tab.pass == 0) {
@@ -236,6 +240,7 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
             const float v = QT == 2 ? fmaf(512.f, acc[j][h][e], -m) : fmaf(512.f, acc[j][h][e], -4.f * m);
             out[(size_t)(U.start + n) * ldo + row] = bf16r(v);
         }
+    }
 }
 
 // ggml AoS blocks -> the layout above; one thread per (tile, superblock, lane)
