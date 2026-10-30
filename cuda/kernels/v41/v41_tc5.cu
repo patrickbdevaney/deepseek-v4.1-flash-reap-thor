@@ -112,7 +112,7 @@ Bufs& bufs(cudaStream_t st) { static std::unordered_map<cudaStream_t, Bufs> m; r
 namespace v41k {
 using namespace v41tc5;
 
-bool tc5_on() { static const bool on = [] { const char* e = getenv("V41_TC5"); return e && *e == '1'; }(); return on; }
+bool tc5_on() { static const bool on = [] { const char* e = getenv("V41_TC5"); return !(e && *e == '0'); }(); return on; }   // default on (P8 quality check), V41_TC5=0 = k_nvm
 
 // x rows: act_quant_fp8 codes/scales with row stride ldx (elements); group gi of G reads columns [gi K, (gi+1) K)
 bool tc5_nvfp4(float* y, const uint8_t* xq, const float* xs, int ldx, const uint8_t* W, const uint8_t* S, float g,
