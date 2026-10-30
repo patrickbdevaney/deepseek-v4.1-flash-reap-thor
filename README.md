@@ -53,13 +53,13 @@ kl32 (0.298). All 14 arms are in [`RESULTS.md`](RESULTS.md).
 
 | | CUDA server (`REAP192-Thor`) | llama.cpp fork (`REAP192-GGUF` L3) |
 |---|---:|---:|
-| Decode, 256-token chat answers (code / explanation / math) | **33.0 / 25.0 / 40.2 tok/s** (DSpark K=3, default); 25.0 plain | 12.3–12.5 tok/s; 16.6–19.9 with `DSPARK=1` |
+| Decode, 256-token chat answers (code / explanation / math) | **33.1 / 25.1 / 40.2 tok/s** (DSpark K=3, default); 25.3 plain; 27.1 / 22.7 / 34.9 sampled at T=0.7 | 12.3–12.5 tok/s; 16.6–19.9 with `DSPARK=1` |
 | Prefill, ~1.8K-token prompt | 398 tok/s | 159 tok/s |
 | Prefill, ~6–7K-token prompt | 739 tok/s | 147 tok/s |
 | Image input | no | yes |
 
-The CUDA server's decode runs at 78% of the bandwidth roofline for the 8.57 GB it reads per token
-([`docs/zenith/LEDGER.md`](docs/zenith/LEDGER.md)). Every speedup since the first working build (8.10 tok/s) kept
+The CUDA server's plain decode runs at about 74% of the reachable bandwidth roofline: about 7.6 GB read per token,
+against 247 GB/s measured with TMA bulk copies ([`docs/zenith/LEDGER.md`](docs/zenith/LEDGER.md)). Every speedup since the first working build (8.10 tok/s) kept
 greedy ids identical. The history is in [`docs/ZENITH_LOOP.md`](docs/ZENITH_LOOP.md) and [`docs/zenith/`](docs/zenith/).
 
 ## Method

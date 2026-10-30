@@ -14,14 +14,14 @@ Measured 2026-10-30 on a Jetson AGX Thor (CUDA 13.0, Linux 6.8.12-tegra). The se
 
 | | this server (`v41_server`) | llama.cpp fork, GGUF L3 (same box, same prompts) |
 |---|---:|---:|
-| **decode** (256-token chat answers: code / explanation / math) | **33.0 / 25.0 / 40.2 tok/s** (DSpark K=3); 25.0 with `SPEC=0` | 12.3–12.5 tok/s; 17.3–20.7 with `DSPARK=1` |
+| **decode** (256-token chat answers: code / explanation / math) | **33.1 / 25.1 / 40.2 tok/s** (DSpark K=3); 25.3 with `SPEC=0` | 12.3–12.5 tok/s; 17.3–20.7 with `DSPARK=1` |
 | **prefill**, 1.8K-token prompt | **398 tok/s** | 159 tok/s |
 | **prefill**, 7.2K-token prompt (5.9K for llama.cpp) | **739 tok/s** | 147 tok/s |
 | memory left while serving | 9 GiB of 122 (32K context; 17 GiB with `SPEC=0`) | 25 GiB (16K context) |
 | image input | no (text only) | yes (mmproj) |
 
 - **Speculative decoding is on by default** (`SPEC=3`: the checkpoint's own DSpark drafter proposes 3 tokens, the model verifies them in one pass). Greedy output is token-identical to plain decoding (0 divergences on 27 held-out prompts), and sampled output keeps the model's exact distribution. On the held-out set it averages 1.345× over plain decoding: chat 1.09×, agentic 1.23×, code 1.40×, long context 1.40×, math 1.63×. No prompt type is slower.
-- **Sampling** (temperature 0.7) decodes at 25.0 / 19.2 / 25.2 tok/s on the same three prompts, against 18.9 without speculation. Sampled decode is slower than greedy because it runs the full bf16 vocabulary head; greedy uses a two-stage NVFP4 head.
+- **Sampling runs at greedy speed.** At temperature 0.7 it decodes at 27.1 / 22.7 / 34.9 tok/s on the same three prompts with speculation, and at 25.0–25.2 without (25.3 greedy). Sampled rows use a two-stage head: NVFP4 logits for the whole vocabulary, recomputed exactly in bf16 for every token within T·ln(10⁹) + 4 logits of the maximum, with a full-head fallback. The sampling distribution differs from the full bf16 head by a total variation of at most 2×10⁻⁹ (331 rows measured). With `top_p` = 1 the draw is a Gumbel-max on the GPU; with `top_p` < 1 the nucleus is sorted on the host.
 - **Decode** without speculation is at about 74% of the reachable bandwidth roofline: about 7.6 GB per token in 40 ms, against a 31 ms floor at 247 GB/s. That ceiling is measured with TMA bulk copies (`tools/bw_sweep.cu`); plain loads top out at 227–243 GB/s. The per-kernel breakdown is in the pipeline repo's [`docs/zenith/`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor/tree/main/docs/zenith).
 - **Prefill.** `v41_decode` reaches 580.7 tok/s on the fixed 8,192-token benchmark prompt. The server's 739 tok/s is for a different, more regular prompt. Every prefill change in the history below kept the greedy token ids identical to the previous build.
 - **Greedy output** is deterministic run to run. It is also identical between the 64- and 1024-row prefill chunks (all six bench prompts were checked on 2026-10-30).
