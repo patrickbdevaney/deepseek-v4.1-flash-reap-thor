@@ -114,3 +114,18 @@ forward reaches layer 1 ~0.6 s into a chunk whose own ~1.2 s of reads it overlap
 (own ring, arena, flags; +48 MB pinned at chunk 1024) and `prefill_prefetch` reads chunk i+1's rows while
 chunk i runs (V41_ENGRAM_PREFETCH=0 off). 8k prefill: chunk 2048 476.4 -> **503.8**, chunk 1024 458.0 ->
 **502.5** tok/s, ids IDENTICAL both. Chunk 1024 (the default, 1.97 GiB state) now equals 2048.
+
+## P8c: fused sparse attention (no Eb)
+
+k_sam_gather materialized Eb[m][640][512] bf16 (655 KB a row) for K2R / K3P to read back. Two findings:
+- the gather was issue-bound on `fp4f` (a `__constant__` table read with a per-lane index: 8 serialized
+  lookups per item). fp4 x e4m3 has <= 6 significant bits, so the hardware e2m1x2 -> f16x2 cvt + HMUL2 is
+  exact and gives the same bf16 bits (`sam_fp4x8`).
+- k_sam_scores_fused / k_sam_out_fused build each bf16 tile in smem straight from the sources. K2F resolves
+  every entry once into a source code (ring slot | SAM_WIN, or the compressed row) and writes the codes for
+  K3F; a first version that re-resolved ent -> cidx -> pointer per tile made K3F 1.7x slower than K3P.
+  Passes of SAM_FROWS = 256 rows (no Eb bound).
+- gate_sam_row: 240/240 bit-identical (fused vs K2 + K3, M up to 300), gather vs pre-P7a gather 15/15.
+  M = 256, ne = 640: K2 + K3 8.13, row form 4.80, fused **2.74 ms**.
+- 8k prefill (chunk 1024): 502.5 -> **549.8 tok/s**, decode ids IDENTICAL to P7a; chat decode 25.15 / 25.24
+  (fused off), chat ids identical, consistency PASS. V41_SAM_FUSED=0 = the row form.

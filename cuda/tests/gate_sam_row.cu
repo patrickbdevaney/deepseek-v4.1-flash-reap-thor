@@ -63,7 +63,7 @@ __global__ void __launch_bounds__(256) k_sam_gather_old(uint16_t* Eb, int* nent_
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { printf("CUDA %s line %d\n", cudaGetErrorString(e_), __LINE__); return 1; } } while (0)
 using namespace v41;
 int main() {
-    const int RING = 256, NROWS = 4096, MMAX = 100;
+    const int RING = 640, NROWS = 4096, MMAX = 300;
     std::mt19937 rng(11);
     std::normal_distribution<float> nd(0.f, 1.f);
     auto randv = [&](size_t n, float s) { std::vector<float> v(n); for (auto& x : v) x = nd(rng) * s; return v; };
@@ -86,9 +86,11 @@ int main() {
     v41k::sparse_attn_reserve(MMAX);
     const float scale = 1.f / sqrtf((float)HEAD_DIM);
     int fails = 0, cases = 0;
+    v41k::sam_fused_set(0);
+    for (int fused : {0, 1})
     for (int ncomp : {0, 64, 512})
     for (int p0 : {0, 5, 127, 300, 70000})
-    for (int M : {1, 3, 16, 64, 65, 100}) {
+    for (int M : {1, 3, 16, 64, 65, 100, 257, 300}) {
         std::vector<int> hp(M), hi((size_t)M * INDEX_TOPK);
         for (int m = 0; m < M; ++m) hp[m] = p0 + m;
         for (auto& x : hi) x = (rng() % 3 == 0) ? -1 : (int)(rng() % NROWS);
@@ -97,8 +99,9 @@ int main() {
         CK(cudaMemset(o1, 0xff, on * 4)); CK(cudaMemset(o2, 0xff, on * 4));
         v41k::sam_row_set(1 << 30);
         v41k::sparse_attn(o1, q, ring, RING, cc, cs, ncomp ? cidx : nullptr, ncomp, 0, sink, pos, M, scale, 0);
-        v41k::sam_row_set(1);
+        v41k::sam_row_set(1); v41k::sam_fused_set(fused);
         v41k::sparse_attn(o2, q, ring, RING, cc, cs, ncomp ? cidx : nullptr, ncomp, 0, sink, pos, M, scale, 0);
+        v41k::sam_fused_set(0);
         CK(cudaDeviceSynchronize());
         std::vector<float> a((size_t)M * N_HEADS * HEAD_DIM), b(a.size());
         CK(cudaMemcpy(a.data(), o1, a.size() * 4, cudaMemcpyDeviceToHost));
@@ -107,7 +110,7 @@ int main() {
         size_t nan = 0; for (float v : a) nan += v != v;
         if (memcmp(a.data(), b.data(), a.size() * 4) || nan) {
             size_t i = 0; while (i < a.size() && !memcmp(&a[i], &b[i], 4)) ++i;
-            if (fails < 5) printf("MISMATCH ncomp %d pos %d M %d at %zu: %.9g vs %.9g (nan %zu)\n", ncomp, p0, M, i, i < a.size() ? a[i] : 0.f, i < a.size() ? b[i] : 0.f, nan);
+            if (fails < 5) printf("MISMATCH fused %d ncomp %d pos %d M %d at %zu: %.9g vs %.9g (nan %zu)\n", fused, ncomp, p0, M, i, i < a.size() ? a[i] : 0.f, i < a.size() ? b[i] : 0.f, nan);
             ++fails;
         }
     }
@@ -142,20 +145,20 @@ int main() {
         fails += gf;
     }
     cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
-    const int M = 64;
+    const int M = 256;
     std::vector<int> hp(M), hi((size_t)M * INDEX_TOPK);
     for (int m = 0; m < M; ++m) hp[m] = 70000 + m;
     for (auto& x : hi) x = (int)(rng() % NROWS);
     cudaMemcpy(pos, hp.data(), M * 4, cudaMemcpyHostToDevice);
     cudaMemcpy(cidx, hi.data(), hi.size() * 4, cudaMemcpyHostToDevice);
-    for (int rowf : {0, 1}) {
-        v41k::sam_row_set(rowf ? 1 : 1 << 30);
+    for (int rowf : {0, 1, 2}) {
+        v41k::sam_row_set(rowf ? 1 : 1 << 30); v41k::sam_fused_set(rowf == 2);
         for (int w = 0; w < 3; ++w) v41k::sparse_attn(o1, q, ring, RING, cc, cs, cidx, 512, 0, sink, pos, M, scale, 0);
         cudaEventRecord(e0);
         for (int it = 0; it < 20; ++it) v41k::sparse_attn(o1, q, ring, RING, cc, cs, cidx, 512, 0, sink, pos, M, scale, 0);
         cudaEventRecord(e1); cudaEventSynchronize(e1);
         float ms; cudaEventElapsedTime(&ms, e0, e1);
-        printf("[gate_sam_row] M=64 ne=640 %s: %.3f ms/call\n", rowf ? "row form " : "K2 + K3  ", ms / 20);
+        printf("[gate_sam_row] M=256 ne=640 %s: %.3f ms/call\n", rowf == 2 ? "fused    " : rowf ? "row form " : "K2 + K3  ", ms / 20);
     }
     return fails ? 1 : 0;
 }

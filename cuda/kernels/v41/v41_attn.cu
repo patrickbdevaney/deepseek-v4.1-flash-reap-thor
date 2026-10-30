@@ -505,6 +505,12 @@ static uint16_t* g_sam_e = nullptr; static float* g_sam_s = nullptr; static int*
 static uint16_t* g_sam_p = nullptr; static float* g_sam_d = nullptr;
 static int g_sam_row_min = [] { const char* e = getenv("V41_SAM_ROW_MIN"); return e ? atoi(e) : 16; }();
 void sam_row_set(int min_m) { g_sam_row_min = min_m; }
+// P8c fused form (k_sam_scores_fused + k_sam_out_fused: no Eb, bitwise with the row form), passes of up to
+// SAM_FROWS rows, whenever the row form would run (V41_SAM_FUSED=0: the row form)
+static float* g_samf_s = nullptr; static uint16_t* g_samf_p = nullptr; static float* g_samf_d = nullptr;
+static int* g_samf_ent = nullptr; static int* g_samf_n = nullptr;
+static int g_sam_fused = [] { const char* e = getenv("V41_SAM_FUSED"); return !(e && *e == '0'); }();
+void sam_fused_set(int on) { g_sam_fused = on; }
 static constexpr int SAM_K2_SMEM = 2 * 64 * v41g::SAM_QS * 2;
 static constexpr int SAM_K3_SMEM = 64 * v41g::SAM_PS * 2 + 64 * v41g::SAM_K3S * 2;
 void sparse_attn_reserve(int max_m) {
@@ -521,6 +527,16 @@ void sparse_attn_reserve(int max_m) {
             cudaFuncSetAttribute(v41g::k_sam_scores, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K2_SMEM);
             cudaFuncSetAttribute(v41g::k_sam_out, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K3_SMEM);
         } else { g_sam_e = nullptr; (void)cudaGetLastError(); }
+        const int F = v41g::SAM_FROWS;
+        if (g_sam_e && (cudaMalloc(&g_samf_s, (size_t)F * v41::N_HEADS * v41g::SAM_E * 4) != cudaSuccess ||
+                        cudaMalloc(&g_samf_p, (size_t)F * v41::N_HEADS * v41g::SAM_PS * 2) != cudaSuccess ||
+                        cudaMalloc(&g_samf_d, (size_t)F * v41::N_HEADS * 4) != cudaSuccess ||
+                        cudaMalloc(&g_samf_ent, (size_t)F * v41g::SAM_E * 4) != cudaSuccess ||
+                        cudaMalloc(&g_samf_n, (size_t)F * 4) != cudaSuccess)) { g_samf_s = nullptr; (void)cudaGetLastError(); }
+        if (g_samf_s) {
+            cudaFuncSetAttribute(v41g::k_sam_scores_fused, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K2_SMEM);
+            cudaFuncSetAttribute(v41g::k_sam_out_fused, cudaFuncAttributeMaxDynamicSharedMemorySize, v41g::SAM_K3P_SMEM);
+        }
     }
     max_m = std::min(max_m, SA_SPLIT_M);
     if (max_m <= g_sa_m) return;
@@ -656,6 +672,18 @@ void sparse_attn(float* o, const float* q, const float* win_ring, int ring, cons
     }
     // tensor-core path for every M (V41_SA_MMA=0: the fp32 kernels below)
     static const bool sam = [] { const char* e = getenv("V41_SA_MMA"); return !(e && *e == '0'); }();
+    if (sam && g_sam_e && g_samf_s && g_sam_fused && M >= g_sam_row_min) {
+        for (int a = 0; a < M; a += v41g::SAM_FROWS) {
+            const int mm = std::min(v41g::SAM_FROWS, M - a);
+            const int* ci = cidx ? cidx + (size_t)a * ncomp : nullptr;
+            v41g::k_sam_scores_fused<<<mm, 256, SAM_K2_SMEM, st>>>(g_samf_s, g_samf_p, g_samf_d, g_samf_ent, g_samf_n, win_ring,
+                                                                    ring, ccodes, cscales, ci, ncomp, d_pos + a,
+                                                                    q + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, sink, scale);
+            v41g::k_sam_out_fused<<<dim3(v41g::SAM_D / v41g::SAM_K3PD, mm), 256, v41g::SAM_K3P_SMEM, st>>>(
+                o + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, g_samf_p, g_samf_d, g_samf_ent, g_samf_n, win_ring, ccodes, cscales);
+        }
+        return;
+    }
     if (sam && g_sam_e) {
         for (int a = 0; a < M; a += v41g::SAM_ROWS) {
             const int mm = std::min(v41g::SAM_ROWS, M - a);
