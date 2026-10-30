@@ -37,12 +37,12 @@
 
 using dsv41enc::json;
 
-// The thor build carries no tokenizer: fall back to the source checkpoint ($V41_SRC).
+// tokenizer.json ships in the thor build; a build without one falls back to the source checkpoint ($V41_SRC).
 static std::string tokenizer_path(const std::string& ckpt) {
     const std::string a = ckpt + "/tokenizer.json";
     if (FILE* f = fopen(a.c_str(), "rb")) { fclose(f); return a; }
     const char* src = getenv("V41_SRC");
-    return std::string(src ? src : "/home/patrickd/models/DeepSeek-V4.1-Flash-1017") + "/tokenizer.json";
+    return src ? std::string(src) + "/tokenizer.json" : a;
 }
 
 static dsv4tok::Tokenizer g_tok;
@@ -173,11 +173,11 @@ static inline std::string dump_lossy(const json& j) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    std::string ckpt = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
+    std::string ckpt = getenv("V41_CKPT") ? getenv("V41_CKPT") : ".";
     std::string host = "0.0.0.0";
     int port = 8080;
     dsv4srv::EngineConfig ec;
-    ec.seqmax = 8192;
+    ec.seqmax = 8192; ec.ext_chunk = 1024;           // prefill chunk, as v41_decode (8k: 64 303 tok/s, 1024 576; ids identical)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
