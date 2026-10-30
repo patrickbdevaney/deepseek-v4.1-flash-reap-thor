@@ -75,11 +75,15 @@ struct Engine::Impl {
     std::vector<float> h_logits;
     // decode graph
     cudaGraphExec_t gexec = nullptr, gexec2 = nullptr;   // gexec2: greedy step with the two-stage head
+    cudaGraphExec_t gexec3 = nullptr;                   // S11: sampled step with the sampled two-stage head
+    bool h2s = false;                                   // V41_HEAD2_SAMPLE: sampled rows on head2_logits
+    float h_delta = 0.f;                                // its window, host copy (set per call from T)
+    int h2s_check = 0; double h2s_tv_sum = 0, h2s_tv_max = 0; long h2s_n = 0;   // V41_H2S_CHECK=1: TV vs the full head
     bool h2 = false;                                    // V41_HEAD2: two-stage head on greedy steps and verifies
     int* h_fb = nullptr;
     // speculation
     std::unique_ptr<v41m::Drafter> D;
-    std::map<int, cudaGraphExec_t> vexec, vexec2;  // verify graphs by row count; key -K = the K-slot draft
+    std::map<int, cudaGraphExec_t> vexec, vexec2, vexec3;  // verify graphs by row count; key -K = the K-slot draft
     int *h_draft = nullptr, *h_tgt = nullptr;
     int active_k = 0;                              // set_spec_k(); cfg.spec_k sizes the drafter
     // S5 adaptive K (V41_SPEC_ADAPT=1): per round pick K in [0, active_k] maximising expected tokens per
@@ -215,10 +219,11 @@ struct Engine::Impl {
         hi_written = std::max(hi_written, n - 1);
     }
 
-    void step_body(bool fast) {                       // M = 1, inputs already in d_pos/d_ids/d_img
+    void step_body(int mode) {                        // M = 1, inputs already in d_pos/d_ids/d_img; mode 1 greedy two-stage, 2 sampled two-stage
         v41m::embed_rows(m, s, 1, st);
         v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, 1, 0, 0, eg, st, hook_for(1));
-        if (fast) { v41m::head_row_greedy(m, s, 0, d_tok, st); return; }
+        if (mode == 1) { v41m::head_row_greedy(m, s, 0, d_tok, st); return; }
+        if (mode == 2) { v41m::head_rows_sample(m, s, 0, 1, st); return; }
         v41m::head_row(m, s, 0, st);
         v41m::argmax_logits(s, d_tok, st);
     }
@@ -245,14 +250,23 @@ struct Engine::Impl {
         } else body();
     }
     // greedy: the caller reads only d_tok (sample() with fast), so the two-stage head may serve it
-    void step(int tok, int pos, bool greedy = false) {
+    // S11: the window for sampled rows at temperature T: a token left approximate has p <= 1e-9 x the top's
+    bool sample_fast(const GenParams& p) {
+        if (!h2s || p.temperature <= 0.f) return false;
+        h_delta = p.temperature * 20.7233f + s.hd2.delta;           // ln(1e9) = 20.72
+        CK(cudaMemcpyAsync(s.d_h2delta, &h_delta, sizeof(float), cudaMemcpyHostToDevice, st));
+        return true;
+    }
+    void step(int tok, int pos, bool greedy = false, bool sfast = false) {
         const bool fast = greedy && h2;
+        const int mode = fast ? 1 : sfast ? 2 : 0;
+        cudaGraphExec_t* ex = mode == 1 ? &gexec2 : mode == 2 ? &gexec3 : &gexec;
         stage_rows(&tok, 1, pos);
         // Eager (no graph, or before the first capture): ~40 layers of single launches overrun the launch
         // queue while the stream sits on the layer-1 flag wait, so cudaLaunchKernel blocks before reap()
         // can set the flag -- a deadlock (--no-graph hung forever). Land the rows first; reap() is then a no-op.
-        if (!cfg.graph || !(fast ? gexec2 : gexec)) reap();
-        launch(fast ? &gexec2 : &gexec, [&] { step_body(fast); });
+        if (!cfg.graph || !*ex) reap();
+        launch(ex, [&] { step_body(mode); });
         reap();
         hi_written = std::max(hi_written, pos);
     }
@@ -277,12 +291,14 @@ struct Engine::Impl {
         for (int i = 1; i < M; ++i) rows[i] = h_draft[i];
         stage_rows(rows.data(), M, pos);
         const bool fast = p.temperature <= 0.f && h2;
-        auto& vx = fast ? vexec2 : vexec;
+        const bool sfast = !fast && sample_fast(p);
+        auto& vx = fast ? vexec2 : sfast ? vexec3 : vexec;
         if (!cfg.graph || !vx[M]) reap();             // eager: see step()
         launch(&vx[M], [&] {
             v41m::embed_rows(m, s, M, st);
             v41m::forward_layers(m, s, 0, v41::N_LAYERS - 1, M, 0, 0, eg, st, hook_for(M));
             if (fast) v41m::head_rows_greedy(m, s, 0, M, st);
+            else if (sfast) v41m::head_rows_sample(m, s, 0, M, st);
             else v41m::head_rows(m, s, 0, M, st);
         });
         reap();
@@ -300,6 +316,12 @@ struct Engine::Impl {
             a = v41spec::accept(rows.data(), tgt.data(), K);
             for (int i = 0; i <= a; ++i) out.push_back(tgt[i]);     // tgt[a]: the target's own token, no KV yet
         } else {
+            if (sfast) {
+                CK(cudaMemcpyAsync(h_fb, s.d_hfb, M * 4, cudaMemcpyDeviceToHost, st));
+                CK(cudaStreamSynchronize(st));
+                std::vector<int> fbv(h_fb, h_fb + M);
+                for (int i = 0; i < M; ++i) if (fbv[i] || h2s_check) sampled_fixup(p, i, fbv[i]);
+            }
             for (;;) {                                 // sample row by row: stop at the first mismatch
                 const int t = sample_row(p, rng, a);
                 out.push_back(t);
@@ -329,10 +351,51 @@ struct Engine::Impl {
             if (fast && *h_fb) return head_fallback(0);
             return *h_tok;
         }
+        if (fast) {                                   // S11: the step ran head_rows_sample
+            CK(cudaMemcpyAsync(h_fb, s.d_hfb, 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            if (*h_fb || h2s_check) sampled_fixup(p, 0, *h_fb);
+        }
         return sample_row(p, rng, 0);
+    }
+    // a sampled two-stage row: fallback (too many tokens in the window) -> the full head; V41_H2S_CHECK
+    // also computes the full head and records the total variation between the two sampling distributions
+    void sampled_fixup(const GenParams& p, int row, bool fb) {
+        std::vector<float> a;
+        if (!fb && h2s_check) {
+            a.resize(v41::VOCAB);
+            CK(cudaMemcpyAsync(a.data(), s.logits + (size_t)row * v41::VOCAB, v41::VOCAB * 4, cudaMemcpyDeviceToHost, st));
+        }
+        if (fb) ++h2_fallbacks;
+        v41m::head_full_logits(m, s, row, st);
+        if (a.empty()) { CK(cudaStreamSynchronize(st)); return; }
+        std::vector<float> b(v41::VOCAB);
+        CK(cudaMemcpyAsync(b.data(), s.logits + (size_t)row * v41::VOCAB, v41::VOCAB * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        auto probs = [&](const std::vector<float>& L) {
+            float mx = -INFINITY; for (float v : L) mx = std::max(mx, v);
+            std::vector<double> e(L.size()); double z = 0;
+            for (size_t i = 0; i < L.size(); ++i) { e[i] = std::exp((double)(L[i] - mx) / p.temperature); z += e[i]; }
+            for (auto& v : e) v /= z;
+            return e;
+        };
+        const auto pa = probs(a), pb = probs(b);
+        double tv = 0; for (size_t i = 0; i < pa.size(); ++i) tv += std::fabs(pa[i] - pb[i]);
+        tv *= 0.5; h2s_tv_sum += tv; h2s_tv_max = std::max(h2s_tv_max, tv); ++h2s_n;
+        if (h2s_check == 1) {                         // sample from the two-stage row, as without the check
+            CK(cudaMemcpyAsync(s.logits + (size_t)row * v41::VOCAB, a.data(), v41::VOCAB * 4, cudaMemcpyHostToDevice, st));
+            CK(cudaStreamSynchronize(st));
+        }
     }
     // temperature / top-p sample from s.logits row r
     int sample_row(const GenParams& p, std::mt19937_64& rng, int row) {
+        static const bool gpu = [] { const char* e = getenv("V41_GPU_SAMPLE"); return !(e && *e == '0'); }();
+        if (gpu && p.top_p >= 1.f) {                  // S11: exact Gumbel-max draw on the GPU, 4 bytes back
+            v41k::sample_gumbel(d_tok, s.logits + (size_t)row * v41::VOCAB, v41::VOCAB, p.temperature, rng(), st);
+            CK(cudaMemcpyAsync(h_tok, d_tok, 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            return *h_tok;
+        }
         CK(cudaMemcpyAsync(h_logits.data(), s.logits + (size_t)row * v41::VOCAB, v41::VOCAB * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         const int V = v41::VOCAB;
@@ -341,9 +404,24 @@ struct Engine::Impl {
         std::vector<std::pair<float, int>> pr(V);
         double z = 0;
         for (int i = 0; i < V; ++i) { const float e = std::exp((h_logits[i] - mx) / p.temperature); pr[i] = {e, i}; z += e; }
-        std::sort(pr.begin(), pr.end(), [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); });
-        double cum = 0; int cut = V;
-        for (int i = 0; i < V; ++i) { cum += pr[i].first / z; if (cum >= p.top_p) { cut = i + 1; break; } }
+        if (p.top_p >= 1.f) {          // no nucleus: draw in index order (same distribution, no sort)
+            const double r = std::uniform_real_distribution<double>(0.0, z)(rng); double acc = 0;
+            for (int i = 0; i < V; ++i) { acc += pr[i].first; if (r < acc) return i; }
+            return V - 1;
+        }
+        // S11: the full sort of 129K pairs was ~9 ms a row on Thor's CPU. Sort a growing top-k prefix
+        // instead: it is the full sort's prefix (same comparator), so cut and the draw are unchanged.
+        auto cmp = [](const auto& a, const auto& b) { return a.first > b.first || (a.first == b.first && a.second < b.second); };
+        int cut = V;
+        for (int k = 256;; k *= 4) {
+            k = std::min(k, V);
+            std::nth_element(pr.begin(), pr.begin() + (k - 1), pr.end(), cmp);
+            std::sort(pr.begin(), pr.begin() + k, cmp);
+            double cum = 0; cut = -1;
+            for (int i = 0; i < k; ++i) { cum += pr[i].first / z; if (cum >= p.top_p) { cut = i + 1; break; } }
+            if (cut > 0) break;
+            if (k == V) { cut = V; break; }
+        }
         double zz = 0; for (int i = 0; i < cut; ++i) zz += pr[i].first;
         double r = std::uniform_real_distribution<double>(0.0, zz)(rng), acc = 0;
         for (int i = 0; i < cut; ++i) { acc += pr[i].first; if (r < acc) return pr[i].second; }
@@ -375,6 +453,10 @@ Engine::Engine(const EngineConfig& cfg) : p_(new Impl) { p_->cfg = cfg; }
 Engine::~Engine() {
     if (p_->gexec) cudaGraphExecDestroy(p_->gexec);
     if (p_->gexec2) cudaGraphExecDestroy(p_->gexec2);
+    if (p_->gexec3) cudaGraphExecDestroy(p_->gexec3);
+    for (auto& kv : p_->vexec3) if (kv.second) cudaGraphExecDestroy(kv.second);
+    if (p_->h2s_n) fprintf(stderr, "[engine] S11 check: %ld sampled rows, TV vs full head mean %.3g max %.3g\n",
+                           p_->h2s_n, p_->h2s_tv_sum / p_->h2s_n, p_->h2s_tv_max);
     for (auto& kv : p_->vexec) if (kv.second) cudaGraphExecDestroy(kv.second);
     for (auto& kv : p_->vexec2) if (kv.second) cudaGraphExecDestroy(kv.second);
     delete p_;
@@ -411,6 +493,15 @@ void Engine::load() {
         v41m::enable_head2(I.m, I.s, cap, delta, I.st);
         I.h2 = true;
         if (!I.cfg.quiet) printf("[engine] two-stage greedy head: NVFP4 shortlist within %.3g logits (cap %d) + exact bf16 rescore\n", delta, cap);
+        // S11, default on (V41_HEAD2_SAMPLE=0 off): sampled rows exact within T ln(1e9) + delta of the max, cap 8192
+        if (const char* e2 = getenv("V41_HEAD2_SAMPLE"); !(e2 && *e2 == '0')) {
+            const char* c2 = getenv("V41_HEAD2_SAMPLE_CAP");
+            v41m::enable_head2_sample(I.m, I.s, c2 ? std::max(8, atoi(c2) / 8 * 8) : 8192, I.st);
+            I.h2s = true;
+            if (const char* ck = getenv("V41_H2S_CHECK")) I.h2s_check = atoi(ck);
+            if (!I.cfg.quiet) printf("[engine] two-stage sampled head: exact within T*ln(1e9)+%.3g logits (cap %d)%s\n", delta,
+                                     I.s.hd2s.cap, I.h2s_check ? ", checking TV against the full head" : "");
+        }
     }
     if (I.cfg.spec_k > 0) {
         if (I.cfg.spec_k > v41::DSPARK_BLOCK) throw std::runtime_error("spec_k > DSpark block " + std::to_string(v41::DSPARK_BLOCK));
@@ -508,9 +599,10 @@ GenStats Engine::generate(const std::vector<int>& ids, const GenParams& p, const
             if (adapt) I.adapt.update(K, a, ms_since(tr));
         } else {
             const bool greedy = p.temperature <= 0.f;
-            I.step(tok, pos, greedy);
+            const bool sfast = I.sample_fast(p);
+            I.step(tok, pos, greedy, sfast);
             I.kv_len = pos + 1;
-            q.push_back(I.sample(p, rng, greedy && I.h2));
+            q.push_back(I.sample(p, rng, (greedy && I.h2) || sfast));
             if (spec) ++gs.spec.accept_joint[0][0];
             if (adapt) I.adapt.update(0, 0, ms_since(tr));
         }

@@ -94,6 +94,8 @@ public:
     // Latency telemetry (last fetch), microseconds.
     double last_us() const { return last_us_; }
     double layer_us(int l) const { return layer_us_[l]; }   // submit -> flag[l] set, last batch
+    uint64_t dup_reads() const { return ndup_; }            // reads skipped by the in-batch dedupe (M1), total
+    uint64_t row_reads() const { return nread_; }           // reads issued, total
 
 private:
     bool setup_ring(int entries, std::string* err);
@@ -134,6 +136,12 @@ private:
     double layer_us_[2] = {0, 0};
     bool err_ = false;
     std::string errmsg_;
+    // M1: a row read more than once in a batch (25.6% of a prefill chunk's reads) is read once; its
+    // duplicates' slots are copied from the first slot (bytes + in-slot offset) before the layer's flag
+    std::vector<std::pair<int, int>> dups_[2];   // (dst slot, src slot)
+    std::vector<int64_t> dk_; std::vector<int> dv_;   // open-addressing row -> slot table, per layer per batch
+    uint64_t ndup_ = 0, nread_ = 0;
+    void finish_layer(int layer);
     void queue_read(int layer, int slot, int64_t row);
     void issue_read(int layer, int slot, int64_t row);
     void refill();

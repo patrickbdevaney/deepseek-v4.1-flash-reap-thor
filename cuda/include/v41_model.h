@@ -132,7 +132,8 @@ struct State {
     float *rw = nullptr; int* ridx = nullptr; float* y = nullptr; float* rscr = nullptr;
     float *eg_e = nullptr, *eg_kv = nullptr;
     float *logits = nullptr;                          // [max_rows, VOCAB]: head_row writes row 0, head_rows rows 0..n-1
-    v41k::H2Scr hd2; int* d_hfb = nullptr;             // two-stage greedy head scratch, per-row fallback flags
+    v41k::H2Scr hd2; int* d_hfb = nullptr;
+    v41k::H2Scr hd2s; float* d_h2delta = nullptr;      // S11 sampled-row head scratch (cap 8192), its window             // two-stage greedy head scratch, per-row fallback flags
     int* d_argmax = nullptr;                          // [max_rows] argmax of each head_rows row
     uint8_t *xq = nullptr; float* xs = nullptr;       // act_quant scratch, largest K x max_rows
     uint8_t *pk = nullptr, *ps = nullptr;             // packed fp4 scratch
@@ -182,6 +183,11 @@ int forward_layers(const Model& m, State& s, int lo, int hi, int M, int prompt_e
 void embed_rows(const Model& m, State& s, int M, cudaStream_t st);
 // final collapse + norm + head for row r -> s.logits [129280] fp32
 void head_row(const Model& m, State& s, int r, cudaStream_t st);
+// S11: sampled two-stage head (enable_head2_sample first): logits rows r0..r0+n-1 exact within *d_h2delta of
+// the approximate max, NVFP4 beyond; s.d_hfb[r] = 1 -> redo row r with head_full_logits.
+void enable_head2_sample(Model& m, State& s, int cap, cudaStream_t st);
+void head_rows_sample(const Model& m, State& s, int r0, int n, cudaStream_t st);
+void head_full_logits(const Model& m, State& s, int row, cudaStream_t st);
 // Two-stage greedy head (v41k::head2_argmax): argmax only, s.logits untouched. head_row_greedy -> *d_tok,
 // head_rows_greedy -> s.d_argmax[0..n); s.d_hfb[r] = 1 means row r must be redone by head_full_argmax.
 // enable_head2 builds the NVFP4 head copy and the scratch (once, before any graph capture).

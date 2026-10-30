@@ -10,6 +10,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cstring>
+#include <cstdlib>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -185,11 +188,38 @@ void EngramStore::submit(const int64_t* ids, int n) {
     err_ = false;
     for (int l = 0; l < 2; ++l) { *flag_host_[l] = 0; pending_[l] = 0; }
     // layer 1 first: it is needed ~13 layers before layer 14
-    for (int l = 0; l < 2; ++l)
+    static const bool dedupe = [] { const char* e = getenv("V41_ENGRAM_DEDUPE"); return !(e && *e == '0'); }();
+    const int nr = n * v41::ENGRAM_COLS;
+    size_t cap = 64; while (cap < (size_t)nr * 2) cap <<= 1;
+    if (dedupe && n > 1 && dk_.size() < cap) { dk_.resize(cap); dv_.resize(cap); }
+    for (int l = 0; l < 2; ++l) {
+        dups_[l].clear();
+        if (dedupe && n > 1) std::fill(dk_.begin(), dk_.begin() + cap, (int64_t)-1);
         for (int i = 0; i < n; ++i)
-            for (int c = 0; c < v41::ENGRAM_COLS; ++c)
-                queue_read(l, i * v41::ENGRAM_COLS + c, ids[((size_t)i * 2 + l) * v41::ENGRAM_COLS + c]);
+            for (int c = 0; c < v41::ENGRAM_COLS; ++c) {
+                const int slot = i * v41::ENGRAM_COLS + c;
+                const int64_t row = ids[((size_t)i * 2 + l) * v41::ENGRAM_COLS + c];
+                if (dedupe && n > 1) {
+                    size_t h = (uint64_t)row * 0x9E3779B97F4A7C15ull >> 20 & (cap - 1);
+                    while (dk_[h] >= 0 && dk_[h] != row) h = (h + 1) & (cap - 1);
+                    if (dk_[h] == row) { dups_[l].push_back({slot, dv_[h]}); ++ndup_; continue; }
+                    dk_[h] = row; dv_[h] = slot;
+                }
+                ++nread_;
+                queue_read(l, slot, row);
+            }
+    }
     flush();
+}
+
+// all of `layer`'s reads have landed: fill the duplicate slots, then the caller raises the flag
+void EngramStore::finish_layer(int layer) {
+    if (dups_[layer].empty()) return;
+    uint16_t* offs = reinterpret_cast<uint16_t*>(arena_host_[layer] + (size_t)cfg_.max_tokens * v41::ENGRAM_COLS * 1024);
+    for (const auto& d : dups_[layer]) {
+        std::memcpy(arena_host_[layer] + (size_t)d.first * 1024, arena_host_[layer] + (size_t)d.second * 1024, 1024);
+        offs[d.first] = offs[d.second];
+    }
 }
 
 bool EngramStore::complete(std::string* err) {
@@ -208,6 +238,8 @@ bool EngramStore::complete(std::string* err) {
             else if (cqe->res < need_[layer][slot]) { err_ = true; errmsg_ = "engram read: short read"; }
             --pending_[layer];
             if (pending_[layer] == 0 && bl_left_[layer] == 0 && !err_) {
+                finish_layer(layer);
+                __atomic_thread_fence(__ATOMIC_RELEASE);
                 __atomic_store_n((uint32_t*)flag_host_[layer], 1u, __ATOMIC_RELEASE);
                 layer_us_[layer] = (now_ns() - t0_ns_) / 1000.0;
             }

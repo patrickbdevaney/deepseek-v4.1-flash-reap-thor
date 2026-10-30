@@ -168,11 +168,21 @@ __global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* io
         #pragma unroll
         for (int i = 0; i < K / 256; ++i) wu[i] = __ldcs(wr + i * 32);
     }
+    // PDL (A9): the gate does not depend on the previous kernel, x does; no-ops on a plain launch
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+    asm volatile("griddepcontrol.wait;" ::: "memory");
     for (int mi = 0; mi < nm; ++mi) {
         const int m = m0 + mi;
         if (mi) __syncthreads();                          // the previous token's chains are done with xs
-        for (int k = threadIdx.x; k < K / 4; k += blockDim.x)
-            reinterpret_cast<float4*>(xs)[k] = reinterpret_cast<const float4*>(x + (size_t)m * K)[k];
+        {   // all of this thread's x loads in flight before the smem stores
+            constexpr int XP = (K / 4 + RP_WARPS * 32 - 1) / (RP_WARPS * 32);
+            float4 xv[XP];
+            const float4* xr = reinterpret_cast<const float4*>(x + (size_t)m * K);
+            #pragma unroll
+            for (int q = 0; q < XP; ++q) { const int k = threadIdx.x + q * RP_WARPS * 32; if (k < K / 4) xv[q] = xr[k]; }
+            #pragma unroll
+            for (int q = 0; q < XP; ++q) { const int k = threadIdx.x + q * RP_WARPS * 32; if (k < K / 4) reinterpret_cast<float4*>(xs)[k] = xv[q]; }
+        }
         __syncthreads();
         if (e < E) {
             float d = 0.f;
@@ -235,8 +245,14 @@ void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float*
         if (M > RCNT || E > 512 || topk > 16) { fprintf(stderr, "router: M %d E %d topk %d out of range\n", M, E, topk); abort(); }
         static const int tm_env = [] { const char* e = getenv("V41_ROUTER_TM"); return e ? atoi(e) : RP_TM; }();
         const int tm = std::max(1, std::min(M == 1 ? 1 : tm_env, RP_TM));
-        k_router_p<<<dim3((E + RP_WARPS - 1) / RP_WARPS, (M + tm - 1) / tm), RP_WARPS * 32, 0, st>>>(
-            w, idx, scratch, scratch + (size_t)M * E, x, Wg, bias, bias_vl, d_img, M, E, topk, route_scale, g_rcnt, tm);
+        static const bool pdl = [] { const char* e = getenv("V41_PDL"); return !(e && *e == '0'); }();
+        cudaLaunchConfig_t cfg = {};
+        cfg.gridDim = dim3((E + RP_WARPS - 1) / RP_WARPS, (M + tm - 1) / tm); cfg.blockDim = dim3(RP_WARPS * 32); cfg.stream = st;
+        cudaLaunchAttribute at[1];
+        at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization; at[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = at; cfg.numAttrs = pdl ? 1 : 0;
+        cudaLaunchKernelEx(&cfg, k_router_p, w, idx, scratch, scratch + (size_t)M * E, x, Wg, bias, bias_vl, d_img, M, E, topk,
+                           route_scale, g_rcnt, tm);
         return;
     }
     float* sc = scratch; float* sel = scratch + (size_t)M * E;

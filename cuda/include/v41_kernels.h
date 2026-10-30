@@ -53,6 +53,13 @@ struct H2Scr {
 };
 void head2_argmax(int* out, int ostride, int* fb, const float* x, int n, const uint16_t* head, const uint8_t* h4,
                   const uint8_t* h4s, float h4g, H2Scr& sc, int N, int K, cudaStream_t st);
+// S11: sampled rows. All N logits of each of n rows into logits[r * N]: NVFP4 approximations, overwritten
+// with the exact bf16 logit (bit-identical to bf16_linear) for every token within *d_delta of the
+// approximate max. fb[r] = 1: more than sc.cap qualified, recompute row r with the full head.
+void head2_logits(float* logits, int* fb, const float* x, int n, const uint16_t* head, const uint8_t* h4,
+                  const uint8_t* h4s, float h4g, H2Scr& sc, const float* d_delta, int N, int K, cudaStream_t st);
+// S11: one exact draw from softmax(logits / T) (Gumbel-max, counter-hash noise from seed) -> *out
+void sample_gumbel(int* out, const float* logits, int N, float temperature, uint64_t seed, cudaStream_t st);
 void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int K,
                  bool round_bf16, cudaStream_t st, float out_scale = 1.0f);
 // y = bf16(w * x * rsqrt(mean(x^2) + eps)); w bf16 or null. rows independent.

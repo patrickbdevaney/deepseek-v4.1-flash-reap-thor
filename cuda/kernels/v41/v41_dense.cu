@@ -322,6 +322,27 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     #define V41_NVMB(NTV) do { auto kf = v41g::k_nvm_big<NTV>; \
         if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem); \
         kf<<<grid, 256, smem, st>>>(y, X, W, S, g, M, N, K, Ng, ks, round ? 1 : 0, part, fuse ? kcnt : nullptr); } while (0)
+    // A10: decode / verify (mt <= 8) on k_nvt, the TMA-fed form (bit-identical). Copy shape from the
+    // nvm_bench sweep (2026-10-30): split shapes (ks >= 4, little work per CTA) S2 C1; >= 12 MiB of codes
+    // S2 C2; the rest stay on k_nvm. V41_NVT=0 = k_nvm everywhere; V41_PDL=0 = plain launches.
+    static const int nvt_env = [] { const char* e = getenv("V41_NVT"); return e ? atoi(e) : 1; }();
+    static const bool pdl_env = [] { const char* e = getenv("V41_PDL"); return !(e && *e == '0'); }();
+    const size_t codes = (size_t)N * K / 2;
+    const int nvt_cfg = nvt_env == 0 || mt > 8 ? 0 : ks >= 4 ? 1 : codes >= (12u << 20) ? 2 : nvt_env == 2 ? 1 : 0;
+    if (nvt_cfg) {
+        const int ns = 2, ch = nvt_cfg;
+        const size_t smem_t = v41g::nvt_ring_bytes(ns, ch) + smem;
+        cudaLaunchConfig_t cfg = {};
+        cfg.gridDim = grid; cfg.blockDim = dim3(256); cfg.dynamicSmemBytes = smem_t; cfg.stream = st;
+        cudaLaunchAttribute at[1];
+        at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization; at[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = at; cfg.numAttrs = pdl_env ? 1 : 0;
+        int* kc = fuse ? kcnt : nullptr; const int rnd = round ? 1 : 0;
+        #define V41_NVT(MTV, CHV) do { auto kf = v41g::k_nvt<MTV, 2, CHV>;             static bool attr = false; if (!attr) { cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, 200 * 1024); attr = true; }             cudaLaunchKernelEx(&cfg, kf, y, X, W, S, g, M, N, K, Ng, ks, rnd, part, kc); } while (0)
+        if (ch == 1) { switch (mt) { case 1: V41_NVT(1, 1); break; case 2: V41_NVT(2, 1); break; case 4: V41_NVT(4, 1); break; default: V41_NVT(8, 1); } }
+        else { switch (mt) { case 1: V41_NVT(1, 2); break; case 2: V41_NVT(2, 2); break; case 4: V41_NVT(4, 2); break; default: V41_NVT(8, 2); } }
+        #undef V41_NVT
+    } else
     switch (mt) { case 1: V41_NVM(1); break; case 2: V41_NVM(2); break; case 4: V41_NVM(4); break; case 8: V41_NVM(8); break;
                   case 16: V41_NVMB(2); break; default: V41_NVMB(4); }
     #undef V41_NVM
@@ -412,6 +433,7 @@ void bf16_linear(float* y, const float* x, const uint16_t* W, int M, int N, int 
 // --------------------------------------------------------------------------- quantisers
 // act_quant(x, 32, "ue8m0"): one warp per 32-group.
 __global__ void k_act_quant(uint8_t* q, float* s, const float* x, size_t ngroups) {
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");   // A10: a PDL-launched GEMV may start its weight stream
     size_t gi = (blockIdx.x * (size_t)blockDim.x + threadIdx.x) >> 5; if (gi >= ngroups) return;
     const int lane = threadIdx.x & 31;
     const float v = x[gi * 32 + lane];
@@ -672,6 +694,7 @@ __global__ void __launch_bounds__(512) k_cnq(float* y, uint8_t* q, float* qs, co
                                              const uint16_t* w, float eps) {
     constexpr int D = v41::DIM, NJ = D / 512;
     static_assert(D % 512 == 0, "k_cnq: DIM % 512");
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");   // A9: the router / a GEMV may start its weight stream
     const int m = blockIdx.x, t = threadIdx.x;
     const float* xr = x + (size_t)m * v41::HC_DIM;
     __shared__ float red[32];
@@ -934,6 +957,71 @@ void head2_argmax(int* out, int ostride, int* fb, const float* x, int n, const u
         kf<<<dim3(sc.cap / 8, n), 256, smem, st>>>(sc.resc, x, DecBF16{head, K}, sc.list, sc.cnt, sc.cap, K);
     }
     k_h2_pick<<<n, 256, 0, st>>>(out, ostride, fb, sc.hk, sc.cnt, sc.list, sc.resc, sc.cap);
+}
+// S11: two-stage head for SAMPLED rows. Stage 1 writes the NVFP4 logits of every token straight into
+// the logits row; every token within *d_delta of the approximate max (the host sets it to
+// T ln(1e9) + the greedy delta, so a token left approximate has probability <= 1e-9 x the top one's)
+// is rescored exactly (k_h2_rescore: bit for bit bf16_linear) and written back over its approximation.
+// fb[r] = 1 when more than cap tokens qualified: the host recomputes that row with the full head.
+__global__ void k_h2_sel_d(int* list, int* cnt, const int* hk, const float* al, int N, const float* d_delta, int cap) {
+    const float* a = al + (size_t)blockIdx.y * N;
+    const float thr = h2_val(hk[blockIdx.y]) - d_delta[0];
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += gridDim.x * blockDim.x)
+        if (a[i] >= thr) { const int p = atomicAdd(cnt + blockIdx.y, 1); if (p < cap) list[(size_t)blockIdx.y * cap + p] = i; }
+}
+__global__ void k_h2_put(float* logits, int N, int* fb, int* hk, int* cnt, const int* list, const float* resc, int cap) {
+    const int r = blockIdx.x, c = cnt[r], n = min(c, cap);
+    for (int j = threadIdx.x; j < n; j += blockDim.x) logits[(size_t)r * N + list[(size_t)r * cap + j]] = resc[(size_t)r * cap + j];
+    __syncthreads();
+    if (threadIdx.x == 0) { fb[r] = c > cap || c == 0; hk[r] = INT_MIN; cnt[r] = 0; }
+}
+void head2_logits(float* logits, int* fb, const float* x, int n, const uint16_t* head, const uint8_t* h4,
+                  const uint8_t* h4s, float h4g, H2Scr& sc, const float* d_delta, int N, int K, cudaStream_t st) {
+    nvfp4_linear_f32(logits, x, h4, h4s, h4g, n, N, K, st);
+    k_h2_max<<<dim3(H2_BLK, n), 256, 0, st>>>(sc.hk, logits, N);
+    k_h2_sel_d<<<dim3(H2_BLK, n), 256, 0, st>>>(sc.list, sc.cnt, sc.hk, logits, N, d_delta, sc.cap);
+    const size_t smem = (size_t)K * sizeof(float);
+    if (perm_map().count(head)) {
+        auto kf = k_h2_rescore<DecBF16P>;
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+        kf<<<dim3(sc.cap / 8, n), 256, smem, st>>>(sc.resc, x, DecBF16P{head, K}, sc.list, sc.cnt, sc.cap, K);
+    } else {
+        auto kf = k_h2_rescore<DecBF16>;
+        if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+        kf<<<dim3(sc.cap / 8, n), 256, smem, st>>>(sc.resc, x, DecBF16{head, K}, sc.list, sc.cnt, sc.cap, K);
+    }
+    k_h2_put<<<n, 256, 0, st>>>(logits, N, fb, sc.hk, sc.cnt, sc.list, sc.resc, sc.cap);
+}
+// S11: Gumbel-max sampling on the GPU. argmax_i (L_i / T + G_i), G_i iid Gumbel(0,1), is an exact draw from
+// softmax(L / T); G_i from a counter hash of (seed, i), so a host-seeded run is reproducible. One CTA of
+// 1024 per row; ties to the lower index. (top_p < 1 needs the sorted nucleus: the host path.)
+__device__ __forceinline__ uint64_t smix64(uint64_t z) {
+    z += 0x9E3779B97F4A7C15ull; z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull; z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+__global__ void __launch_bounds__(1024) k_gumbel_max(int* out, const float* logits, int N, float invT, uint64_t seed) {
+    const float* L = logits + (size_t)blockIdx.x * N;
+    float bk = -INFINITY; int bi = 0x7fffffff;
+    for (int i = threadIdx.x; i < N; i += blockDim.x) {
+        const uint64_t h = smix64(seed ^ ((uint64_t)blockIdx.x << 40) ^ (uint64_t)i);
+        // G = -log E, E = -log(1 - w) ~ Exp(1): log1pf keeps E's relative precision as w -> 0, which is
+        // the Gumbel upper tail a tail token needs to win (fast __logf near 1 failed gate_gumbel at chi^2 1e6).
+        // w = (k + 0.5) 2^-32: the tail is cut at G ~ 22.9 (p 1e-10 a token). fp32: fp64 is 1/64 rate here.
+        const float w = ((float)(uint32_t)(h >> 32) + 0.5f) * 2.3283064365386963e-10f;
+        const float k = L[i] * invT - logf(-log1pf(-w));
+        if (k > bk || (k == bk && i < bi)) { bk = k; bi = i; }
+    }
+    __shared__ float sk[1024]; __shared__ int si[1024];
+    sk[threadIdx.x] = bk; si[threadIdx.x] = bi; __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) { const float k = sk[threadIdx.x + s]; const int j = si[threadIdx.x + s];
+            if (k > sk[threadIdx.x] || (k == sk[threadIdx.x] && j < si[threadIdx.x])) { sk[threadIdx.x] = k; si[threadIdx.x] = j; } }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[blockIdx.x] = si[0];
+}
+void sample_gumbel(int* out, const float* logits, int N, float temperature, uint64_t seed, cudaStream_t st) {
+    k_gumbel_max<<<1, 1024, 0, st>>>(out, logits, N, 1.0f / temperature, seed);
 }
 bool H2Scr::alloc(int rows, int N, int cap_, float delta_) {
     cap = cap_; delta = delta_;

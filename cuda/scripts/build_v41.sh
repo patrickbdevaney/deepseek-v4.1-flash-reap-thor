@@ -42,6 +42,9 @@ if want "$1" gate_topk; then $NVCC tests/gate_topk.cu $KOBJ $LIBS -o build/gate_
 if want "$1" gate_kq_fast; then $NVCC -I kernels/v41 tests/gate_kq_fast.cu $KOBJ $LIBS -o build/gate_kq_fast; echo "built build/gate_kq_fast"; fi
 if want "$1" gate_v41_golden; then $NVCC tests/gate_v41_golden.cu $KOBJ $LIBS -o build/gate_v41_golden; echo "built build/gate_v41_golden"; fi
 if want "$1" gemv_format_bench; then $NVCC tools/gemv_format_bench.cu $LIBS -o build/gemv_format_bench; echo "built build/gemv_format_bench"; fi
+if want "$1" nvm_bench; then $NVCC tools/nvm_bench.cu $LIBS -o build/nvm_bench; echo "built build/nvm_bench"; fi
+if want "$1" router_bench; then $NVCC tools/router_bench.cu $KOBJ $LIBS -o build/router_bench; echo "built build/router_bench"; fi
+if want "$1" gate_gumbel; then $NVCC tests/gate_gumbel.cu $KOBJ $LIBS -o build/gate_gumbel; echo "built build/gate_gumbel"; fi
 
 # CPU gates
 if want "$1" cpu_gates; then

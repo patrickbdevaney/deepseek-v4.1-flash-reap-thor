@@ -701,6 +701,20 @@ void head_rows_greedy(const Model& m, State& s, int r0, int n, cudaStream_t st) 
     v41k::rmsnorm(s.x, s.x, m.norm, n, DIM, NORM_EPS, st);
     v41k::head2_argmax(s.d_argmax, 1, s.d_hfb, s.x, n, m.head, m.head4, m.head4s, m.head4g, s.hd2, VOCAB, DIM, st);
 }
+void enable_head2_sample(Model& m, State& s, int cap, cudaStream_t st) {
+    if (!m.head4) throw std::runtime_error("enable_head2_sample: enable_head2 first");
+    if (!s.hd2s.alog && !s.hd2s.alloc(s.max_rows, 1, cap, 0.f)) throw std::runtime_error("head2 sample scratch alloc failed");
+    if (!s.d_h2delta) CK(cudaMalloc(&s.d_h2delta, sizeof(float)));
+    CK(cudaDeviceSynchronize());
+}
+void head_rows_sample(const Model& m, State& s, int r0, int n, cudaStream_t st) {
+    v41k::hc_collapse(s.x, s.h + (size_t)r0 * HC_DIM, s.pre + (size_t)r0 * 4, n, st);
+    v41k::rmsnorm(s.x, s.x, m.norm, n, DIM, NORM_EPS, st);
+    v41k::head2_logits(s.logits, s.d_hfb, s.x, n, m.head, m.head4, m.head4s, m.head4g, s.hd2s, s.d_h2delta, VOCAB, DIM, st);
+}
+void head_full_logits(const Model& m, State& s, int row, cudaStream_t st) {
+    v41k::bf16_linear(s.logits + (size_t)row * VOCAB, s.x + (size_t)row * DIM, m.head, 1, VOCAB, DIM, false, st);
+}
 void head_full_argmax(const Model& m, State& s, int row, int* d_out, cudaStream_t st) {
     v41k::bf16_linear(s.logits + (size_t)row * VOCAB, s.x + (size_t)row * DIM, m.head, 1, VOCAB, DIM, false, st);
     v41k::argmax(d_out, s.logits + (size_t)row * VOCAB, VOCAB, st);

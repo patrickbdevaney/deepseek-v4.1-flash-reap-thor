@@ -32,8 +32,10 @@ def family(name: str, gx: int = 0) -> str:
         return "load"
     if "k_h2_" in name:
         return "head_select"
-    if "k_nvm" in name:
+    if "k_nvm" in name or "k_nvt" in name:          # k_nvt: the TMA-fed form (A10)
         return "nvfp4_dense"
+    if "k_f8m" in name:                              # P6 FP8 tensor-core weights (Engram wkv, ...)
+        return "fp8_dense"
     if "k_dense" in name:
         if "DecNVFP4" in name and gx == 2020:
             return "head_nvfp4"
@@ -48,7 +50,7 @@ def family(name: str, gx: int = 0) -> str:
         return "load"
     if "k_kq" in name or "k_experts" in name:
         return "kquant_experts"
-    if "k_sa_" in name or "k_sparse_attn" in name:
+    if "k_sa_" in name or "k_sam_" in name or "k_sparse_attn" in name:
         return "sparse_attn"
     if "k_topk" in name or "k_index" in name or "k_cand" in name:
         return "topk_index"
@@ -77,17 +79,17 @@ def template_args(name: str) -> list:
 
 def is_prefill(name: str, grid_y: int) -> bool:
     # MT > 1 instantiations of k_dense / k_kq / k_experts serve M > 1 (prefill or verify); decode uses MT = 1
-    if not any(k in name for k in ("k_dense<", "k_kq<", "k_kqm<", "k_experts<", "k_nvm<")):
+    if not any(k in name for k in ("k_dense<", "k_kq<", "k_kqm<", "k_experts<", "k_nvm<", "k_nvt<")):
         return False
     a = template_args(name)
-    i = 0 if "k_nvm<" in name else 1                 # k_nvm<MT>; the others <Dec|QT, MT, ...>
+    i = 0 if ("k_nvm<" in name or "k_nvt<" in name) else 1   # k_nvm<MT>, k_nvt<MT, S, CH>; the others <Dec|QT, MT, ...>
     return len(a) > i and a[i].replace("(int)", "").strip() != "1"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("sqlite")
-    ap.add_argument("--bw", type=float, default=228.0, help="measured streaming GB/s")
+    ap.add_argument("--bw", type=float, default=247.0, help="measured streaming GB/s (M2 bw_sweep, TMA 16K x2)")
     ap.add_argument("--no-overlay", action="store_true")
     ap.add_argument("--out")
     a = ap.parse_args()
@@ -111,7 +113,9 @@ def main() -> int:
     # wall: first to last M=1 head launch spans the decode
     heads = [(s, e) for n, gx, gy, d, s, e in rows if is_head(n, gx, gy)]
     wall_ms = (heads[-1][1] - heads[0][1]) / 1e6 / max(1, steps - 1)
-    B = BYTES_NO_OVERLAY if a.no_overlay else BYTES
+    B = dict(BYTES_NO_OVERLAY if a.no_overlay else BYTES)
+    if t.get("head_nvfp4", 0.0) > 0:      # two-stage head serving the steps: the bf16 head runs only on prefill / fallbacks
+        B["bf16_head"] = 0.0
     lines = [f"# ZENITH ledger ({a.sqlite})", "",
              f"{steps} decode steps; wall {wall_ms:.2f} ms/step = {1000 / wall_ms:.2f} tok/s; BW_peak {a.bw:.0f} GB/s", "",
              "| family | t ms/step | MB/step | floor ms | gap ms | achieved GB/s |", "|---|---:|---:|---:|---:|---:|"]

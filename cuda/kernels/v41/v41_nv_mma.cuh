@@ -159,6 +159,155 @@ __global__ void __launch_bounds__(256) k_nvm(float* __restrict__ y, XSrc X, cons
     if (threadIdx.x == 0) *c = 0;
 }
 
+// A10: k_nvm with the weight stream fed by TMA. Each warp owns an NVT_S-stage smem ring of (2048 B codes +
+// 256 B scales) per superblock; lane 0 issues cp.async.bulk for its first NVT_S superblocks before x is
+// staged, so ~NVT_S x 2.3 KiB per warp is in flight from the first cycle (k_nvm keeps one superblock ahead
+// in registers). Grid, K split, per-lane arithmetic and the split-K sum are k_nvm's: outputs are bit-identical.
+constexpr int NVT_STAGE = 2048 + 256;
+__host__ __device__ constexpr size_t nvt_ring_bytes(int S, int CH = 1) { return (size_t)8 * S * CH * NVT_STAGE + (size_t)8 * S * 8; }
+// n superblocks idx.. of one tile (contiguous in both buffers): codes at dst, scales at dst + CH * 2048
+template <int CH>
+__device__ __forceinline__ void nvt_issue(uint32_t dst, uint32_t bar, const uint8_t* W, const uint8_t* Sc, size_t idx, int n) {
+    asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;" :: "r"(bar), "r"(n * NVT_STAGE) : "memory");
+    asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+                 :: "r"(dst), "l"(W + idx * 2048), "r"(n * 2048), "r"(bar) : "memory");
+    asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+                 :: "r"(dst + CH * 2048), "l"(Sc + idx * 256), "r"(n * 256), "r"(bar) : "memory");
+}
+__device__ __forceinline__ void nvt_wait(uint32_t bar, uint32_t phase) {
+    uint32_t done = 0;
+    while (!done) asm volatile("{ .reg .pred P; mbarrier.try_wait.parity.shared.b64 P, [%1], %2; selp.u32 %0,1,0,P; }"
+                               : "=r"(done) : "r"(bar), "r"(phase) : "memory");
+}
+template <int MT, int NS, int CH = 1, bool NOCOMP = false>
+__global__ void __launch_bounds__(256) k_nvt(float* __restrict__ y, XSrc X, const uint8_t* __restrict__ W,
+                                             const uint8_t* __restrict__ S, float g, int M, int N, int K, int Ng,
+                                             int ks, int round, float* __restrict__ part, int* __restrict__ kcnt) {
+    const int nsb = K / 256, z = blockIdx.z;
+    const int s0 = (int)((long)nsb * z / ks), s1 = (int)((long)nsb * (z + 1) / ks), nk = (s1 - s0) * 256;
+    const int m0 = blockIdx.y * MT, mrows = min(MT, M - m0);
+    const int row0 = blockIdx.x * NVM_ROWS_PER_CTA, gi = row0 / Ng;
+    extern __shared__ __align__(128) uint8_t nvt_smem[];
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, gg = lane >> 2, t = lane & 3;
+    const int tile = blockIdx.x * 8 + warp;
+    const bool live = tile * 16 < N;
+    uint8_t* ring = nvt_smem + (size_t)warp * NS * CH * NVT_STAGE;
+    uint64_t* bars = reinterpret_cast<uint64_t*>(nvt_smem + (size_t)8 * NS * CH * NVT_STAGE) + warp * NS;
+    uint8_t* xstage = nvt_smem + nvt_ring_bytes(NS, CH);
+    const size_t SB = (nvm_stage_bytes(nk) + 15) & ~(size_t)15;
+    const uint32_t ring0 = (uint32_t)__cvta_generic_to_shared(ring), bar0 = (uint32_t)__cvta_generic_to_shared(bars);
+    const int cnt = s1 - s0, nst = (cnt + CH - 1) / CH;
+    if (live && lane == 0) {
+        for (int j = 0; j < NS; ++j) asm volatile("mbarrier.init.shared.b64 [%0], 1;" :: "r"(bar0 + 8 * j));
+        asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+        const size_t base = (size_t)tile * nsb + s0;
+        for (int j = 0; j < NS && j < nst; ++j) nvt_issue<CH>(ring0 + j * CH * NVT_STAGE, bar0 + 8 * j, W, S, base + j * CH, min(CH, cnt - j * CH));
+    }
+    // PDL: weights do not depend on the previous kernel, x does. Launched with programmatic stream
+    // serialization, this CTA got here while the previous kernel was still running; without, both are no-ops.
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+    asm volatile("griddepcontrol.wait;" ::: "memory");
+    for (int n = 0; n < MT; ++n) nvm_stage_row(xstage + n * SB, X, m0 + min(n, mrows - 1), gi * K + s0 * 256, nk);
+    __syncthreads();
+    if (live) {
+    const uint8_t* xg = xstage + min(gg, MT - 1) * SB;
+    const float* xsn[2];
+    #pragma unroll
+    for (int e = 0; e < 2; ++e) xsn[e] = reinterpret_cast<const float*>(xstage + min(2 * t + e, MT - 1) * SB + nk + 16);
+    constexpr int NE = MT == 1 ? 1 : 2;
+    float acc[2][NE];
+    #pragma unroll
+    for (int h = 0; h < 2; ++h)
+        #pragma unroll
+        for (int e = 0; e < NE; ++e) acc[h][e] = 0.f;
+    const int src_q = lane & ~3;
+    for (int j = 0; j < nst; ++j) {
+        const int st = j % NS, nj = min(CH, cnt - j * CH);
+        nvt_wait(bar0 + 8 * st, (uint32_t)((j / NS) & 1));
+        const uint8_t* stg0 = ring + st * CH * NVT_STAGE;
+        for (int c = 0; c < nj; ++c) {
+        const int s = s0 + j * CH + c;
+        const uint8_t* stg = stg0 + c * 2048;
+        uint32_t cw[16], sw[2];
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) { const uint4 v = *reinterpret_cast<const uint4*>(stg + i * 512 + lane * 16); cw[4 * i] = v.x; cw[4 * i + 1] = v.y; cw[4 * i + 2] = v.z; cw[4 * i + 3] = v.w; }
+        #pragma unroll
+        for (int h = 0; h < 2; ++h) sw[h] = *reinterpret_cast<const uint32_t*>(stg0 + CH * 2048 + c * 256 + (gg + 8 * h) * 16 + 4 * t);
+        if (c == nj - 1) {
+            __syncwarp();
+            if (lane == 0 && j + NS < nst) {
+                asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+                const int jn = j + NS;
+                nvt_issue<CH>(ring0 + st * CH * NVT_STAGE, bar0 + 8 * st, W, S, (size_t)tile * nsb + s0 + jn * CH, min(CH, cnt - jn * CH));
+            }
+        }
+        if (NOCOMP) { acc[0][0] += __uint_as_float(cw[lane & 15] ^ sw[0]); continue; }
+        float scf[2][4];
+        #pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const __half2 lo = __half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(sw[h] & 0xFFFF), __NV_E4M3));
+            const __half2 hi = __half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(sw[h] >> 16), __NV_E4M3));
+            const float2 a = __half22float2(lo), b = __half22float2(hi);
+            scf[h][0] = a.x; scf[h][1] = a.y; scf[h][2] = b.x; scf[h][3] = b.y;
+        }
+        uint32_t xb[16];
+        {
+            const uint4* x4 = reinterpret_cast<const uint4*>(xg + (size_t)((s - s0) * 4 + t) * 64);
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) { const uint4 v = x4[i]; xb[4 * i] = v.x; xb[4 * i + 1] = v.y; xb[4 * i + 2] = v.z; xb[4 * i + 3] = v.w; }
+        }
+        float xs[2][8];
+        #pragma unroll
+        for (int e = 0; e < NE; ++e) {
+            const float4* p = reinterpret_cast<const float4*>(xsn[e] + (s - s0) * 8);
+            const float4 a = p[0], b = p[1];
+            xs[e][0] = a.x; xs[e][1] = a.y; xs[e][2] = a.z; xs[e][3] = a.w; xs[e][4] = b.x; xs[e][5] = b.y; xs[e][6] = b.z; xs[e][7] = b.w;
+        }
+        #pragma unroll
+        for (int sb = 0; sb < 16; ++sb) {
+            float D[4];
+            mma_e4m3(D, e2m1_lo_e4m3(cw[sb]), e2m1_hi_e4m3(cw[sb]), xb[sb]);
+            const float c0 = __shfl_sync(0xffffffffu, scf[0][sb & 3], src_q | (sb >> 2));
+            const float c1 = __shfl_sync(0xffffffffu, scf[1][sb & 3], src_q | (sb >> 2));
+            #pragma unroll
+            for (int e = 0; e < NE; ++e) {
+                acc[0][e] = fmaf(c0, D[e] * xs[e][sb >> 1], acc[0][e]);
+                acc[1][e] = fmaf(c1, D[2 + e] * xs[e][sb >> 1], acc[1][e]);
+            }
+        }
+        }
+    }
+    const float og = 64.f * g;
+    #pragma unroll
+    for (int h = 0; h < 2; ++h)
+        #pragma unroll
+        for (int e = 0; e < NE; ++e) {
+            const int n = 2 * t + e, row = tile * 16 + gg + 8 * h;
+            if (n >= mrows || row >= N) continue;
+            const float v = acc[h][e] * og;
+            if (ks > 1) part[((size_t)z * M + m0 + n) * N + row] = v;
+            else y[(size_t)(m0 + n) * N + row] = round ? bf16r(v) : v;
+        }
+    }
+    if (ks == 1 || !kcnt) return;
+    __shared__ int last;
+    __threadfence();
+    __syncthreads();
+    int* c = kcnt + blockIdx.y * gridDim.x + blockIdx.x;
+    if (threadIdx.x == 0) last = atomicAdd(c, 1) == ks - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    for (int i = threadIdx.x; i < NVM_ROWS_PER_CTA * MT; i += blockDim.x) {
+        const int row = row0 + (i % NVM_ROWS_PER_CTA), m = m0 + i / NVM_ROWS_PER_CTA;
+        if (row >= N || m >= M) continue;
+        float v = 0.f;
+        for (int zz = 0; zz < ks; ++zz) v += __ldcg(part + ((size_t)zz * M + m) * N + row);
+        y[(size_t)m * N + row] = round ? bf16r(v) : v;
+    }
+    if (threadIdx.x == 0) *c = 0;
+}
+
 // Prefill form: MT = 8 NT tokens per CTA, NT n-tiles per warp sharing each A fragment (k_nvm<8> re-read
 // the whole weight tile once per 8 tokens: 32x per 256-row chunk). Every output element runs the same
 // mma column, scale and fmaf sequence as k_nvm<1..8> (an mma column does not depend on the others), so
