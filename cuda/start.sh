@@ -1,7 +1,8 @@
 #!/bin/bash
 # Launch v41_server (OpenAI-compatible) for DeepSeek-V4.1-Flash-1017-REAP192 on one Jetson AGX Thor.
 #
-#   ./start.sh                    32K context, port 8000, NVFP4 dense overlay on
+#   ./start.sh                    32K context, port 8000, NVFP4 dense overlay on, DSpark speculation K=3
+#   SPEC=0 ./start.sh             plain decoding (frees ~6 GiB)
 #   SEQMAX=131072 ./start.sh
 #
 # Settings (environment):
@@ -10,6 +11,7 @@
 #   ENGRAM_DIR  engram_L1.v41rows / engram_L14.v41rows on NVMe         default $CKPT/engram_rows
 #   SEQMAX      context ceiling (sizes the KV caches)                  default 32768
 #   OVERLAY     1 = serve the dense weights from $CKPT/overlay_nvfp4   default 1
+#   SPEC        DSpark drafts per verify with the checkpoint's own drafter (0 = off)   default 3
 #   HOST PORT   listen address                                         default 127.0.0.1 8000
 #   EXTRA       further v41_server arguments, appended verbatim
 set -euo pipefail
@@ -18,6 +20,7 @@ CKPT=${CKPT:-$HOME/models/DeepSeek-V4.1-Flash-1017-REAP192-Thor}
 ENGRAM_DIR=${ENGRAM_DIR:-$CKPT/engram_rows}
 SEQMAX=${SEQMAX:-32768}
 OVERLAY=${OVERLAY:-1}
+SPEC=${SPEC:-3}         # held-out: 1.345x mean over AR, never below 1.0x; greedy ids identical
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-8000}
 
@@ -51,6 +54,7 @@ fi
 
 args=(--ckpt "$CKPT" --keepset "$CKPT/reap_keepset.json" --engram "$ENGRAM_DIR" --seqmax "$SEQMAX"
       --host "$HOST" --port "$PORT" --model DeepSeek-V4.1-Flash-1017-REAP192)
+[ "$SPEC" -gt 0 ] && args+=(--spec "$SPEC")
 echo "start.sh: v41_server ${args[*]} ${EXTRA:-}" >&2
 # shellcheck disable=SC2086
 exec "$here/build/v41_server" "${args[@]}" ${EXTRA:-}

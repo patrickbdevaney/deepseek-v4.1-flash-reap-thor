@@ -14,13 +14,15 @@ Measured 2026-10-30 on a Jetson AGX Thor (CUDA 13.0, Linux 6.8.12-tegra). The se
 
 | | this server (`v41_server`) | llama.cpp fork, GGUF L3 (same box, same prompts) |
 |---|---:|---:|
-| **decode** (256-token chat answers) | **25.0 tok/s** | 12.3–12.5 tok/s |
+| **decode** (256-token chat answers: code / explanation / math) | **33.0 / 25.0 / 40.2 tok/s** (DSpark K=3); 25.0 with `SPEC=0` | 12.3–12.5 tok/s; 17.3–20.7 with `DSPARK=1` |
 | **prefill**, 1.8K-token prompt | **398 tok/s** | 159 tok/s |
 | **prefill**, 7.2K-token prompt (5.9K for llama.cpp) | **739 tok/s** | 147 tok/s |
-| memory left while serving | 17 GiB of 122 (32K context) | 25 GiB (16K context) |
+| memory left while serving | 9 GiB of 122 (32K context; 17 GiB with `SPEC=0`) | 25 GiB (16K context) |
 | image input | no (text only) | yes (mmproj) |
 
-- **Decode** runs at 78% of the bandwidth roofline for the bytes it reads per token. A token reads 8.57 GB in 48.2 ms, against a 37.6 ms floor at 228 GB/s. The per-kernel-family breakdown is in [`docs/zenith/LEDGER.md`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor/blob/main/docs/zenith/LEDGER.md) of the pipeline repo.
+- **Speculative decoding is on by default** (`SPEC=3`: the checkpoint's own DSpark drafter proposes 3 tokens, the model verifies them in one pass). Greedy output is token-identical to plain decoding (0 divergences on 27 held-out prompts), and sampled output keeps the model's exact distribution. On the held-out set it averages 1.345× over plain decoding: chat 1.09×, agentic 1.23×, code 1.40×, long context 1.40×, math 1.63×. No prompt type is slower.
+- **Sampling** (temperature 0.7) decodes at 25.0 / 19.2 / 25.2 tok/s on the same three prompts, against 18.9 without speculation. Sampled decode is slower than greedy because it runs the full bf16 vocabulary head; greedy uses a two-stage NVFP4 head.
+- **Decode** without speculation is at about 74% of the reachable bandwidth roofline: about 7.6 GB per token in 40 ms, against a 31 ms floor at 247 GB/s. That ceiling is measured with TMA bulk copies (`tools/bw_sweep.cu`); plain loads top out at 227–243 GB/s. The per-kernel breakdown is in the pipeline repo's [`docs/zenith/`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor/tree/main/docs/zenith).
 - **Prefill.** `v41_decode` reaches 580.7 tok/s on the fixed 8,192-token benchmark prompt. The server's 739 tok/s is for a different, more regular prompt. Every prefill change in the history below kept the greedy token ids identical to the previous build.
 - **Greedy output** is deterministic run to run. It is also identical between the 64- and 1024-row prefill chunks (all six bench prompts were checked on 2026-10-30).
 
@@ -105,7 +107,6 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 ## Limits
 
 - **Text only.** The vision tower ships in the weights (`vision.safetensors`), but this server does not load it. For image input, use the llama.cpp fork with the mmproj.
-- **Speculative decoding is off by default.** The native DSpark/MTP drafter is wired (`--spec K`). It gives about 1.6× on math-like text, but about 0.98× on chat, so it is not a default. The llama.cpp fork's DSpark gives 1.3–1.6× on chat.
 - **One stream.** One request at a time, by design: a bandwidth-bound decode at batch 1 has nothing to gain from batching on this box.
 - **Thor only.** The kernels target sm_110a. Some paths, tcgen05 for example, do not exist on sm_120/121.
 

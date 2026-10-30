@@ -53,7 +53,7 @@ kl32 (0.298). All 14 arms are in [`RESULTS.md`](RESULTS.md).
 
 | | CUDA server (`REAP192-Thor`) | llama.cpp fork (`REAP192-GGUF` L3) |
 |---|---:|---:|
-| Decode, 256-token chat answers | **25.0 tok/s** | 12.3–12.5 tok/s; 16.6–19.9 with `DSPARK=1` |
+| Decode, 256-token chat answers (code / explanation / math) | **33.0 / 25.0 / 40.2 tok/s** (DSpark K=3, default); 25.0 plain | 12.3–12.5 tok/s; 16.6–19.9 with `DSPARK=1` |
 | Prefill, ~1.8K-token prompt | 398 tok/s | 159 tok/s |
 | Prefill, ~6–7K-token prompt | 739 tok/s | 147 tok/s |
 | Image input | no | yes |
