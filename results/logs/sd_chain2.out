@@ -1,0 +1,198 @@
+[2026-10-24T04:46:36-04:00] s09 done build
+[2026-10-24T04:53:58-04:00] s09 reclaim after backend_ops: MemAvailable 110 GiB
+[2026-10-24T04:53:58-04:00] s09 done backend_ops
+[2026-10-24T04:56:03-04:00] s08 done build
+gate_spec_host: 10442 steps, 10357 verifies, 25483 pools, 5198 restores, 4739000 window reads, 297 reuses, 93 refused -> PASS
+[vector 1 thinking]   2476 bytes byte-exact, 0 image(s) -> PASS
+[vector 2 chat    ]    294 bytes byte-exact, 0 image(s) -> PASS
+[vector 3 chat    ]   2481 bytes byte-exact, 0 image(s) -> PASS
+[vector 4 chat    ]    574 bytes byte-exact, 0 image(s) -> PASS
+[vector 5 thinking]    408 bytes byte-exact, 2 image(s) -> PASS
+[parse tool-call output strict + round-trip] -> PASS
+[reference fuzz 400 cases] 400 byte-exact -> PASS
+7 pass, 0 fail
+[PASS] default thinking_mode is 'thinking'
+[PASS] explicit thinking_mode honoured
+[PASS] enable_thinking=false -> chat
+[PASS] chat_template_kwargs.thinking=false -> chat
+[PASS] invalid thinking_mode falls back safely
+[PASS] reasoning_effort is orthogonal to thinking_mode
+[PASS] numeric reasoning_effort accepted
+[PASS] out-of-range reasoning_effort falls back to the default (high = 75)
+[PASS] default temperature is 1.0 (NOT gemma/Laguna's 0.7)
+[PASS] default top_p is 1.0 without tools
+[PASS] top_p becomes 0.95 when tools are present (agentic)
+[PASS] has_tools detected
+[PASS] explicit top_p overrides the default
+[PASS] tools with no system message -> a system message is created to carry them
+[PASS] tools with an existing system message -> attached, no message added
+[PASS] prompt starts with BOS
+[PASS] reasoning_effort prefix sits at the FRONT (prefix-cache hazard, CHAT_FORMAT §2.2)
+[PASS] string param encoded with string="true"
+[PASS] number param encoded with string="false"
+[PASS] bool param encoded with string="false"
+[PASS] one tool call parsed back
+[PASS] string arg round-trips as a string  {"location": "Beijing", "days": 5, "metric": true}
+[PASS] number arg round-trips as a NUMBER, not "5"
+[PASS] bool arg round-trips as a bool
+[PASS] tool name round-trips
+[PASS] reasoning_content surfaced as its own field
+[PASS] finish_reason 'stop' with no tool calls
+[PASS] usage totals add up
+[PASS] finish_reason 'tool_calls' when a call is present
+[PASS] tool calls get ids
+[PASS] SSE chunk is 'data: {...}\n\n'
+
+Gate API: 31 passed, 0 failed -> PASS
+  [PASS] thinking then content
+  [PASS] chat mode, no think marker
+  [PASS] thinking with no content
+  [PASS] empty reasoning
+  [PASS] content then tools
+  [PASS] reasoning, content, tools
+  [PASS] multibyte content
+  [PASS] marker-like text that is not a marker
+  [PASS] no markers at all
+  [PASS] every delta is independently valid UTF-8
+  [PASS] buffered tool block parses to one call via the gated DSML parser
+
+Gate STREAM: 11 passed, 0 failed -> PASS
+[tok] vocab 128000  merges 127741  added 1283  bos 0 eos 1
+  [PASS] canonical gate 'The capital of France is'
+  encode: 2116/2116 cases exact (168291 reference tokens)
+  roundtrip: 2116/2116 cases lossless
+  stream:    2116/2116 cases match one-shot decode
+  [PASS] </think> and DSML markers survive decode_stream(skip_special=false)
+  speed:     3.7 MB/s  (559263 bytes -> 168236 tokens in 153.0 ms)
+
+Gate TOKENIZER: PASS
+case 0: n=10  mismatches=0
+case 1: n=33  mismatches=0
+case 2: n=34  mismatches=0
+case 3: n=300  mismatches=0
+PASS: 18096 hash ids, 0 mismatches
+[fmt fp8  , 128 tokens] 0 bad slots, 62649 us -> PASS
+[fmt fp8  ,   1 tokens] 0 bad slots, 652 us -> PASS
+[fmt fp8  ,  77 tokens] 0 bad slots, 36419 us -> PASS
+[fmt mxfp6, 128 tokens] 0 bad slots, 63249 us -> PASS
+[fmt mxfp6,   1 tokens] 0 bad slots, 669 us -> PASS
+[fmt mxfp6,  77 tokens] 0 bad slots, 38225 us -> PASS
+[n_rows below the hash buckets] refused (build/engram_gate/engram_L1.v41rows: n_rows does not cover the largest hash bucket) -> PASS
+Gate ENGRAM STORE: PASS
+[Q2_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[Q3_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[Q4_K] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[KT2] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[KT3] 64 x 2304 decoded on host: 0 mismatches (max |d| 0) -> PASS
+[2026-10-24T04:56:14-04:00] s08 done cpu_gates
+[2026-10-24T04:56:19-04:00] s08 start units: cuda/build/gate_v41_units cuda/build/units
+[2026-10-24T04:56:25-04:00] s08 reclaim after units: MemAvailable 110 GiB
+[2026-10-24T04:56:25-04:00] s08 done units
+[2026-10-24T04:56:31-04:00] s08 start gemv_bench: cuda/build/gemv_format_bench --mib 1536 --iters 20 --json /home/patrickd/models/v41-work/s08/gemv_bench.json
+[2026-10-24T04:56:38-04:00] s08 reclaim after gemv_bench: MemAvailable 110 GiB
+[2026-10-24T04:56:38-04:00] s08 done gemv_bench
+[2026-10-24T04:56:45-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long
+[2026-10-24T05:26:53-04:00] s08 FAIL: ref_dump src
+rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(716) [sender=3.2.7]
+rsync error: received SIGUSR1 (code 19) at main.c(1613) [generator=3.2.7]
+[2026-10-24T06:39:33-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:03:06-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:03:06-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:15:38-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:15:38-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:28:13-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:28:13-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:33:25-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:33:25-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:36:32-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:36:32-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:39:40-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:39:40-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:42:54-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:42:54-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+[2026-10-24T07:46:09-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:46:09-04:00] s08 done golden_ref_src
+[2026-10-24T07:46:15-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+[2026-10-24T07:48:24-04:00] s08 FAIL: golden src
+rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(716) [sender=3.2.7]
+rsync error: received SIGUSR1 (code 19) at main.c(1613) [generator=3.2.7]
+[2026-10-24T08:32:42-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+[2026-10-24T10:14:17-04:00] s08 FAIL: golden src
+[2026-10-24T10:20:52-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+[2026-10-24T12:06:22-04:00] s08 FAIL: golden src
+rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(716) [sender=3.2.7]
+rsync error: received SIGUSR1 (code 19) at main.c(1613) [generator=3.2.7]
+[2026-10-24T12:10:50-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+[2026-10-24T13:58:18-04:00] s08 FAIL: golden src
+[2026-10-24T14:00:38-04:00] s09 FAIL: convert (keep-set errors are fatal by design; see ops/logs/s09_convert.log)
+llamacpp/CHAIN_STEPS.sh: line 80: 329901 Killed                  $PY llamacpp/convert_v41_reap.py "$MASTER" --expect-keep-sha "$KEEP_SHA" --heal-gains $G/src/heal_gains.json --no-mtp --engram-src "$V41SRC" --view-dir $G/src/$NAME --outfile $SRCG > $L/s09_convert.log 2>&1
+[2026-10-24T15:38:07-04:00] s09 FAIL: convert (keep-set errors are fatal by design; see ops/logs/s09_convert.log)
+[2026-10-24T17:59:01-04:00] s09 reclaim after convert: MemAvailable 112 GiB
+[2026-10-24T17:59:01-04:00] s09 done convert
+[2026-10-24T19:24:44-04:00] s09 done imatrix
+[2026-10-25T00:42:02-04:00] s09 FAIL: quant L2
+[2026-10-25T00:43:32-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T01:08:07-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:08:07-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T01:20:56-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T01:20:56-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T01:33:47-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:33:47-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T01:46:13-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:46:13-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T01:59:06-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T01:59:06-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T02:11:51-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T02:11:51-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T02:24:38-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T02:24:38-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+[2026-10-25T02:39:30-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T02:39:30-04:00] s08 done golden_ref_A192
+[2026-10-25T02:39:36-04:00] s08 start golden_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json
+[2026-10-25T03:12:48-04:00] s08 FAIL: golden A192
+[2026-10-25T06:49:09-04:00] s09 done quant_L2
+[2026-10-25T06:57:24-04:00] s08 start golden_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json
+[2026-10-25T07:32:06-04:00] s08 FAIL: golden A192
+[2026-10-25T09:36:58-04:00] s09 done rowfile
+[2026-10-25T09:36:58-04:00] s08 start golden_store_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows
+[2026-10-25T09:37:02-04:00] s08 FAIL: golden A192 through the row store
+[2026-10-25T22:25:40-04:00] s09 done quant_L3
+[2026-10-25T22:25:43-04:00] s09 drop_source: removed /home/patrickd/models/v41-work/s09/src/V4.1-1017-REAP192-src.gguf (149 GiB, regenerable by convert)
+[2026-10-25T22:25:43-04:00] s09 drop_source: convert marker cleared; 170 GiB free on /
+rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(716) [sender=3.2.7]
+rsync error: received SIGUSR1 (code 19) at main.c(1613) [generator=3.2.7]
+[2026-10-25T23:02:00-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[2026-10-25T23:04:54-04:00] s08 FAIL: decode A192 (determinism/consistency)
+[2026-10-25T23:04:59-04:00] s09 drop_source: convert marker cleared; 169 GiB free on /
+rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(716) [sender=3.2.7]
+rsync error: received SIGUSR1 (code 19) at main.c(1613) [generator=3.2.7]
+[2026-10-25T23:51:30-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[2026-10-25T23:53:56-04:00] s08 reclaim after decode_A192: MemAvailable 118 GiB
+[2026-10-25T23:53:56-04:00] s08 start decode_ng_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --no-graph --json /home/patrickd/models/v41-work/s08/decode_nograph_A192.json
+[2026-10-26T01:00:19-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[2026-10-26T01:02:44-04:00] s08 reclaim after decode_A192: MemAvailable 118 GiB
+[2026-10-26T01:02:44-04:00] s08 start decode_ng_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --no-graph --json /home/patrickd/models/v41-work/s08/decode_nograph_A192.json
+[2026-10-26T01:04:18-04:00] s08 reclaim after decode_ng_A192: MemAvailable 117 GiB
+[2026-10-26T01:04:18-04:00] s08 start decode8k_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --seqmax 16384 --ids-file /home/patrickd/models/v41-work/s08/ids8k.txt --n 128 --json /home/patrickd/models/v41-work/s08/decode8k_A192.json
+[2026-10-26T01:09:42-04:00] s08 reclaim after decode8k_A192: MemAvailable 118 GiB
+[2026-10-26T01:09:42-04:00] s08 done decode_A192
+[2026-10-26T01:09:47-04:00] s08 start ctx1m_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --seqmax 1048576 --chunk 128 --ids-file /home/patrickd/models/v41-work/s08/ids64k.txt --n 64 --json /home/patrickd/models/v41-work/s08/ctx1m_A192.json
+[2026-10-26T01:41:39-04:00] s08 reclaim after ctx1m_A192: MemAvailable 118 GiB
+[2026-10-26T01:41:39-04:00] s08 done ctx1m_A192
+[2026-10-26T01:43:31-04:00] s08 reclaim after server_A192: MemAvailable 117 GiB
+[2026-10-26T01:43:31-04:00] s08 done server_A192
+[2026-10-26T01:43:36-04:00] s09 drop_source: convert marker cleared; 155 GiB free on /
+[2026-10-26T01:58:14-04:00] s09 stage L2: 98 GiB copied to /home/patrickd/models/v41-work/s09/stage/L2 (origin /media/patrickd/Seagate Portable Drive/v41_staging/s09/L2)
+[2026-10-26T02:32:01-04:00] s09 reclaim after kld_L2: MemAvailable 118 GiB
+[2026-10-26T02:32:01-04:00] s09 FAIL: kld summarize L2
+[2026-10-26T04:17:00-04:00] s09 drop_source: convert marker cleared; 71 GiB free on /
+[2026-10-26T04:17:00-04:00] s09 stage L2: already staged
+[2026-10-26T04:18:16-04:00] s09 reclaim after smoke_L2: MemAvailable 118 GiB
+[2026-10-26T04:18:16-04:00] s09 done smoke_L2
+[2026-10-26T04:18:22-04:00] s09 unstage L2: results back in /media/patrickd/Seagate Portable Drive/v41_staging/s09/L2, stage removed
+[2026-10-26T04:41:55-04:00] s09 stage L3: 85 GiB copied to /home/patrickd/models/v41-work/s09/stage/L3 (origin /media/patrickd/Seagate Portable Drive/v41_staging/s09/L3)
+[2026-10-26T05:12:55-04:00] s09 reclaim after kld_L3: MemAvailable 118 GiB
+[2026-10-26T05:13:01-04:00] s09 done kld_L3
+[2026-10-26T05:14:02-04:00] s09 reclaim after smoke_L3: MemAvailable 118 GiB
+[2026-10-26T05:14:02-04:00] s09 done smoke_L3
+[2026-10-26T05:14:08-04:00] s09 unstage L3: results back in /media/patrickd/Seagate Portable Drive/v41_staging/s09/L3, stage removed

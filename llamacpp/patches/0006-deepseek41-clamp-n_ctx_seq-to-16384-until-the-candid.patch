@@ -1,7 +1,7 @@
-From 92031e6a4add77f9d8b09702296b64ea484a2132 Mon Sep 17 00:00:00 2001
+From 56d2eb366ebda8388ac72e5e835aff4feec08e87 Mon Sep 17 00:00:00 2001
 From: s09 <s09@localhost>
 Date: Thu, 22 Oct 2026 16:42:47 -0400
-Subject: [PATCH] deepseek41 : clamp n_ctx_seq to 16384 until the
+Subject: [PATCH 6/6] deepseek41 : clamp n_ctx_seq to 16384 until the
  candidate-block mask is implemented
 
 The reference restricts layers after candidate_source_layer 20 to its top 2048 blocks of 8

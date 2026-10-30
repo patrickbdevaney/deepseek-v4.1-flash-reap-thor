@@ -39,6 +39,95 @@ Adopted: **False**. d_kl32 CI hi +0.00556 (must be < 0) or top1 z -3.73 <= -1.96
 
 Measured on 177,810 tokens. The heal lowers NLL but moves the argmax away from the teacher, so the release carries the unhealed REAP weights.
 
+## s10 final: release gates (confirm split)
+
+```json
+{
+ "mxfp4_master": true,
+ "nvfp4": true,
+ "thor": true,
+ "thor_arm": "A",
+ "overlay_adopted": true,
+ "heal_adopted": false
+}
+```
+
+## s09: GGUF ladder gate
+
+```json
+{
+ "levels": {
+  "L2": {
+   "kl32": 1.0097179240543073,
+   "kl32_ci95": [
+    0.7600622065247927,
+    1.267204009315751
+   ],
+   "top1": 0.7316450639204546,
+   "top1_ci95": [
+    0.6708704168146307,
+    0.7924566095525568
+   ],
+   "dnll": 0.8457674969424331,
+   "ngl": "all",
+   "keep_set_sha256": "1ace9b33134a2ca74174952593682e94edbf3c3348b4ac505ff59597a05d49ec",
+   "pass": false,
+   "why": [
+    "kl32 1.0097 > 0.8",
+    "top-1 0.7316 < 0.78"
+   ]
+  },
+  "L3": {
+   "kl32": 0.5076396030976241,
+   "kl32_ci95": [
+    0.32241540173282335,
+    0.7337401480286794
+   ],
+   "top1": 0.7725386186079546,
+   "top1_ci95": [
+    0.7116349653764205,
+    0.8287085793235085
+   ],
+   "dnll": 0.3399427119681972,
+   "ngl": "all",
+   "keep_set_sha256": "1ace9b33134a2ca74174952593682e94edbf3c3348b4ac505ff59597a05d49ec",
+   "pass": false,
+   "why": [
+    "top-1 0.7725 < 0.78"
+   ]
+  }
+ },
+ "passing": [
+  "L3"
+ ],
+ "gates_sha256": "f95b26721124c6a343f41b004b8740bfe6eb22033d77dcc260dceda039082e0a",
+ "gate": {
+  "why": "the llama.cpp GGUF ladder (s09) of the published REAP master, scored by v41-teacher-kld against the cached source teacher on the confirm split; a level ships only if it passes",
+  "split": "confirm",
+  "max_kl32": 0.8,
+  "min_top1": 0.78,
+  "max_d_kl32_vs_L0": 0.25,
+  "d_vs_L0_applies_to": [
+   "L1",
+   "L2",
+   "L3"
+  ],
+  "smoke_required": true,
+  "partial_offload_allowed": true,
+  "note": "levels too large for full GPU offload are scored with partial -ngl from NVMe; the card states the offload"
+ },
+ "ts": "2026-10-26T05:14:08-0400",
+ "owner_release": {
+  "level": "L3",
+  "why_failed": [
+   "top-1 0.7725 < 0.78"
+  ],
+  "at": "2026-10-26T05:14:08-0400",
+  "rule": "owner 2026-10-25/26: a near-miss on the pre-registered floor is released anyway; smoke (generation) must still pass"
+ }
+}
+```
+
 ## Not yet run
 
-Sections appear here as their stages finish: s10 final, s09 GGUF, s09 DSpark, s11.
+Sections appear here as their stages finish: s09 DSpark, s11.

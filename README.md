@@ -16,7 +16,7 @@ the unpruned model: agreement with it is about 80% top-1 on held-out text, and m
 | [`REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) | Safetensors, MXFP4 experts (bit-exact subset of the source) | Public. The master every other build is made from |
 | [`REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | Thor-native layout, Q2_K/Q3_K experts, FP8 dense, 106.9 GiB | Public. Served by the CUDA server [`deepseek-v4.1-flash-cuda-server`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-cuda-server) (source also in [`cuda/`](cuda/)) |
 | [`REAP192-GGUF`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF) | GGUF level L3 for llama.cpp, 85.6 GiB in 3 splits, Engram from NVMe | Public, as a near-miss release: KL 0.508 passes (≤ 0.8), top-1 0.7725 is just under the 0.78 floor (95% CI 0.712–0.829); smoke passed. L2 failed both bars and is not published |
-| llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text and image input (mmproj), Engram row store, DSpark drafter, `thor/start.sh`. Context capped at 16,384 tokens |
+| llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text and image input (mmproj), Engram row store, DSpark drafter (confidence-gated), `thor/start.sh`. 16K default, 32K validated |
 | NVFP4 dense overlay | `overlay_nvfp4/` in `REAP192-Thor` (3.5 GiB, a separate copy; the MXFP4 master is unchanged) | Public, served by default by the CUDA server |
 
 See [`llamacpp/NEXT.md`](llamacpp/NEXT.md) for what is left on long context.
@@ -128,8 +128,9 @@ scripts/build_v41.sh v41_server && ./start.sh      # same Engram row files as ll
   after a dated owner amendment that evaluates beat-random without the multilingual bucket
   ([`DECISIONS.md`](DECISIONS.md) §1).
 - **Long context is untested for quality.** No confirm-split bin past 8k tokens was adequately sampled. The CUDA
-  engine runs a 64k prefill correctly, but retention at long context is unmeasured. llama.cpp is capped at 16,384
-  tokens until the candidate-block mask ([`llamacpp/patches-pending/`](llamacpp/patches-pending/)) passes its GPU gate.
+  engine runs a 64k prefill correctly, but retention at long context is unmeasured. llama.cpp runs 32K with the
+  candidate-block mask (`CTX=32768 thor/start.sh`; validated 2026-10-30, non-inferior to no mask), at about 15 minutes
+  per 32K-token prompt.
 - **Vision.** The llama.cpp fork serves images through the mmproj in the GGUF repository. The encoder was
   golden-tested against the reference, and end-to-end image QA was spot-checked. Image-domain quality after
   pruning has not been benchmarked. The CUDA server is text only.

@@ -1,19 +1,19 @@
-# ZENITH ledger (ops/logs/prof/ov2.sqlite)
+# ZENITH ledger (ops/logs/prof/ar8.sqlite)
 
-105 decode steps; wall 55.69 ms/step = 17.96 tok/s; BW_peak 228 GB/s
+90 decode steps; wall 48.23 ms/step = 20.73 tok/s; BW_peak 228 GB/s
 
 | family | t ms/step | MB/step | floor ms | gap ms | achieved GB/s |
 |---|---:|---:|---:|---:|---:|
-| kquant_experts | 21.18 | 3003 | 13.17 | 8.01 | 142 |
-| nvfp4_dense | 20.55 | 3672 | 16.11 | 4.45 | 179 |
-| glue | 7.58 | 200 | 0.88 | 6.70 | 26 |
-| bf16_head | 6.07 | 1324 | 5.81 | 0.27 | 218 |
-| sparse_attn | 2.23 | 25 | 0.11 | 2.12 | 11 |
-| fp8_dense | 1.42 | 315 | 1.38 | 0.03 | 223 |
-| topk_index | 0.27 | 30 | 0.13 | 0.14 | 112 |
+| nvfp4_dense | 21.38 | 3672 | 16.11 | 5.28 | 172 |
+| kquant_experts | 16.49 | 3003 | 13.17 | 3.32 | 182 |
+| glue | 6.18 | 200 | 0.88 | 5.30 | 32 |
+| bf16_head | 5.73 | 1324 | 5.81 | 0.00 | 231 |
+| sparse_attn | 2.16 | 25 | 0.11 | 2.06 | 12 |
+| fp8_dense | 1.36 | 315 | 1.38 | 0.00 | 232 |
+| topk_index | 0.26 | 30 | 0.13 | 0.12 | 117 |
 | launch/sync idle | 0.00 | | | 0.00 | |
-| **total** | **55.69** | **8568** | **37.58** | **21.71** | |
+| **total** | **48.23** | **8568** | **37.58** | **16.07** | |
 
-AR zenith at these bytes: 37.6 ms = 26.6 tok/s; today 67% of roofline.
+AR zenith at these bytes: 37.6 ms = 26.6 tok/s; today 78% of roofline.
 
-Prefill/verify (MT>1) kernel time in the trace, not in the step: kquant_experts 322 ms, nvfp4_dense 186 ms, fp8_dense 7 ms, bf16_head 1 ms
+Prefill/verify (MT>1) kernel time in the trace, not in the step: kquant_experts 122 ms, nvfp4_dense 113 ms, fp8_dense 6 ms, bf16_head 1 ms

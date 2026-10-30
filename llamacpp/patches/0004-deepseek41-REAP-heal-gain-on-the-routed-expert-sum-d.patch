@@ -1,7 +1,7 @@
 From ce1c236b6eec996f9edcbde5c286c5174bf363ee Mon Sep 17 00:00:00 2001
 From: Patrick Devaney <patrickbdevaney@gmail.com>
 Date: Wed, 21 Oct 2026 03:47:38 -0400
-Subject: [PATCH] deepseek41 : REAP heal gain on the routed-expert sum
+Subject: [PATCH 4/6] deepseek41 : REAP heal gain on the routed-expert sum
  (deepseek41.reap.routed_gain)
 
 Optional f32 array KV, one entry per decoder layer. When present, the routed MoE output

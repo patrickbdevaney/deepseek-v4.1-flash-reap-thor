@@ -1,7 +1,7 @@
-From 50467c6afd8a3174fb21469b8d3ef26e7c90a76e Mon Sep 17 00:00:00 2001
+From 3b4840473feeca6fb8c9b0ce8ee016082abaf7ae Mon Sep 17 00:00:00 2001
 From: s09 <s09@localhost>
 Date: Thu, 22 Oct 2026 16:19:22 -0400
-Subject: [PATCH] deepseek41 : export the V4.1 DSpark drafter as a dflash
+Subject: [PATCH 5/6] deepseek41 : export the V4.1 DSpark drafter as a dflash
  sidecar (--dspark)
 
 V4.1 keeps the drafter in mtp.0..2 with its own 128 routed experts (top-3), names
@@ -10,15 +10,15 @@ layers 37-39, which is llama.cpp's layer input at the same index: target_layers
 are written as configured, not as V4's layer + 1. Engram constants stay in the
 target GGUF. Routers and the confidence head are written F32 (exact from BF16).
 ---
- conversion/deepseek.py | 50 ++++++++++++++++++++++++++++++++++++++++++
+ conversion/deepseek.py | 53 ++++++++++++++++++++++++++++++++++++++++++
  convert_hf_to_gguf.py  |  8 +++----
- 2 files changed, 54 insertions(+), 4 deletions(-)
+ 2 files changed, 57 insertions(+), 4 deletions(-)
 
 diff --git a/conversion/deepseek.py b/conversion/deepseek.py
-index 33bb98fee..76e75d066 100644
+index 33bb98fee..37253f41f 100644
 --- a/conversion/deepseek.py
 +++ b/conversion/deepseek.py
-@@ -1485,3 +1485,53 @@ class DeepseekV41Model(DeepseekV4Model):
+@@ -1485,3 +1485,56 @@ class DeepseekV41Model(DeepseekV4Model):
              if tensor_name in v41_only:
                  return v41_only[tensor_name]
          return super()._map_dsv4_tensor_name(name, bid)
@@ -72,6 +72,9 @@ index 33bb98fee..76e75d066 100644
 +        self.gguf_writer.add_target_layers(list(self.hparams["dspark_target_layer_ids"]))
 +        self.gguf_writer.add_sample_from_anchor(True)
 +        self.gguf_writer.add_has_confidence_head(True)
++        # not read by this loader; written so the sidecar carries every key of the upstream (PR #30817) drafter
++        self.gguf_writer.add_feed_forward_length(self.hparams["moe_intermediate_size"])
++        self.gguf_writer.add_bool(f"{self.gguf_writer.arch}.hyper_connection.single_pass", True)
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
 index e09616b19..9645d03d7 100755
 --- a/convert_hf_to_gguf.py

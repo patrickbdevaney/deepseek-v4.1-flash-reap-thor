@@ -1,5 +1,23 @@
 {
  "sha256": "169c0bba6e27361b32eb871f03466139bab5b601a2d621d33eded05f676945b2",
  "ts": "2026-10-22T18:44:16-0400",
- "file": "/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s10_gates.json"
+ "file": "/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s10_gates.json",
+ "amendments": [
+  {
+   "from_sha256": "169c0bba6e27361b32eb871f03466139bab5b601a2d621d33eded05f676945b2",
+   "sha256": "204259f4c401037ae381ce93b3aa3372a13cf8783b034cc5626761e5c1e7addc",
+   "ts": "2026-10-24T03:58:01-04:00",
+   "by": "owner (2026-10-24, 'go with option 2')",
+   "what": "release.pruned_floor.must_beat_random_exclude_buckets = [multilingual]",
+   "after_result": true
+  },
+  {
+   "from_sha256": "204259f4c401037ae381ce93b3aa3372a13cf8783b034cc5626761e5c1e7addc",
+   "sha256": "f95b26721124c6a343f41b004b8740bfe6eb22033d77dcc260dceda039082e0a",
+   "ts": "2026-10-24T04:22:29-04:00",
+   "by": "owner (2026-10-24, 'we should still publish and use it')",
+   "what": "release.thor_quant.waived_min_top1",
+   "after_result": true
+  }
+ ]
 }

@@ -1,3 +1,4 @@
+build.sh: CMAKE_CUDA_ARCHITECTURES=110
 -- llama.cpp version: 0.4.1-dev
 CMAKE_BUILD_TYPE=Release
 -- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
@@ -17,7 +18,7 @@ CMAKE_BUILD_TYPE=Release
 -- CUDA host compiler is GNU 13.3.0
 -- Including CUDA backend
 -- ggml version: 0.24.0
--- ggml commit:  ce1c236b6
+-- ggml commit:  92031e6a4
 -- Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the system variable OPENSSL_ROOT_DIR (missing: OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR) 
 CMake Warning at vendor/cpp-httplib/CMakeLists.txt:154 (message):
   OpenSSL not found, HTTPS support disabled
@@ -28,17 +29,15 @@ CMake Warning at vendor/cpp-httplib/CMakeLists.txt:154 (message):
 -- Generating done (0.3s)
 -- Build files have been written to: /home/patrickd/deepseek-v4.1-flash-reap-thor/llamacpp/llama.cpp/build-thor
 [  1%] Building CXX object common/CMakeFiles/llama-common-base.dir/build-info.cpp.o
-[  3%] Built target vendor-hash
 [  3%] Built target cpp-httplib
+[  3%] Built target vendor-hash
 [  4%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
 [  6%] Provisioning UI assets
--- UI: downloading from b11128: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/b11128/dist.tar.gz
--- UI: download dist.tar.gz.sha256 from b11128 failed: "HTTP response code said error"
--- UI: downloading from latest: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz
+-- UI: downloading from b11130: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/b11130/dist.tar.gz
 [  6%] Linking CXX static library libllama-common-base.a
 [  6%] Built target llama-common-base
 -- UI: archive verified and extracted
--- UI: HF download succeeded, stamp updated (ggml-org/llama-ui|b11128, resolved: latest)
+-- UI: HF download succeeded, stamp updated (ggml-org/llama-ui|b11130, resolved: b11130)
 -- UI: gzip compression applied (/home/patrickd/deepseek-v4.1-flash-reap-thor/llamacpp/llama.cpp/build-thor/tools/ui/ui-gzip/_gzip)
 [  6%] Linking CXX shared library ../../bin/libggml-base.so
 [  7%] Built target ggml-base
@@ -48,72 +47,41 @@ CMake Warning at vendor/cpp-httplib/CMakeLists.txt:154 (message):
 [ 53%] Built target ggml-cuda
 [ 53%] Linking CXX shared library ../../bin/libggml.so
 [ 53%] Built target ggml
-[ 53%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_7_cxx.cxx.o
-[ 53%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_9_cxx.cxx.o
-[ 53%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_8_cxx.cxx.o
+[ 53%] Building CXX object src/CMakeFiles/llama.dir/llama-context.cpp.o
+[ 53%] Building CXX object src/CMakeFiles/llama.dir/llama.cpp.o
 -- UI: embedded 70 assets
 [ 53%] Built target llama-ui-assets
-[ 54%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_6_cxx.cxx.o
-[ 54%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_5_cxx.cxx.o
-[ 54%] Building CXX object tools/ui/CMakeFiles/llama-ui.dir/ui.cpp.o
-[ 54%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_4_cxx.cxx.o
-[ 54%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_3_cxx.cxx.o
-[ 54%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_2_cxx.cxx.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_1_cxx.cxx.o
-[ 56%] Linking CXX static library libllama-ui.a
-[ 56%] Built target llama-ui
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/Unity/unity_0_cxx.cxx.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama.cpp.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama-adapter.cpp.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama-arch.cpp.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama-batch.cpp.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama-context.cpp.o
-[ 56%] Building CXX object src/CMakeFiles/llama.dir/llama-graph.cpp.o
-[ 57%] Building CXX object src/CMakeFiles/llama.dir/llama-hparams.cpp.o
-[ 57%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache.cpp.o
-[ 57%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-iswa.cpp.o
-[ 57%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsa.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsa-iswa.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-msa.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-dsv4.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-memory.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid.cpp.o
-[ 59%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid-iswa.cpp.o
-[ 60%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid-idx.cpp.o
-[ 60%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-recurrent.cpp.o
-[ 60%] Building CXX object src/CMakeFiles/llama.dir/llama-model-loader.cpp.o
-[ 60%] Building CXX object src/CMakeFiles/llama.dir/llama-model-saver.cpp.o
-[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-model.cpp.o
-[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-quant.cpp.o
-[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-vocab.cpp.o
-[ 64%] Linking CXX shared library ../bin/libllama.so
+[ 53%] Building CXX object tools/ui/CMakeFiles/llama-ui.dir/ui.cpp.o
+[ 54%] Linking CXX shared library ../bin/libllama.so
 [ 65%] Built target llama
 [ 65%] Linking CXX shared library ../bin/libllama-common.so
 [ 65%] Linking CXX shared library ../../bin/libmtmd.so
 [ 79%] Built target mtmd
 [ 93%] Built target llama-common
 [ 96%] Built target server-context
+[ 96%] Linking CXX static library libllama-ui.a
+[ 96%] Built target llama-ui
 [ 96%] Linking CXX shared library ../../bin/libllama-server-impl.so
 [ 98%] Built target llama-server-impl
 [ 98%] Linking CXX shared library ../../bin/libllama-cli-impl.so
 [100%] Built target llama-cli-impl
 [100%] Linking CXX executable ../../bin/llama-cli
 [100%] Built target llama-cli
-[  1%] Built target llama-common-base
+[  3%] Built target llama-common-base
 [  3%] Built target vendor-hash
 [  3%] Built target cpp-httplib
 [  6%] Built target ggml-base
 [  7%] Provisioning UI assets
--- UI: HF stamp matches 'ggml-org/llama-ui|b11128', skipping HF fetch
--- UI: assets unchanged, skipping embedding
+-- UI: HF stamp matches 'ggml-org/llama-ui|b11130', skipping HF fetch
 [ 12%] Built target ggml-cpu
+-- UI: assets unchanged, skipping embedding
 [ 12%] Built target llama-ui-assets
 [ 12%] Built target llama-ui
 [ 53%] Built target ggml-cuda
 [ 53%] Built target ggml
 [ 66%] Built target llama
-[ 80%] Built target mtmd
-[ 95%] Built target llama-common
+[ 93%] Built target llama-common
+[ 95%] Built target mtmd
 [ 98%] Built target server-context
 [100%] Built target llama-server-impl
 [100%] Linking CXX executable ../../bin/llama-server

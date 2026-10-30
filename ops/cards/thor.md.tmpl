@@ -1,14 +1,70 @@
 ---
 license: mit
 base_model: {{ base.repo }}
-tags: [deepseek, moe, reap, expert-pruning, jetson-thor, cuda]
+base_model_relation: quantized
+pipeline_tag: text-generation
+language:
+  - en
+tags:
+  - deepseek
+  - deepseek-v4.1-flash
+  - moe
+  - reap
+  - expert-pruning
+  - jetson-thor
+  - cuda
+  - edge-ai
+  - engram
 ---
+
+<div align="center">
 
 # {{ artifact.name }}
 
-This is {{ base.repo }} pruned to {{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts (keep-set `{{ thor.keepset_sha256 | short }}`), in the `{{ thor_build.format }}` layout. That layout is built for one 128 GB NVIDIA Jetson Thor running a pure-CUDA decoder, with the Engram tables read from NVMe rather than held in memory.
+[![Base Model](https://img.shields.io/badge/Base_Model-DeepSeek--V4.1--Flash--1017-blue)](https://huggingface.co/{{ base.repo }})
+[![Compression](https://img.shields.io/badge/REAP--{{ artifact.n_routed | int }}-{{ artifact.n_routed | int }}%2F{{ artifact.n_routed_base | int }}_Routed_Experts_Kept-orange)](#format)
+[![Target](https://img.shields.io/badge/Hardware-Jetson_AGX_Thor-76b900)](#memory-on-the-thor)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**Pure-CUDA `{{ thor_build.format }}` build of `{{ base.repo }}` ({{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts, {{ thor_build.build_bytes | gib }} GiB) for a single NVIDIA Jetson AGX Thor with O_DIRECT NVMe Engram streaming.**
+
+| Sibling Artifact | Format | Target Hardware / Runtime |
+|---|---|---|
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4)** | Native MXFP4 + FP8 (`safetensors`) | Bit-exact {{ artifact.n_routed | int }}-expert master checkpoint |
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor)** *(this repo)* | `{{ thor_build.format }}` ({{ thor.expert_bpw | f3 }} bpw K-quant + FP8/BF16) | Single NVIDIA Jetson AGX Thor (`v41_server`) |
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-GGUF`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF)** | GGUF (`Q2_K` / `Q3_K` / `Q4_K` + `Q8_0`) | `llama.cpp` fork with DeepSeek-V4.1 MLA + Engram + mHC |
+
+</div>
+
+---
+
+This is [`{{ base.repo }}`](https://huggingface.co/{{ base.repo }}) pruned to **{{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts** (keep-set `{{ thor.keepset_sha256 | short }}`), in the `{{ thor_build.format }}` layout. That layout is built for one 128 GB NVIDIA Jetson Thor running a pure-CUDA decoder, with the Engram tables read from NVMe rather than held in memory.
 
 **Text only for now.** The vision tower and aligner are in this build unchanged, and the pruning protected the experts image tokens route to, but the CUDA server here does not run the vision tower yet: image inputs are not accepted. Vision support is planned as a server update to this repository; the weights will not change.
+
+---
+
+## ✨ Highlights
+
+- **Single-Box NVIDIA Jetson AGX Thor Fit (`{{ thor_build.resident_bytes | gib }} / {{ thor_build.budget_bytes | gib }} GiB`):** Resident footprint is **{{ thor_build.build_bytes | gib }} GiB** (`{{ thor.expert_bytes | gib }} GiB` routed experts at `{{ thor.expert_bpw | f3 }} bpw` + native FP8/BF16 dense MLA/DSA/shared-expert/router/mHC path), plus **{{ thor_build.kv1m_bytes | gib }} GiB** 1M-token context state and **{{ thor_build.workspace_bytes | gib }} GiB** decoder workspace (`{{ thor_build.fit_text }}`).
+- **Pure-CUDA Decode with O_DIRECT NVMe Engram Streaming:** {{ thor_build.speed }}.
+- **GPTQ Error-Feedback K-Quant Experts with Folded Healing Gain:** {{ thor.description }}
+
+---
+
+## 📋 Model Summary
+
+| Property | Value |
+|---|---|
+| **Base Model** | [`{{ base.repo }}`](https://huggingface.co/{{ base.repo }}) (`{{ base.revision }}`) |
+| **Layout / Format** | `{{ thor_build.format }}` (`thor.json` manifest with SHA256 hashes for every shard) |
+| **Routed Experts** | {{ artifact.n_routed | int }} / {{ artifact.n_routed_base | int }} per layer (`reap_keepset.json`, `{{ thor.keepset_sha256 | short }}`), {{ thor.expert_bpw | f3 }} bpw, **{{ thor.expert_bytes | gib }} GiB** |
+| **Total Build Size** | **{{ thor_build.build_bytes | gib }} GiB** resident (**{{ thor_build.resident_bytes | gib }} GiB** total with {{ thor_build.kv1m_bytes | gib }} GiB 1M-ctx state + {{ thor_build.workspace_bytes | gib }} GiB workspace) |
+| **Measured Decode Speed** | {{ thor_build.speed }} |
+| **Release Gate** | {{ gates.thor }} |
+| **License** | MIT |
+
+---
 
 ## Format
 
@@ -17,6 +73,8 @@ This is {{ base.repo }} pruned to {{ artifact.n_routed | int }} of {{ artifact.n
 - **Experts:** {{ thor.expert_bpw | f3 }} bits per weight on average, {{ thor.expert_bytes | gib }} GiB in total.
 - **Whole build:** {{ thor_build.build_bytes | gib }} GiB (`thor.json` lists every file with its sha256). The dense path (attention, indexer, compressor, shared expert, router, hyper-connections) is the base checkpoint's own FP8/BF16 tensors. The vision tower and aligner are unpruned. The checkpoint's own speculative-decoding (`mtp`) blocks are included unmodified.
 - **Keep-set:** `reap_keepset.json` lists, per layer, the routed experts that were kept, in their original ids. The router rows and biases were sliced to the same ids.
+
+---
 
 ## Memory on the Thor
 
@@ -30,6 +88,8 @@ This is {{ base.repo }} pruned to {{ artifact.n_routed | int }} of {{ artifact.n
 The context-state figure is {{ thor_build.kv_src }}. The Engram tables are not in memory: they are read per token from row files on NVMe (below).
 
 **Decode speed:** {{ thor_build.speed }}.
+
+---
 
 {{ include:_common_eval }}
 
@@ -45,6 +105,8 @@ By domain:
 
 **Release gate:** {{ gates.thor }}. The repository is public only if the pre-registered gate for this arm passed and the build fits the budget above.
 
+---
+
 ## How to run it
 
 {{ thor_build.runtime_note }}
@@ -53,13 +115,17 @@ By domain:
 2. Build the Engram row files from those two shards (`ops/s09_engram_rowfile.py build`, then `verify --full`). The row files are about the size of the two shards and must sit on a local NVMe drive: they are read with O_DIRECT for every token.
 3. Start the server:
 
-```
+```bash
 v41_server --ckpt <this repo> --keepset <this repo>/reap_keepset.json --engram <row-file dir> --host 127.0.0.1 --port 18108
 ```
 
 It serves an OpenAI-style `/v1/chat/completions` (streaming and tool calls, with the model's own chat encoding) and `/health`.
 
+---
+
 {{ include:_spec }}
+
+---
 
 ## Engram tables (required, not included)
 

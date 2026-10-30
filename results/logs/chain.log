@@ -199,3 +199,854 @@ built CPU gates
 [2026-10-22T22:02:46-04:00] done s07nvfp4
 [2026-10-22T22:02:51-04:00] reclaim after s07nvfp4: MemAvailable 112 GiB
 [2026-10-22T22:42:22-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-22T23:07:45-04:00] reclaim after s07plan: MemAvailable 112 GiB
+[2026-10-23T17:27:48-04:00] done s07thor
+[2026-10-23T17:28:04-04:00] reclaim after s07thor: MemAvailable 112 GiB
+[2026-10-23T17:33:02-04:00] done s07overlay
+[2026-10-23T17:33:08-04:00] reclaim after s07overlay: MemAvailable 110 GiB
+[2026-10-23T17:34:12-04:00] STOP: s10 final panel failed
+[2026-10-23T17:37:27-04:00] chain2 chain.STOP appeared while waiting: 2026-10-23T17:34:12-04:00 s10 final panel failed
+[2026-10-23T17:40:57-04:00] watchdog needs the owner: STOP (not retryable): s10 final panel failed [s10_final.log tail: [2026-10-23T17:34:12-0400] INFO  s10              reclaim: MemAvailable 111.1 GiB / [2026-10-23T17:34:12-0400] INFO  s10              done unit embed --panel final --kernels tilelang --token-chunk 8192 in / disk: 48 GiB free cannot hold one 8.1 GiB stream plus the 60 GiB margin]
+[2026-10-23T17:41:58-04:00] manual retry after freeing NVMe (dead _embed caches dropped, s03/taps parked verified on the Seagate): s10 final
+[2026-10-23T17:41:58-04:00] chain start
+[2026-10-23T17:41:58-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-24T03:50:23-04:00] done s10final
+[2026-10-24T03:50:28-04:00] reclaim after s10final: MemAvailable 111 GiB
+[2026-10-24T03:58:08-04:00] owner amendment (beat-random excludes multilingual): re-analysing s10 final from cached outputs
+[2026-10-24T04:11:02-04:00] manual retry after owner amendment (s10 final re-analysed: mxfp4_master PASS, thor FAIL): s12
+[2026-10-24T04:11:02-04:00] chain start
+[2026-10-24T04:11:02-04:00] chain2 chain2 start (waiting for chain.sh to finish)
+[2026-10-24T04:22:44-04:00] owner waiver of thorA top-1 floor; s10 final re-analysed: thor PASS (published by chain2 after the s08 serving gates)
+[2026-10-24T04:46:15-04:00] chain2 restructured (owner 2026-10-24): starts on s10 decision, overlay release, trellis last
+[2026-10-24T04:46:15-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T04:46:15-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T04:46:15-04:00] chain2 done stale_cache
+[2026-10-24T04:46:15-04:00] chain2 dropped dead replay stream /home/patrickd/models/v41-work/s10/final/replay/_embed
+[2026-10-24T04:46:15-04:00] chain2 done drop_embeds
+[2026-10-24T04:46:36-04:00] s09 done build
+[2026-10-24T04:46:36-04:00] chain2 done s09_build_
+[2026-10-24T04:53:58-04:00] s09 reclaim after backend_ops: MemAvailable 110 GiB
+[2026-10-24T04:53:58-04:00] s09 done backend_ops
+[2026-10-24T04:54:04-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 110 GiB
+built build/v41_decode
+built build/v41_server
+built build/gate_v41_units
+built build/libkt_viterbi.so
+built build/gate_v41_golden
+built build/gemv_format_bench
+built CPU gates
+[2026-10-24T04:56:03-04:00] s08 done build
+[2026-10-24T04:56:10-04:00] chain2 reclaim after soft s08_build: MemAvailable 110 GiB
+[2026-10-24T04:56:10-04:00] chain2 done soft_s08_build
+[2026-10-24T04:56:14-04:00] s08 done cpu_gates
+[2026-10-24T04:56:19-04:00] chain2 reclaim after soft s08_cpu_gates: MemAvailable 110 GiB
+[2026-10-24T04:56:19-04:00] chain2 done soft_s08_cpu_gates
+[2026-10-24T04:56:19-04:00] s08 start units: cuda/build/gate_v41_units cuda/build/units
+Gate V41 UNITS (cuda/build/units)
+  [PASS] decode Q2_K                        0 / 147456 weights differ
+  [PASS] decode Q3_K                        0 / 147456 weights differ
+  [PASS] decode Q4_K                        0 / 147456 weights differ
+  [PASS] decode MXFP4 (hw cvt e2m1x2)       0 / 147456 weights differ
+  [PASS] decode MXFP4 (bit construct)       0 / 147456 weights differ
+  [PASS] decode KT2 (trellis, L=12)         0 / 147456 weights differ
+  [PASS] decode KT3 (trellis, L=12)         0 / 147456 weights differ
+  [PASS] KT rotation K=5120                 0 / 15360 values differ
+  [PASS] KT rotation K=2304                 0 / 6912 values differ
+  [PASS] KT Viterbi encoder b=2             rc 0, 0 windows in 0 / 192 sequences differ
+  [PASS] KT Viterbi encoder b=3             rc 0, 0 windows in 0 / 192 sequences differ
+  [PASS] act_quant (32, ue8m0)              0 byte / 0 scale mismatches
+  [PASS] fp8_linear                         0 off by 1 ulp, 0 by more (of 768)
+  [PASS] bf16_linear                        0 off by 1 ulp, 0 by more (of 1024)
+  [PASS] router (sqrtsoftplus, bias_vl)     0 id mismatches, max weight rel err 7.48e-07
+  [PASS] moe_routed Q3_K/Q4_K, 8 experts    cos 0.99999999, max |d| 0.00781
+  [PASS] moe_routed KT3/KT2 (rotated), 6 experts cos 0.99999989, max |d| 0.00781
+Gate V41 UNITS: PASS (0 failing)
+[2026-10-24T04:56:25-04:00] s08 reclaim after units: MemAvailable 110 GiB
+[2026-10-24T04:56:25-04:00] s08 done units
+[2026-10-24T04:56:31-04:00] chain2 reclaim after soft s08_units: MemAvailable 110 GiB
+[2026-10-24T04:56:31-04:00] chain2 done soft_s08_units
+[2026-10-24T04:56:31-04:00] s08 start gemv_bench: cuda/build/gemv_format_bench --mib 1536 --iters 20 --json /home/patrickd/models/v41-work/s08/gemv_bench.json
+MXFP4 hw       gate|up       1     0.5312    176.1   76.7%     331.52
+MXFP4 hw       down          1     0.5312    152.5   66.4%     287.05
+MXFP4 sw       gate|up       1     0.5312     84.7   36.9%     159.41
+MXFP4 sw       down          1     0.5312     68.6   29.9%     129.17
+Q4_K           gate|up       1     0.5625    147.0   64.0%     261.35
+Q4_K           down          1     0.5625    114.2   49.7%     203.01
+Q3_K           gate|up       1     0.4297     77.6   33.8%     180.68
+Q3_K           down          1     0.4297     63.2   27.5%     147.00
+Q2_K           gate|up       1     0.3281     83.9   36.5%     255.62
+Q2_K           down          1     0.3281     67.0   29.2%     204.08
+LUT-3 (prop.)  gate|up       1     0.4062    102.8   44.7%     253.04
+LUT-3 (prop.)  down          1     0.4062     82.4   35.9%     202.80
+LUT-2 (prop.)  gate|up       1     0.2812     97.0   42.2%     344.90
+LUT-2 (prop.)  down          1     0.2812     75.1   32.7%     267.09
+KT3            gate|up       1     0.3906     88.0   38.3%     225.16
+KT3            down          1     0.3906     70.4   30.6%     180.11
+KT2            gate|up       1     0.2656     60.5   26.3%     227.80
+KT2            down          1     0.2656     48.4   21.1%     182.30
+
+FP8 (dense)    gate|up       4     1.0010    165.0   71.8%     164.89
+FP8 (dense)    down          4     1.0010    116.4   50.7%     116.29
+MXFP4 hw       gate|up       4     0.5312     94.2   41.0%     177.37
+MXFP4 hw       down          4     0.5312     68.0   29.6%     128.02
+MXFP4 sw       gate|up       4     0.5312     65.4   28.5%     123.06
+MXFP4 sw       down          4     0.5312     55.3   24.1%     104.16
+Q4_K           gate|up       4     0.5625     85.9   37.4%     152.72
+Q4_K           down          4     0.5625     62.9   27.4%     111.76
+Q3_K           gate|up       4     0.4297     49.5   21.5%     115.11
+Q3_K           down          4     0.4297     39.7   17.3%      92.46
+Q2_K           gate|up       4     0.3281     52.5   22.9%     159.98
+Q2_K           down          4     0.3281     40.7   17.7%     123.99
+LUT-3 (prop.)  gate|up       4     0.4062     58.9   25.6%     145.03
+LUT-3 (prop.)  down          4     0.4062     45.4   19.8%     111.70
+LUT-2 (prop.)  gate|up       4     0.2812     42.6   18.5%     151.40
+LUT-2 (prop.)  down          4     0.2812     32.7   14.3%     116.42
+KT3            gate|up       4     0.3906     57.9   25.2%     148.34
+KT3            down          4     0.3906     46.5   20.3%     119.17
+KT2            gate|up       4     0.2656     39.9   17.4%     150.08
+KT2            down          4     0.2656     32.3   14.1%     121.73
+
+[2026-10-24T04:56:38-04:00] s08 reclaim after gemv_bench: MemAvailable 110 GiB
+[2026-10-24T04:56:38-04:00] s08 done gemv_bench
+[2026-10-24T04:56:44-04:00] chain2 reclaim after soft s08_gemv: MemAvailable 110 GiB
+[2026-10-24T04:56:44-04:00] chain2 done soft_s08_gemv
+[2026-10-24T04:56:44-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T04:56:45-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] L0 43s
+[golden] L1 47s
+[golden] L2 38s
+[golden] L3 36s
+[golden] L4 36s
+[golden] L5 37s
+[golden] L6 35s
+[golden] L7 36s
+Traceback (most recent call last):
+  File "/home/patrickd/deepseek-v4.1-flash-reap-thor/cuda/tests/golden/ref_dump.py", line 206, in <module>
+    main()
+  File "/home/patrickd/deepseek-v4.1-flash-reap-thor/cuda/tests/golden/ref_dump.py", line 123, in main
+    memfence.require(12.0, f"golden L{L}")
+  File "/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/memfence.py", line 54, in require
+    raise MemFence(
+ops.lib.memfence.MemFence: golden L8: needs 12.0 GiB, only 29.4 GiB available, reserve is 18.0 GiB -> would leave 17.4 GiB. Refusing.
+[2026-10-24T05:26:53-04:00] s08 FAIL: ref_dump src
+[2026-10-24T05:27:05-04:00] chain2 reclaim after soft golden_ref_src: MemAvailable 110 GiB
+[2026-10-24T05:27:05-04:00] chain2 SOFT FAIL golden_ref_src (rc=1): s08 golden_ref src -- the release path continues
+[2026-10-24T05:27:06-04:00] chain2 df ok for move the source backbone: 1684 GiB free on /media/patrickd/Seagate Portable Drive (need 298)
+[2026-10-24T05:28:10-04:00] done s12
+[2026-10-24T05:28:10-04:00] chain reached the end of implemented stages (s08 CUDA server / s09 GGUF are owned elsewhere; re-run s12 after s09)
+[2026-10-24T06:38:50-04:00] manual retry: golden_ref src fixed (a673bc6, per-process carry); chain2 restarted (backbone move resumes after the golden gates)
+[2026-10-24T06:38:50-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T06:38:50-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T06:39:33-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T06:39:33-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T06:39:33-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] L0 143s
+[golden] L1 150s
+[golden] L2 147s
+[golden] L3 143s
+[golden] L4 143s
+[golden] carried state saved after L4; re-run to continue
+[2026-10-24T07:03:06-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:03:06-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L5 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L5 148s
+[golden] L6 148s
+[golden] L7 142s
+[golden] L8 147s
+[golden] L9 143s
+[golden] carried state saved after L9; re-run to continue
+[2026-10-24T07:15:38-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:15:38-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L10 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L10 145s
+[golden] L11 145s
+[golden] L12 145s
+[golden] L13 144s
+[golden] L14 151s
+[golden] carried state saved after L14; re-run to continue
+[2026-10-24T07:28:13-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:28:13-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L15 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L15 149s
+[golden] L16 32s
+[golden] L17 34s
+[golden] L18 34s
+[golden] L19 39s
+[golden] carried state saved after L19; re-run to continue
+[2026-10-24T07:33:25-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:33:25-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L20 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L20 33s
+[golden] L21 33s
+[golden] L22 32s
+[golden] L23 35s
+[golden] L24 32s
+[golden] carried state saved after L24; re-run to continue
+[2026-10-24T07:36:32-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:36:32-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L25 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L25 33s
+[golden] L26 32s
+[golden] L27 33s
+[golden] L28 34s
+[golden] L29 33s
+[golden] carried state saved after L29; re-run to continue
+[2026-10-24T07:39:40-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:39:40-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L30 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L30 35s
+[golden] L31 34s
+[golden] L32 35s
+[golden] L33 34s
+[golden] L34 34s
+[golden] carried state saved after L34; re-run to continue
+[2026-10-24T07:42:54-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:42:54-04:00] s08 start golden_ref_src: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/src --long --layers-per-proc 5
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L35 from /home/patrickd/models/v41-work/golden/src/_carry.pt
+[golden] L35 36s
+[golden] L36 35s
+[golden] L37 34s
+[golden] L38 34s
+[golden] L39 35s
+[golden] done -> /home/patrickd/models/v41-work/golden/src
+[2026-10-24T07:46:09-04:00] s08 reclaim after golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:46:09-04:00] s08 done golden_ref_src
+[2026-10-24T07:46:14-04:00] chain2 reclaim after soft golden_ref_src: MemAvailable 111 GiB
+[2026-10-24T07:46:14-04:00] chain2 done soft_golden_ref_src
+[2026-10-24T07:46:15-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+cudaMemcpyAsync(s.d_pos, pos.data(), M * 4, cudaMemcpyHostToDevice, st): an illegal memory access was encountered
+Gate V41 GOLDEN: /home/patrickd/models/DeepSeek-V4.1-Flash-1017 vs /home/patrickd/models/v41-work/golden/src, layers 0..39, chunk 128
+[2026-10-24T07:48:24-04:00] s08 FAIL: golden src
+[2026-10-24T07:48:29-04:00] chain2 reclaim after soft golden_src: MemAvailable 111 GiB
+[2026-10-24T07:48:29-04:00] chain2 SOFT FAIL golden_src (rc=1): s08 golden src -- the release path continues
+[2026-10-24T07:48:30-04:00] chain2 df ok for move the source backbone: 1568 GiB free on /media/patrickd/Seagate Portable Drive (need 186)
+[2026-10-24T08:30:36-04:00] manual: golden_src retry after b8035a0 (State copy + Engram offset-table fixes, gate criterion revised)
+[2026-10-24T08:30:36-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T08:30:36-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T08:32:42-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T08:32:42-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T08:32:42-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+      worst pos isolated 19847 chained 19605; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L30 chat     isolated min 0.999982 mean 0.999997 | chained min 0.979616 mean 0.990612
+  L30 doc1k    isolated min 0.998741 mean 0.999909 | chained min 0.263533 mean 0.965555
+  L30 long20k  isolated min 0.986743 mean 0.999595 | chained min 0.361387 mean 0.922437
+  L31 chat     isolated min 0.999987 mean 0.999998 | chained min 0.979314 mean 0.990347
+  L31 doc1k    isolated min 0.997889 mean 0.999806 | chained min 0.225765 mean 0.963845
+  L31 long20k  isolated min 0.968788 mean 0.998510 | chained min 0.339150 mean 0.926544   <-- FAIL
+      worst pos isolated 19560 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L32 chat     isolated min 0.999990 mean 0.999999 | chained min 0.979020 mean 0.989763
+  L32 doc1k    isolated min 0.995469 mean 0.999778 | chained min 0.240828 mean 0.961964
+  L32 long20k  isolated min 0.966641 mean 0.999256 | chained min 0.313730 mean 0.929185   <-- FAIL
+      worst pos isolated 19562 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L33 chat     isolated min 0.999988 mean 0.999999 | chained min 0.980204 mean 0.989944
+  L33 doc1k    isolated min 0.997261 mean 0.999784 | chained min 0.226855 mean 0.961060
+  L33 long20k  isolated min 0.957233 mean 0.999414 | chained min 0.284450 mean 0.931092   <-- FAIL
+      worst pos isolated 20185 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L34 chat     isolated min 0.999983 mean 0.999996 | chained min 0.980156 mean 0.989958
+  L34 doc1k    isolated min 0.996699 mean 0.999547 | chained min 0.242978 mean 0.958951
+  L34 long20k  isolated min 0.986428 mean 0.998277 | chained min 0.276209 mean 0.933138   <-- FAIL
+      worst pos isolated 19563 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L35 chat     isolated min 0.999988 mean 0.999997 | chained min 0.978549 mean 0.989894
+  L35 doc1k    isolated min 0.990946 mean 0.999724 | chained min 0.332387 mean 0.962422
+  L35 long20k  isolated min 0.989298 mean 0.999033 | chained min 0.370731 mean 0.945921
+  L36 chat     isolated min 0.999987 mean 0.999999 | chained min 0.976792 mean 0.988940
+  L36 doc1k    isolated min 0.994761 mean 0.999719 | chained min 0.072768 mean 0.965979
+  L36 long20k  isolated min 0.993865 mean 0.999396 | chained min 0.579254 mean 0.960785
+  L37 chat     isolated min 0.999898 mean 0.999982 | chained min 0.973355 mean 0.987703
+  L37 doc1k    isolated min 0.997436 mean 0.999734 | chained min 0.101738 mean 0.968080
+  L37 long20k  isolated min 0.989605 mean 0.999161 | chained min 0.692471 mean 0.967747
+  L38 chat     isolated min 0.999987 mean 0.999997 | chained min 0.970778 mean 0.987059
+  L38 doc1k    isolated min 0.995885 mean 0.999816 | chained min -0.119145 mean 0.970821
+  L38 long20k  isolated min 0.986120 mean 0.999467 | chained min 0.762235 mean 0.976856
+  L39 chat     isolated min 0.999989 mean 0.999999 | chained min 0.970825 mean 0.989523
+  L39 doc1k    isolated min 0.835327 mean 0.999293 | chained min 0.033022 mean 0.965793   <-- FAIL
+      worst pos isolated 893 chained 1061; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L39 long20k  isolated min 0.996016 mean 0.999625 | chained min 0.833217 mean 0.982798
+  chat     chained final mean cos 0.989523, teacher-forced argmax agreement 0.0000 (0/14)   <-- FAIL
+  doc1k    chained final mean cos 0.965793, teacher-forced argmax agreement 0.0098 (10/1024)   <-- FAIL
+  long20k  chained final mean cos 0.982798, teacher-forced argmax agreement 0.0029 (3/1024)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-24T10:14:17-04:00] s08 FAIL: golden src
+[2026-10-24T10:14:35-04:00] chain2 reclaim after soft golden_src: MemAvailable 111 GiB
+[2026-10-24T10:14:35-04:00] chain2 SOFT FAIL golden_src (rc=1): s08 golden src -- the release path continues
+[2026-10-24T10:14:35-04:00] chain2 df ok for move the source backbone: 1429 GiB free on /media/patrickd/Seagate Portable Drive (need 48)
+[2026-10-24T10:19:31-04:00] manual: golden_src retry after 27ece31 (head-path stream race in the gate)
+[2026-10-24T10:19:31-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T10:19:31-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T10:20:51-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T10:20:51-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T10:20:52-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+      worst pos isolated 19847 chained 19605; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L30 chat     isolated min 0.999982 mean 0.999997 | chained min 0.979616 mean 0.990612
+  L30 doc1k    isolated min 0.998741 mean 0.999909 | chained min 0.263533 mean 0.965555
+  L30 long20k  isolated min 0.986743 mean 0.999595 | chained min 0.361387 mean 0.922437
+  L31 chat     isolated min 0.999987 mean 0.999998 | chained min 0.979314 mean 0.990347
+  L31 doc1k    isolated min 0.997889 mean 0.999806 | chained min 0.225765 mean 0.963845
+  L31 long20k  isolated min 0.968788 mean 0.998510 | chained min 0.339150 mean 0.926544   <-- FAIL
+      worst pos isolated 19560 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L32 chat     isolated min 0.999990 mean 0.999999 | chained min 0.979020 mean 0.989763
+  L32 doc1k    isolated min 0.995469 mean 0.999778 | chained min 0.240828 mean 0.961964
+  L32 long20k  isolated min 0.966641 mean 0.999256 | chained min 0.313730 mean 0.929185   <-- FAIL
+      worst pos isolated 19562 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L33 chat     isolated min 0.999988 mean 0.999999 | chained min 0.980204 mean 0.989944
+  L33 doc1k    isolated min 0.997261 mean 0.999784 | chained min 0.226855 mean 0.961060
+  L33 long20k  isolated min 0.957233 mean 0.999414 | chained min 0.284450 mean 0.931092   <-- FAIL
+      worst pos isolated 20185 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L34 chat     isolated min 0.999983 mean 0.999996 | chained min 0.980156 mean 0.989958
+  L34 doc1k    isolated min 0.996699 mean 0.999547 | chained min 0.242978 mean 0.958951
+  L34 long20k  isolated min 0.986428 mean 0.998277 | chained min 0.276209 mean 0.933138   <-- FAIL
+      worst pos isolated 19563 chained 19634; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L35 chat     isolated min 0.999988 mean 0.999997 | chained min 0.978549 mean 0.989894
+  L35 doc1k    isolated min 0.990946 mean 0.999724 | chained min 0.332387 mean 0.962422
+  L35 long20k  isolated min 0.989298 mean 0.999033 | chained min 0.370731 mean 0.945921
+  L36 chat     isolated min 0.999987 mean 0.999999 | chained min 0.976792 mean 0.988940
+  L36 doc1k    isolated min 0.994761 mean 0.999719 | chained min 0.072768 mean 0.965979
+  L36 long20k  isolated min 0.993865 mean 0.999396 | chained min 0.579254 mean 0.960785
+  L37 chat     isolated min 0.999898 mean 0.999982 | chained min 0.973355 mean 0.987703
+  L37 doc1k    isolated min 0.997436 mean 0.999734 | chained min 0.101738 mean 0.968080
+  L37 long20k  isolated min 0.989605 mean 0.999161 | chained min 0.692471 mean 0.967747
+  L38 chat     isolated min 0.999987 mean 0.999997 | chained min 0.970778 mean 0.987059
+  L38 doc1k    isolated min 0.995885 mean 0.999816 | chained min -0.119145 mean 0.970821
+  L38 long20k  isolated min 0.986120 mean 0.999467 | chained min 0.762235 mean 0.976856
+  L39 chat     isolated min 0.999989 mean 0.999999 | chained min 0.970825 mean 0.989523
+  L39 doc1k    isolated min 0.835327 mean 0.999293 | chained min 0.033022 mean 0.965793   <-- FAIL
+      worst pos isolated 893 chained 1061; non-finite rows isolated 0 chained 0 (min -2 = non-finite)
+  L39 long20k  isolated min 0.996016 mean 0.999625 | chained min 0.833217 mean 0.982798
+  chat     chained final mean cos 0.989523, teacher-forced argmax agreement 0.8571 (12/14)   <-- FAIL
+  doc1k    chained final mean cos 0.965793, teacher-forced argmax agreement 0.9609 (984/1024)   <-- FAIL
+  long20k  chained final mean cos 0.982798, teacher-forced argmax agreement 1.0000 (1024/1024)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-24T12:06:22-04:00] s08 FAIL: golden src
+[2026-10-24T12:06:41-04:00] chain2 reclaim after soft golden_src: MemAvailable 111 GiB
+[2026-10-24T12:06:41-04:00] chain2 SOFT FAIL golden_src (rc=1): s08 golden src -- the release path continues
+[2026-10-24T12:06:42-04:00] chain2 df ok for move the source backbone: 1413 GiB free on /media/patrickd/Seagate Portable Drive (need 34)
+[2026-10-24T12:10:14-04:00] manual: golden_src retry after 1c54996 (end-to-end near-tie criterion)
+[2026-10-24T12:10:15-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T12:10:15-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T12:10:50-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T12:10:50-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T12:10:50-04:00] s08 start golden_src: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/DeepSeek-V4.1-Flash-1017 --ref /home/patrickd/models/v41-work/golden/src
+  L28 doc1k    isolated min 0.993679 mean 0.999814 | chained min 0.326425 mean 0.968409
+  L28 long20k  isolated min 0.991788 mean 0.998835 | chained min 0.359594 mean 0.921127
+  L29 chat     isolated min 0.999986 mean 0.999998 | chained min 0.980155 mean 0.990865
+  L29 doc1k    isolated min 0.996475 mean 0.999875 | chained min 0.263615 mean 0.966668
+  L29 long20k  isolated min 0.890180 mean 0.999302 | chained min 0.364796 mean 0.919797
+  L30 chat     isolated min 0.999982 mean 0.999997 | chained min 0.979616 mean 0.990612
+  L30 doc1k    isolated min 0.998741 mean 0.999909 | chained min 0.263533 mean 0.965555
+  L30 long20k  isolated min 0.986743 mean 0.999595 | chained min 0.361387 mean 0.922437
+  L31 chat     isolated min 0.999987 mean 0.999998 | chained min 0.979314 mean 0.990347
+  L31 doc1k    isolated min 0.997889 mean 0.999806 | chained min 0.225765 mean 0.963845
+  L31 long20k  isolated min 0.968788 mean 0.998510 | chained min 0.339150 mean 0.926544
+  L32 chat     isolated min 0.999990 mean 0.999999 | chained min 0.979020 mean 0.989763
+  L32 doc1k    isolated min 0.995469 mean 0.999778 | chained min 0.240828 mean 0.961964
+  L32 long20k  isolated min 0.966641 mean 0.999256 | chained min 0.313730 mean 0.929185
+  L33 chat     isolated min 0.999988 mean 0.999999 | chained min 0.980204 mean 0.989944
+  L33 doc1k    isolated min 0.997261 mean 0.999784 | chained min 0.226855 mean 0.961060
+  L33 long20k  isolated min 0.957233 mean 0.999414 | chained min 0.284450 mean 0.931092
+  L34 chat     isolated min 0.999983 mean 0.999996 | chained min 0.980156 mean 0.989958
+  L34 doc1k    isolated min 0.996699 mean 0.999547 | chained min 0.242978 mean 0.958951
+  L34 long20k  isolated min 0.986428 mean 0.998277 | chained min 0.276209 mean 0.933138
+  L35 chat     isolated min 0.999988 mean 0.999997 | chained min 0.978549 mean 0.989894
+  L35 doc1k    isolated min 0.990946 mean 0.999724 | chained min 0.332387 mean 0.962422
+  L35 long20k  isolated min 0.989298 mean 0.999033 | chained min 0.370731 mean 0.945921
+  L36 chat     isolated min 0.999987 mean 0.999999 | chained min 0.976792 mean 0.988940
+  L36 doc1k    isolated min 0.994761 mean 0.999719 | chained min 0.072768 mean 0.965979
+  L36 long20k  isolated min 0.993865 mean 0.999396 | chained min 0.579254 mean 0.960785
+  L37 chat     isolated min 0.999898 mean 0.999982 | chained min 0.973355 mean 0.987703
+  L37 doc1k    isolated min 0.997436 mean 0.999734 | chained min 0.101738 mean 0.968080
+  L37 long20k  isolated min 0.989605 mean 0.999161 | chained min 0.692471 mean 0.967747
+  L38 chat     isolated min 0.999987 mean 0.999997 | chained min 0.970778 mean 0.987059
+  L38 doc1k    isolated min 0.995885 mean 0.999816 | chained min -0.119145 mean 0.970821
+  L38 long20k  isolated min 0.986120 mean 0.999467 | chained min 0.762235 mean 0.976856
+  L39 chat     isolated min 0.999989 mean 0.999999 | chained min 0.970825 mean 0.989523
+  L39 doc1k    isolated min 0.835327 mean 0.999293 | chained min 0.033022 mean 0.965793
+  L39 long20k  isolated min 0.996016 mean 0.999625 | chained min 0.833217 mean 0.982798
+  chat     chained final mean cos 0.989523, teacher-forced argmax agreement 0.8571 (12/14); disagreements 2, near-ties 2, logit gap median 0.045 max 0.045
+  doc1k    chained final mean cos 0.965793, teacher-forced argmax agreement 0.9619 (985/1024); disagreements 39, near-ties 31, logit gap median 0.129 max 19.971
+  long20k  chained final mean cos 0.982798, teacher-forced argmax agreement 1.0000 (1024/1024); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+  pooled   41 disagreements, 33 near-ties (rank <= 3, gap <= 1.0)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-24T13:58:18-04:00] s08 FAIL: golden src
+[2026-10-24T13:58:37-04:00] chain2 reclaim after soft golden_src: MemAvailable 111 GiB
+[2026-10-24T13:58:37-04:00] chain2 SOFT FAIL golden_src (rc=1): s08 golden src -- the release path continues
+[2026-10-24T13:58:37-04:00] chain2 df ok for move the source backbone: 1407 GiB free on /media/patrickd/Seagate Portable Drive (need 28)
+[2026-10-24T14:00:15-04:00] chain2 backbone on the Seagate: 8 GiB freed on NVMe
+[2026-10-24T14:00:15-04:00] chain2 done move_backbone
+[2026-10-24T14:00:16-04:00] chain2 done master
+[2026-10-24T14:00:16-04:00] chain2 df ok for s09 source GGUF (~152 GiB): 359 GiB free on / (need 170)
+heal gains (s07 heal_decision): 0 of 40 layers != 1.0 -> /home/patrickd/models/v41-work/s09/src/heal_gains.json
+[2026-10-24T14:00:38-04:00] s09 FAIL: convert (keep-set errors are fatal by design; see ops/logs/s09_convert.log)
+[2026-10-24T14:00:38-04:00] chain2 STOP: s09 convert
+[2026-10-24T14:11:48-04:00] watchdog needs the owner: STOP (not retryable): chain2: s09 convert [FAIL line: convert (keep-set errors are fatal by design; see ops/logs/s09_convert.log)] [s09_convert.log tail: dropped = [n for n in self.model_tensors if ".engram.embed." in n] / ^^^^^^^^^^^^^^^^^^ / AttributeError: 'DeepseekV41Model' object has no attribute 'model_tensors'. Did you mean: 'index_tensors'?]
+[2026-10-24T14:12:11-04:00] manual: convert fixed (bbafd12), chain2 restarted; golden_src soft-fail stands (33/41 near-ties < 90%), CUDA path off this run
+[2026-10-24T14:12:11-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T14:12:11-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T14:12:23-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T14:12:23-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T14:12:23-04:00] chain2 df ok for s09 source GGUF (~152 GiB): 359 GiB free on / (need 170)
+heal gains (s07 heal_decision): 0 of 40 layers != 1.0 -> /home/patrickd/models/v41-work/s09/src/heal_gains.json
+[2026-10-24T15:38:07-04:00] s09 FAIL: convert (keep-set errors are fatal by design; see ops/logs/s09_convert.log)
+[2026-10-24T15:38:07-04:00] chain2 STOP: s09 convert
+[2026-10-24T15:55:30-04:00] manual: convert temp-file spill (commit c37f3a2); chain2 restarted for the CPU-only convert; GPU wedged since 15:35, GPU steps refuse until a reboot
+[2026-10-24T15:55:30-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T15:55:31-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T15:55:34-04:00] chain2 STOP: GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)
+[2026-10-24T15:56:33-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T15:56:33-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T15:56:40-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 111 GiB
+[2026-10-24T15:56:41-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T15:56:41-04:00] chain2 df ok for s09 source GGUF (~152 GiB) + its temp spill: 359 GiB free on / (need 320)
+heal gains (s07 heal_decision): 0 of 40 layers != 1.0 -> /home/patrickd/models/v41-work/s09/src/heal_gains.json
+[2026-10-24T17:59:01-04:00] s09 reclaim after convert: MemAvailable 112 GiB
+[2026-10-24T17:59:01-04:00] s09 done convert
+[2026-10-24T17:59:06-04:00] chain2 reclaim after s09 convert: MemAvailable 112 GiB
+[2026-10-24T17:59:06-04:00] chain2 STOP: GPU unavailable: nvidia-smi cannot see the device (driver wedged; needs a reboot)
+[2026-10-24T17:59:22-04:00] manual: rebooting to recover the wedged GPU (owner OK 2026-10-24); golden doc1k diagnostic runs at boot, then releases chain2
+[2026-10-24T18:06:16-04:00] watchdog needs the owner: STOP (not retryable): hold: golden doc1k diagnostic (ops/diag_golden_doc1k.sh); released by that script [s09_convert.log tail: gguf.gguf_writer: Writing the following files: / gguf.gguf_writer: /home/patrickd/models/v41-work/s09/src/V4.1-1017-REAP192-src.gguf: n_tensors = 1044, total_size = 161. / hf-to-gguf: Model successfully exported to /home/patrickd/models/v41-work/s09/src/V4.1-1017-REAP192-src.gguf]
+[2026-10-24T19:24:36-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-24T19:24:36-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-24T19:24:41-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-24T19:24:41-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-24T19:24:44-04:00] s09 done imatrix
+[2026-10-24T19:24:44-04:00] chain2 df ok for quant L2: 1405 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T00:42:02-04:00] s09 FAIL: quant L2
+[2026-10-25T00:42:02-04:00] chain2 STOP: s09 quant L2
+[2026-10-25T00:42:21-04:00] rejoin: chain2 stopped before quant L2 finished; not touching it
+[2026-10-25T00:43:08-04:00] manual: s09 verify fixed (sinks F32 by design; quant ledger done, no re-quantize); chain2 restarted with golden_src amended -> CUDA path on
+[2026-10-25T00:43:08-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T00:43:09-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T00:43:32-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-25T00:43:32-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T00:43:32-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] L0 163s
+[golden] L1 169s
+[golden] L2 172s
+[golden] L3 140s
+[golden] L4 141s
+[golden] carried state saved after L4; re-run to continue
+[2026-10-25T01:08:07-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:08:07-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L5 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L5 146s
+[golden] L6 147s
+[golden] L7 141s
+[golden] L8 170s
+[golden] L9 141s
+[golden] carried state saved after L9; re-run to continue
+[2026-10-25T01:20:56-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T01:20:56-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L10 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L10 144s
+[golden] L11 143s
+[golden] L12 142s
+[golden] L13 142s
+[golden] L14 177s
+[golden] carried state saved after L14; re-run to continue
+[2026-10-25T01:33:47-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:33:47-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L15 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L15 146s
+[golden] L16 143s
+[golden] L17 141s
+[golden] L18 145s
+[golden] L19 147s
+[golden] carried state saved after L19; re-run to continue
+[2026-10-25T01:46:13-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T01:46:13-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L20 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L20 173s
+[golden] L21 142s
+[golden] L22 142s
+[golden] L23 146s
+[golden] L24 145s
+[golden] carried state saved after L24; re-run to continue
+[2026-10-25T01:59:06-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T01:59:06-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L25 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L25 144s
+[golden] L26 143s
+[golden] L27 148s
+[golden] L28 152s
+[golden] L29 154s
+[golden] carried state saved after L29; re-run to continue
+[2026-10-25T02:11:51-04:00] s08 reclaim after golden_ref_A192: MemAvailable 117 GiB
+[2026-10-25T02:11:51-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L30 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L30 155s
+[golden] L31 146s
+[golden] L32 149s
+[golden] L33 142s
+[golden] L34 150s
+[golden] carried state saved after L34; re-run to continue
+[2026-10-25T02:24:38-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T02:24:38-04:00] s08 start golden_ref_A192: .venv/bin/python -I cuda/tests/golden/ref_dump.py --out /home/patrickd/models/v41-work/golden/A192 --long --layers-per-proc 5 --keepset /home/patrickd/models/v41-work/s04/keepset.json --thor /home/patrickd/models/v41-work/thor/A192
+/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/lib/replay.py:132: FutureWarning: torch.cuda._set_allocator_settings is deprecated. Use torch._C._accelerator_setAllocatorSettings instead.
+  torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+[transformers] You are using a model of type `deepseek_v41` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[golden] resuming at L35 from /home/patrickd/models/v41-work/golden/A192/_carry.pt
+[golden] L35 153s
+[golden] L36 161s
+[golden] L37 176s
+[golden] L38 173s
+[golden] L39 179s
+[golden] done -> /home/patrickd/models/v41-work/golden/A192
+[2026-10-25T02:39:30-04:00] s08 reclaim after golden_ref_A192: MemAvailable 118 GiB
+[2026-10-25T02:39:30-04:00] s08 done golden_ref_A192
+[2026-10-25T02:39:35-04:00] chain2 reclaim after soft golden_ref_arm: MemAvailable 118 GiB
+[2026-10-25T02:39:35-04:00] chain2 done soft_golden_ref_arm
+[2026-10-25T02:39:36-04:00] s08 start golden_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json
+  L31 chat     isolated min 0.999993 mean 0.999997 | chained min 0.858055 mean 0.981850
+  L31 doc1k    isolated min 0.998312 mean 0.999793 | chained min 0.331654 mean 0.967835
+  L31 long20k  isolated min 0.981362 mean 0.998564 | chained min 0.377765 mean 0.933445
+  L32 chat     isolated min 0.999985 mean 0.999994 | chained min 0.846898 mean 0.980559
+  L32 doc1k    isolated min 0.995756 mean 0.999785 | chained min 0.301708 mean 0.966649
+  L32 long20k  isolated min 0.985768 mean 0.999399 | chained min 0.369062 mean 0.935590
+  L33 chat     isolated min 0.999983 mean 0.999994 | chained min 0.861052 mean 0.981254
+  L33 doc1k    isolated min 0.979273 mean 0.999751 | chained min 0.335106 mean 0.966920
+  L33 long20k  isolated min 0.974935 mean 0.999694 | chained min 0.390172 mean 0.937023
+  L34 chat     isolated min 0.999985 mean 0.999995 | chained min 0.861313 mean 0.980819
+  L34 doc1k    isolated min 0.994426 mean 0.999544 | chained min 0.320112 mean 0.965773
+  L34 long20k  isolated min 0.991417 mean 0.998031 | chained min 0.380494 mean 0.940116
+  L35 chat     isolated min 0.999980 mean 0.999994 | chained min 0.884269 mean 0.982521
+  L35 doc1k    isolated min 0.994576 mean 0.999678 | chained min 0.406677 mean 0.969772
+  L35 long20k  isolated min 0.991063 mean 0.999010 | chained min 0.459425 mean 0.951551
+  L36 chat     isolated min 0.999974 mean 0.999993 | chained min 0.890376 mean 0.981365
+  L36 doc1k    isolated min 0.996931 mean 0.999730 | chained min 0.041014 mean 0.973713
+  L36 long20k  isolated min 0.991284 mean 0.999337 | chained min 0.594293 mean 0.963833
+  L37 chat     isolated min 0.999965 mean 0.999988 | chained min 0.887730 mean 0.979381
+  L37 doc1k    isolated min 0.996335 mean 0.999731 | chained min 0.070700 mean 0.973950
+  L37 long20k  isolated min 0.988879 mean 0.999035 | chained min 0.698421 mean 0.969122
+  L38 chat     isolated min 0.999988 mean 0.999995 | chained min 0.882848 mean 0.977574
+  L38 doc1k    isolated min 0.997833 mean 0.999775 | chained min 0.147659 mean 0.973913
+  L38 long20k  isolated min 0.993003 mean 0.999318 | chained min 0.808679 mean 0.976431
+  L39 chat     isolated min 0.999990 mean 0.999996 | chained min 0.894472 mean 0.981348
+  L39 doc1k    isolated min 0.876326 mean 0.999481 | chained min -0.388947 mean 0.966632
+  L39 long20k  isolated min 0.996825 mean 0.999678 | chained min 0.553924 mean 0.981385
+      isolated head (diagnostic): agreement 14/14, confident disagreements 0
+  chat     chained final mean cos 0.981348, teacher-forced argmax agreement 1.0000 (14/14); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+      confident: doc1k pos 108 ref 21 cuda 22 rank 2 gap 1.192 | row cos 0.9770 | isolated head agrees
+      confident: doc1k pos 850 ref 19 cuda 20769 rank 4 gap 0.960 | row cos 0.9940 | isolated head agrees
+      confident: doc1k pos 918 ref 3180 cuda 1883 rank 4 gap 0.142 | row cos 0.9836 | isolated head agrees
+      confident: doc1k pos 925 ref 20 cuda 25 rank 6 gap 0.168 | row cos 0.9644 | isolated head agrees
+      confident: doc1k pos 1059 ref 2315 cuda 1328 rank 4 gap 0.140 | row cos 0.9448 | isolated head agrees
+      isolated head (diagnostic): agreement 1021/1024, confident disagreements 0
+  doc1k    chained final mean cos 0.966632, teacher-forced argmax agreement 0.9551 (978/1024); disagreements 46, near-ties 41, logit gap median 0.151 max 1.192
+      isolated head (diagnostic): agreement 1023/1024, confident disagreements 0
+  long20k  chained final mean cos 0.981385, teacher-forced argmax agreement 1.0000 (1024/1024); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+  pooled   46 disagreements, 41 near-ties (rank <= 3, gap <= 1.0)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-25T03:12:48-04:00] s08 FAIL: golden A192
+[2026-10-25T03:12:54-04:00] chain2 reclaim after soft golden_arm: MemAvailable 118 GiB
+[2026-10-25T03:12:54-04:00] chain2 SOFT FAIL golden_arm (rc=1): s08 golden A192 -- the release path continues
+[2026-10-25T03:12:55-04:00] chain2 df ok for quant L2: 1306 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T06:49:09-04:00] s09 done quant_L2
+[2026-10-25T06:49:09-04:00] chain2 df ok for quant L3: 1306 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T06:49:45-04:00] diag-a192: gate start
+[2026-10-25T06:53:04-04:00] diag-a192: gate rc=0 (Gate V41 GOLDEN: PASS)
+[2026-10-25T06:53:04-04:00] diag-a192: chain2 released
+[2026-10-25T06:53:04-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T06:53:05-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T06:53:10-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 117 GiB
+[2026-10-25T06:53:10-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T06:53:11-04:00] chain2 df ok for quant L3: 1306 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T06:56:32-04:00] chain2 manual restart: golden harness race fixed (60ef2c8), golden A192 re-runs as registered
+[2026-10-25T06:57:19-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T06:57:19-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T06:57:24-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-25T06:57:24-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T06:57:24-04:00] s08 start golden_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json
+  L31 chat     isolated min 0.999993 mean 0.999997 | chained min 0.858055 mean 0.981850
+  L31 doc1k    isolated min 0.998312 mean 0.999793 | chained min 0.331654 mean 0.967835
+  L31 long20k  isolated min 0.981362 mean 0.998564 | chained min 0.377765 mean 0.933445
+  L32 chat     isolated min 0.999985 mean 0.999994 | chained min 0.846898 mean 0.980559
+  L32 doc1k    isolated min 0.995756 mean 0.999785 | chained min 0.301708 mean 0.966649
+  L32 long20k  isolated min 0.985768 mean 0.999399 | chained min 0.369062 mean 0.935590
+  L33 chat     isolated min 0.999983 mean 0.999994 | chained min 0.861052 mean 0.981254
+  L33 doc1k    isolated min 0.979273 mean 0.999751 | chained min 0.335106 mean 0.966920
+  L33 long20k  isolated min 0.974935 mean 0.999694 | chained min 0.390172 mean 0.937023
+  L34 chat     isolated min 0.999985 mean 0.999995 | chained min 0.861313 mean 0.980819
+  L34 doc1k    isolated min 0.994426 mean 0.999544 | chained min 0.320112 mean 0.965773
+  L34 long20k  isolated min 0.991417 mean 0.998031 | chained min 0.380494 mean 0.940116
+  L35 chat     isolated min 0.999980 mean 0.999994 | chained min 0.884269 mean 0.982521
+  L35 doc1k    isolated min 0.994576 mean 0.999678 | chained min 0.406677 mean 0.969772
+  L35 long20k  isolated min 0.991063 mean 0.999010 | chained min 0.459425 mean 0.951551
+  L36 chat     isolated min 0.999974 mean 0.999993 | chained min 0.890376 mean 0.981365
+  L36 doc1k    isolated min 0.996931 mean 0.999730 | chained min 0.041014 mean 0.973713
+  L36 long20k  isolated min 0.991284 mean 0.999337 | chained min 0.594293 mean 0.963833
+  L37 chat     isolated min 0.999965 mean 0.999988 | chained min 0.887730 mean 0.979381
+  L37 doc1k    isolated min 0.996335 mean 0.999731 | chained min 0.070700 mean 0.973950
+  L37 long20k  isolated min 0.988879 mean 0.999035 | chained min 0.698421 mean 0.969122
+  L38 chat     isolated min 0.999988 mean 0.999995 | chained min 0.882848 mean 0.977574
+  L38 doc1k    isolated min 0.997833 mean 0.999775 | chained min 0.147659 mean 0.973913
+  L38 long20k  isolated min 0.993003 mean 0.999318 | chained min 0.808679 mean 0.976431
+  L39 chat     isolated min 0.999990 mean 0.999996 | chained min 0.894472 mean 0.981348
+  L39 doc1k    isolated min 0.876326 mean 0.999481 | chained min -0.388947 mean 0.966632
+  L39 long20k  isolated min 0.996825 mean 0.999678 | chained min 0.553924 mean 0.981385
+      isolated head (diagnostic): agreement 14/14, confident disagreements 0
+  chat     chained final mean cos 0.981348, teacher-forced argmax agreement 1.0000 (14/14); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+      confident: doc1k pos 108 ref 21 cuda 22 rank 2 gap 1.192 | row cos 0.9770 | isolated head agrees
+      confident: doc1k pos 850 ref 19 cuda 20769 rank 4 gap 0.960 | row cos 0.9940 | isolated head agrees
+      confident: doc1k pos 918 ref 3180 cuda 1883 rank 4 gap 0.142 | row cos 0.9836 | isolated head agrees
+      confident: doc1k pos 925 ref 20 cuda 25 rank 6 gap 0.168 | row cos 0.9644 | isolated head agrees
+      confident: doc1k pos 1059 ref 2315 cuda 1328 rank 4 gap 0.140 | row cos 0.9448 | isolated head agrees
+      isolated head (diagnostic): agreement 1022/1024, confident disagreements 0
+  doc1k    chained final mean cos 0.966632, teacher-forced argmax agreement 0.9551 (978/1024); disagreements 46, near-ties 41, logit gap median 0.151 max 1.192
+      isolated head (diagnostic): agreement 1023/1024, confident disagreements 0
+  long20k  chained final mean cos 0.981385, teacher-forced argmax agreement 1.0000 (1024/1024); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+  pooled   46 disagreements, 41 near-ties (rank <= 3, gap <= 1.0)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-25T07:32:06-04:00] s08 FAIL: golden A192
+[2026-10-25T07:32:11-04:00] chain2 reclaim after soft golden_arm: MemAvailable 118 GiB
+[2026-10-25T07:32:11-04:00] chain2 SOFT FAIL golden_arm (rc=1): s08 golden A192 -- the release path continues
+[2026-10-25T07:32:12-04:00] chain2 df ok for quant L3: 1305 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T08:21:55-04:00] diag-route: start
+[2026-10-25T08:24:11-04:00] watchdog needs the owner: STOP (not retryable): hold: routing-flip diagnostic (ops/diag_route_flip.sh); released by that script [s09_quant_L3.log tail: [ 104/1044] blk.3.ffn_gate_shexp.weight          - [  5120,   2304,      1,      1], type =   bf16, converting to q6_K . / [ 105/1044] blk.3.ffn_norm.weight                - [  5120,      1,      1,      1], type =    f32, size =    0.020 MiB / [ 106/1044] blk.3.ffn_up_exps.weight             - [  5120,   2304,    192,      1], type =  mxfp4, converting to iq2_xs]
+[2026-10-25T08:35:41-04:00] chain2 manual restart: owner decision ff1feef (Thor before GGUF, golden A192 waived)
+[2026-10-25T08:35:42-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T08:35:42-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T08:35:47-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-25T08:35:48-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T08:35:48-04:00] chain2 df ok for s09 Engram row files (~189 GiB): 209 GiB free on / (need 200)
+[2026-10-25T09:36:58-04:00] s09 done rowfile
+[2026-10-25T09:36:58-04:00] chain2 done s09_rowfile_
+[2026-10-25T09:36:58-04:00] s08 start golden_store_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows
+engram store: cannot open tests/data/engram_tokmap.bin
+[2026-10-25T09:37:02-04:00] s08 FAIL: golden A192 through the row store
+[2026-10-25T09:37:17-04:00] chain2 reclaim after soft golden_store: MemAvailable 118 GiB
+[2026-10-25T09:37:17-04:00] chain2 SOFT FAIL golden_store (rc=1): s08 golden_store A192 -- the release path continues
+[2026-10-25T09:37:18-04:00] chain2 df ok for quant L3: 1296 GiB free on /media/patrickd/Seagate Portable Drive (need 250)
+[2026-10-25T22:25:40-04:00] s09 done quant_L3
+[2026-10-25T22:25:43-04:00] s09 drop_source: removed /home/patrickd/models/v41-work/s09/src/V4.1-1017-REAP192-src.gguf (149 GiB, regenerable by convert)
+[2026-10-25T22:25:43-04:00] s09 drop_source: convert marker cleared; 170 GiB free on /
+[2026-10-25T22:26:20-04:00] thor-first: quant L3 done; chain2 held; rerunning golden_store A192
+[2026-10-25T22:26:20-04:00] s08 start golden_store_A192: cuda/build/gate_v41_golden --ckpt /home/patrickd/models/v41-work/thor/A192 --ref /home/patrickd/models/v41-work/golden/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows
+[2026-10-25T22:39:49-04:00] watchdog needs the owner: STOP (not retryable): hold: golden_store rerun under the A192 waiver (ops/thor_first_after_L3.sh); released by that script
+  L31 chat     isolated min 0.999993 mean 0.999997 | chained min 0.858055 mean 0.981850
+  L31 doc1k    isolated min 0.998312 mean 0.999793 | chained min 0.331654 mean 0.967835
+  L31 long20k  isolated min 0.981362 mean 0.998564 | chained min 0.377765 mean 0.933445
+  L32 chat     isolated min 0.999985 mean 0.999994 | chained min 0.846898 mean 0.980559
+  L32 doc1k    isolated min 0.995756 mean 0.999785 | chained min 0.301708 mean 0.966649
+  L32 long20k  isolated min 0.985768 mean 0.999399 | chained min 0.369062 mean 0.935590
+  L33 chat     isolated min 0.999983 mean 0.999994 | chained min 0.861052 mean 0.981254
+  L33 doc1k    isolated min 0.979273 mean 0.999751 | chained min 0.335106 mean 0.966920
+  L33 long20k  isolated min 0.974935 mean 0.999694 | chained min 0.390172 mean 0.937023
+  L34 chat     isolated min 0.999985 mean 0.999995 | chained min 0.861313 mean 0.980819
+  L34 doc1k    isolated min 0.994426 mean 0.999544 | chained min 0.320112 mean 0.965773
+  L34 long20k  isolated min 0.991417 mean 0.998031 | chained min 0.380494 mean 0.940116
+  L35 chat     isolated min 0.999980 mean 0.999994 | chained min 0.884269 mean 0.982521
+  L35 doc1k    isolated min 0.994576 mean 0.999678 | chained min 0.406677 mean 0.969772
+  L35 long20k  isolated min 0.991063 mean 0.999010 | chained min 0.459425 mean 0.951551
+  L36 chat     isolated min 0.999974 mean 0.999993 | chained min 0.890376 mean 0.981365
+  L36 doc1k    isolated min 0.996931 mean 0.999730 | chained min 0.041014 mean 0.973713
+  L36 long20k  isolated min 0.991284 mean 0.999337 | chained min 0.594293 mean 0.963833
+  L37 chat     isolated min 0.999965 mean 0.999988 | chained min 0.887730 mean 0.979381
+  L37 doc1k    isolated min 0.996335 mean 0.999731 | chained min 0.070700 mean 0.973950
+  L37 long20k  isolated min 0.988879 mean 0.999035 | chained min 0.698421 mean 0.969122
+  L38 chat     isolated min 0.999988 mean 0.999995 | chained min 0.882848 mean 0.977574
+  L38 doc1k    isolated min 0.997833 mean 0.999775 | chained min 0.147659 mean 0.973913
+  L38 long20k  isolated min 0.993003 mean 0.999318 | chained min 0.808679 mean 0.976431
+  L39 chat     isolated min 0.999990 mean 0.999996 | chained min 0.894472 mean 0.981348
+  L39 doc1k    isolated min 0.876326 mean 0.999481 | chained min -0.388947 mean 0.966632
+  L39 long20k  isolated min 0.996825 mean 0.999678 | chained min 0.553924 mean 0.981385
+      isolated head (diagnostic): agreement 14/14, confident disagreements 0
+  chat     chained final mean cos 0.981348, teacher-forced argmax agreement 1.0000 (14/14); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+      confident: doc1k pos 108 ref 21 cuda 22 rank 2 gap 1.192 | row cos 0.9770 | isolated head agrees
+      confident: doc1k pos 850 ref 19 cuda 20769 rank 4 gap 0.960 | row cos 0.9940 | isolated head agrees
+      confident: doc1k pos 918 ref 3180 cuda 1883 rank 4 gap 0.142 | row cos 0.9836 | isolated head agrees
+      confident: doc1k pos 925 ref 20 cuda 25 rank 6 gap 0.168 | row cos 0.9644 | isolated head agrees
+      confident: doc1k pos 1059 ref 2315 cuda 1328 rank 4 gap 0.140 | row cos 0.9448 | isolated head agrees
+      isolated head (diagnostic): agreement 1022/1024, confident disagreements 0
+  doc1k    chained final mean cos 0.966632, teacher-forced argmax agreement 0.9551 (978/1024); disagreements 46, near-ties 41, logit gap median 0.151 max 1.192
+      isolated head (diagnostic): agreement 1023/1024, confident disagreements 0
+  long20k  chained final mean cos 0.981385, teacher-forced argmax agreement 1.0000 (1024/1024); disagreements 0, near-ties 0, logit gap median 0.000 max 0.000
+  pooled   46 disagreements, 41 near-ties (rank <= 3, gap <= 1.0)   <-- FAIL
+Gate V41 GOLDEN: FAIL
+[2026-10-25T23:01:54-04:00] s08 FAIL: golden A192 through the row store
+[2026-10-25T23:01:54-04:00] thor-first: golden_store rc=1; FAIL lines 1; pooled:   pooled   46 disagreements, 41 near-ties (rank <= 3, gap <= 1.0)   <-- FAIL; per-layer lines differing from the waived run: 0
+[2026-10-25T23:01:54-04:00] thor-first: chain2 released (golden_store OK under the waiver)
+[2026-10-25T23:01:54-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T23:01:54-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T23:01:59-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-25T23:02:00-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T23:02:00-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[v41] prompt 16 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 70 s
+[engine] state 0.13 GiB (seqmax 8192, chunk 64)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41] # 印刷印刷技术的历史始于古代中国，但现代印刷机的起源通常归归于德国发明家约翰内斯·古特堡，他于1440年代引入了以活页形式印刷的《古特堡圣经》。古特堡的创新在于将印刷技术、墨、纸张和活页形式结合起来，从而创造了大众传播的手段。印刷机的传播迅速遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍遍
+[v41] run 0: prefill 16 tok 831.6 ms (19.2 tok/s)  decode 256 tok 31658.1 ms = 8.05 tok/s
+[v41] run 1: prefill 16 tok 784.4 ms (20.4 tok/s)  decode 75 tok 8884.7 ms = 8.33 tok/s
+[v41] run 2: prefill 16 tok 785.6 ms (20.4 tok/s)  decode 1 tok 0.0 ms = 0.00 tok/s
+[v41] decode tok/s mean 5.46  min 0.00  max 8.33 over 3 run(s)  -- NONDETERMINISTIC (FAIL)
+[v41] consistency over 8 positions: 0 gross, 0 near-tie mismatches -> PASS
+[2026-10-25T23:04:54-04:00] s08 FAIL: decode A192 (determinism/consistency)
+[2026-10-25T23:04:59-04:00] chain2 reclaim after soft decode: MemAvailable 118 GiB
+[2026-10-25T23:04:59-04:00] chain2 SOFT FAIL decode (rc=1): s08 decode A192 -- the release path continues
+[2026-10-25T23:04:59-04:00] s09 drop_source: convert marker cleared; 169 GiB free on /
+2026-10-25T23:07:46-04:00 chain2 held for Thor decode diagnosis (stage L2 rsync interrupted, resumes via --partial)
+[2026-10-25T23:09:51-04:00] watchdog needs the owner: STOP (not retryable): hold: Thor decode diagnosis (graph/no-graph, golden chat ids); released by hand after ~20 min [FAIL line: decode A192 (determinism/consistency)] [s08_decode_A192.log tail: [v41] run 2: prefill 16 tok 785.6 ms (20.4 tok/s)  decode 1 tok 0.0 ms = 0.00 tok/s / [v41] decode tok/s mean 5.46  min 0.00  max 8.33 over 3 run(s)  -- NONDETERMINISTIC (FAIL) / [v41] consistency over 8 positions: 0 gross, 0 near-tie mismatches -> PASS]
+2026-10-25T23:51:24-04:00 hold released: decode bug fixed (stale d_tok), chain2 restarting -> decode, ctx1m, server, Thor publish, overlay, GGUF ladder
+[2026-10-25T23:51:25-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-25T23:51:25-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-25T23:51:30-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-25T23:51:30-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-25T23:51:30-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[v41] prompt 16 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 65 s
+[engine] state 0.13 GiB (seqmax 8192, chunk 64)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41] The printing press was invented by Johannes Gutenberg in the 15th century, revolutionizing the way information was shared. Before its creation, books were painstakingly copied by hand, making them rare and expensive. Gutenberg's introduction of movable type and the mechanical press allowed for the mass production of printed materials, starting with the Gutenberg Bible. This innovation spread rapidly across Europe, leading to a surge in literacy, the dissemination of new ideas, and ultimately contributing to major historical movements like the Renaissance and the Reformation.
+[v41] run 0: prefill 16 tok 816.5 ms (19.6 tok/s)  decode 104 tok 12735.7 ms = 8.09 tok/s
+[v41] run 1: prefill 16 tok 794.7 ms (20.1 tok/s)  decode 104 tok 12718.4 ms = 8.10 tok/s
+[v41] run 2: prefill 16 tok 792.9 ms (20.2 tok/s)  decode 104 tok 12712.3 ms = 8.10 tok/s
+[v41] decode tok/s mean 8.10  min 8.09  max 8.10 over 3 run(s)  -- greedy output identical across runs
+[v41] consistency over 9 positions: 0 gross, 0 near-tie mismatches -> PASS
+[2026-10-25T23:53:56-04:00] s08 reclaim after decode_A192: MemAvailable 118 GiB
+[2026-10-25T23:53:56-04:00] s08 start decode_ng_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --no-graph --json /home/patrickd/models/v41-work/s08/decode_nograph_A192.json
+2026-10-26T00:16:40-04:00 overlay release held (v41 engine does not load DSV4_NVFP4_OVERLAY); Thor + GGUF unaffected
+2026-10-26T01:00:13-04:00 hold released: no-graph deadlock fixed; serving gates time-bounded; Thor/GGUF fallbacks per owner 2026-10-26
+[2026-10-26T01:00:13-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-26T01:00:13-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-26T01:00:18-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-26T01:00:19-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-26T01:00:19-04:00] s08 start decode_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --repeat 3 --consistency 8 --json /home/patrickd/models/v41-work/s08/decode_A192.json
+[v41] prompt 16 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 64 s
+[engine] state 0.13 GiB (seqmax 8192, chunk 64)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41] The printing press was invented by Johannes Gutenberg in the 15th century, revolutionizing the way information was shared. Before its creation, books were painstakingly copied by hand, making them rare and expensive. Gutenberg's introduction of movable type and the mechanical press allowed for the mass production of printed materials, starting with the Gutenberg Bible. This innovation spread rapidly across Europe, leading to a surge in literacy, the dissemination of new ideas, and ultimately contributing to major historical movements like the Renaissance and the Reformation.
+[v41] run 0: prefill 16 tok 827.2 ms (19.3 tok/s)  decode 104 tok 12755.4 ms = 8.08 tok/s
+[v41] run 1: prefill 16 tok 795.6 ms (20.1 tok/s)  decode 104 tok 12722.0 ms = 8.10 tok/s
+[v41] run 2: prefill 16 tok 794.6 ms (20.1 tok/s)  decode 104 tok 12720.2 ms = 8.10 tok/s
+[v41] decode tok/s mean 8.09  min 8.08  max 8.10 over 3 run(s)  -- greedy output identical across runs
+[v41] consistency over 9 positions: 0 gross, 0 near-tie mismatches -> PASS
+[2026-10-26T01:02:44-04:00] s08 reclaim after decode_A192: MemAvailable 118 GiB
+[2026-10-26T01:02:44-04:00] s08 start decode_ng_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --chat Write a short paragraph about the history of the printing press. --n 256 --no-graph --json /home/patrickd/models/v41-work/s08/decode_nograph_A192.json
+[v41] prompt 16 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 65 s
+[engine] state 0.13 GiB (seqmax 8192, chunk 64)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41] The printing press was invented by Johannes Gutenberg in the 15th century, revolutionizing the way information was shared. Before its creation, books were painstakingly copied by hand, making them rare and expensive. Gutenberg's introduction of movable type and the mechanical press allowed for the mass production of printed materials, starting with the Gutenberg Bible. This innovation spread rapidly across Europe, leading to a surge in literacy, the dissemination of new ideas, and ultimately contributing to major historical movements like the Renaissance and the Reformation.
+[v41] run 0: prefill 16 tok 835.4 ms (19.2 tok/s)  decode 104 tok 13336.3 ms = 7.72 tok/s
+[v41] decode tok/s mean 7.72  min 7.72  max 7.72 over 1 run(s)
+[2026-10-26T01:04:18-04:00] s08 reclaim after decode_ng_A192: MemAvailable 117 GiB
+[2026-10-26T01:04:18-04:00] s08 start decode8k_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --seqmax 16384 --ids-file /home/patrickd/models/v41-work/s08/ids8k.txt --n 128 --json /home/patrickd/models/v41-work/s08/decode8k_A192.json
+[v41] prompt 8192 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 65 s
+[engine] state 0.13 GiB (seqmax 16384, chunk 64)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41] ai" target="_blank" style="margin: 2px;">
+    <img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-DeepSeek%20AI-ffc107?color=ffc107&logoColor=white" style="display: inline-block; vertical-align: middle;"/>
+  </a>
+  <a href="https://twitter.com/deepseek_ai" target="_blank" style="margin: 2px;">
+    <img alt="Twitter Follow" src="
+[v41] run 0: prefill 8192 tok 226133.3 ms (36.2 tok/s)  decode 128 tok 17794.6 ms = 7.14 tok/s
+[v41] decode tok/s mean 7.14  min 7.14  max 7.14 over 1 run(s)
+[2026-10-26T01:09:42-04:00] s08 reclaim after decode8k_A192: MemAvailable 118 GiB
+[2026-10-26T01:09:42-04:00] s08 done decode_A192
+[2026-10-26T01:09:47-04:00] chain2 reclaim after soft decode: MemAvailable 118 GiB
+[2026-10-26T01:09:47-04:00] chain2 done soft_decode
+[2026-10-26T01:09:47-04:00] s08 start ctx1m_A192: cuda/build/v41_decode --ckpt /home/patrickd/models/v41-work/thor/A192 --keepset /home/patrickd/models/v41-work/s04/keepset.json --engram /home/patrickd/models/v41-work/engram_rows --seqmax 1048576 --chunk 128 --ids-file /home/patrickd/models/v41-work/s08/ids64k.txt --n 64 --json /home/patrickd/models/v41-work/s08/ctx1m_A192.json
+[v41] prompt 65536 tokens
+[engine] weights 98.58 GiB (1377 tensors), 192 routed experts/layer, experts thor-v1 arm A, 64 s
+[engine] state 1.66 GiB (seqmax 1048576, chunk 128)
+[engine] Engram row store /home/patrickd/models/v41-work/engram_rows (format 0, 264 B rows)
+[v41]  alt="DeepSeek-V4.1" />
+</div>
+<hr>
+<div align="center" style="line-height: 1;">
+  <a href="https://www.deepseek.com/" target="_blank" style="margin: 2px;">
+    <img alt="Homepage" src="
+[v41] run 0: prefill 65536 tok 1823237.5 ms (35.9 tok/s)  decode 64 tok 9560.1 ms = 6.59 tok/s
+[v41] decode tok/s mean 6.59  min 6.59  max 6.59 over 1 run(s)
+[2026-10-26T01:41:39-04:00] s08 reclaim after ctx1m_A192: MemAvailable 118 GiB
+[2026-10-26T01:41:39-04:00] s08 done ctx1m_A192
+[2026-10-26T01:41:44-04:00] chain2 reclaim after soft ctx1m: MemAvailable 118 GiB
+[2026-10-26T01:41:44-04:00] chain2 done soft_ctx1m
+[2026-10-26T01:43:31-04:00] s08 reclaim after server_A192: MemAvailable 117 GiB
+[2026-10-26T01:43:31-04:00] s08 done server_A192
+[2026-10-26T01:43:36-04:00] chain2 reclaim after soft server: MemAvailable 117 GiB
+[2026-10-26T01:43:36-04:00] chain2 done soft_server
+[2026-10-26T01:43:36-04:00] chain2 done s12_thor
+[2026-10-26T01:43:36-04:00] s09 drop_source: convert marker cleared; 155 GiB free on /
+[2026-10-26T01:58:14-04:00] s09 stage L2: 98 GiB copied to /home/patrickd/models/v41-work/s09/stage/L2 (origin /media/patrickd/Seagate Portable Drive/v41_staging/s09/L2)
+[2026-10-26T02:18:26-04:00] thor-publish: done
+[2026-10-26T02:32:01-04:00] s09 reclaim after kld_L2: MemAvailable 118 GiB
+[2026-10-26T02:32:01-04:00] s09 FAIL: kld summarize L2
+[2026-10-26T02:32:01-04:00] chain2 STOP: s09 kld L2
+[2026-10-26T02:40:00-04:00] watchdog needs the owner: STOP (not retryable): chain2: s09 kld L2 [FAIL line: kld summarize L2] [s09_kld_L2.log tail: File "/home/patrickd/deepseek-v4.1-flash-reap-thor/ops/s09_teacher_eval.py", line 123, in summarize / from gguf import GGUFReader / ModuleNotFoundError: No module named 'gguf']
+[2026-10-26T04:16:50-04:00] s09 done kld_L2 (summarize re-run by hand after the gguf-py import fix; kl32 1.010, top-1 0.732)
+[2026-10-26T04:16:50-04:00] chain2 chain2 start (waiting for s10 final)
+[2026-10-26T04:16:50-04:00] chain2 GGUF master REAP192, kernels tilelang (the served arm is resolved after the s10 trellis panel)
+[2026-10-26T04:16:55-04:00] chain2 reclaim after s09 backend_ops: MemAvailable 118 GiB
+[2026-10-26T04:16:55-04:00] chain2 served arm A192 (/home/patrickd/models/v41-work/thor/A192)
+[2026-10-26T04:17:00-04:00] s09 drop_source: convert marker cleared; 71 GiB free on /
+[2026-10-26T04:17:00-04:00] s09 stage L2: already staged
+[2026-10-26T04:17:06-04:00] chain2 reclaim after s09 kld L2: MemAvailable 118 GiB
+[2026-10-26T04:18:16-04:00] s09 reclaim after smoke_L2: MemAvailable 118 GiB
+[2026-10-26T04:18:16-04:00] s09 done smoke_L2
+[2026-10-26T04:18:21-04:00] chain2 reclaim after s09 smoke L2: MemAvailable 118 GiB
+[2026-10-26T04:18:22-04:00] s09 unstage L2: results back in /media/patrickd/Seagate Portable Drive/v41_staging/s09/L2, stage removed
+[2026-10-26T04:18:22-04:00] chain2 GGUF L2 failed its gate; evaluating the L3 fallback
+[2026-10-26T04:41:55-04:00] s09 stage L3: 85 GiB copied to /home/patrickd/models/v41-work/s09/stage/L3 (origin /media/patrickd/Seagate Portable Drive/v41_staging/s09/L3)
+[2026-10-26T05:12:55-04:00] s09 reclaim after kld_L3: MemAvailable 118 GiB
+[2026-10-26T05:13:01-04:00] s09 done kld_L3
+[2026-10-26T05:13:06-04:00] chain2 reclaim after s09 kld L3: MemAvailable 118 GiB
+[2026-10-26T05:14:02-04:00] s09 reclaim after smoke_L3: MemAvailable 118 GiB
+[2026-10-26T05:14:02-04:00] s09 done smoke_L3
+[2026-10-26T05:14:07-04:00] chain2 reclaim after s09 smoke L3: MemAvailable 118 GiB
+[2026-10-26T05:14:08-04:00] s09 unstage L3: results back in /media/patrickd/Seagate Portable Drive/v41_staging/s09/L3, stage removed
+[2026-10-26T05:14:08-04:00] chain2 no level passed s09: owner near-miss release of L3 (gates.json owner_release)
+[2026-10-26T05:14:08-04:00] chain2 s09 gate: passing levels [L3]
+[2026-10-26T05:39:11-04:00] chain2 done s09_manifest
+[2026-10-26T06:01:25-04:00] chain2 done s12_gguf
+[2026-10-26T06:33:14-04:00] chain2 done s12_release
+[2026-10-26T06:33:14-04:00] chain2 RELEASE DONE: REAP + GGUF published per their gates; CUDA server and s11 follow (soft)

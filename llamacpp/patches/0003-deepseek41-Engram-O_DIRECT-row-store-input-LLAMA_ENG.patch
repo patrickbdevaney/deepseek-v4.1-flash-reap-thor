@@ -1,7 +1,7 @@
 From 9f621cd8e41f1ca4bbc5417b2ba7697fd63799d8 Mon Sep 17 00:00:00 2001
 From: Patrick Devaney <patrickbdevaney@gmail.com>
 Date: Mon, 19 Oct 2026 05:38:24 -0400
-Subject: [PATCH 3/3] deepseek41 : Engram O_DIRECT row-store input
+Subject: [PATCH 3/6] deepseek41 : Engram O_DIRECT row-store input
  (LLAMA_ENGRAM_ROWFILE_DIR)
 
 Serve the two ~101 GB Engram tables from packed 264 B-row side files

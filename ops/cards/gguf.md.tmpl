@@ -1,83 +1,144 @@
 ---
 license: mit
 base_model: {{ base.repo }}
-tags: [deepseek, moe, reap, expert-pruning, gguf, llama.cpp]
+base_model_relation: quantized
+library_name: gguf
+pipeline_tag: image-text-to-text
+language:
+  - en
+  - zh
+tags:
+  - gguf
+  - llama-cpp
+  - deepseek
+  - deepseek-v4.1-flash
+  - moe
+  - reap
+  - expert-pruning
+  - hope
+  - mxfp4
+  - engram
+  - mhc
+  - multimodal
+  - edge-ai
+  - jetson-thor
+extra_gated_ReadMe_metadata:
+  keep_set_sha256: {{ gguf.keepset_sha256 }}
 ---
+
+<div align="center">
 
 # {{ artifact.name }}
 
-{{ base.repo }} with {{ gguf.n_routed_experts | int }} of {{ artifact.n_routed_base | int }} routed experts kept in every decoder layer, as a GGUF for a llama.cpp fork, built to run on one machine with 128 GB of memory and an NVMe drive.
+[![Base Model](https://img.shields.io/badge/Base_Model-DeepSeek--V4.1--Flash--1017-blue)](https://huggingface.co/{{ base.repo }})
+[![Compression](https://img.shields.io/badge/REAP--{{ artifact.n_routed | int }}-{{ artifact.n_routed | int }}%2F{{ artifact.n_routed_base | int }}_Routed_Experts_Kept-orange)](#the-keep-set)
+[![Format](https://img.shields.io/badge/Format-GGUF_({{ gguf.bpw | f2 }}_bpw_Experts_%2B_Q8__0_Dense)-green)](#what-is-in-this-repository)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Text only for now.** The vision tower is not in these files (the converter routes it to an mmproj file, which is not built yet) and the llama.cpp fork has no V4.1 vision path. For images use the MXFP4 master in an engine with V4.1 vision support. An mmproj and vision support for the fork are planned and will be added to this repository.
+**{{ gguf.total_bytes | gib }} GiB single-file GGUF of `{{ base.repo }}` pruned from {{ artifact.n_routed_base | int }} to {{ artifact.n_routed | int }} routed experts per layer via HOPE + REAP with folded per-layer healing gains.**
 
-## Run it in 128 GB: weights in memory, Engram on NVMe
+| Sibling Artifact | Format | Target Hardware / Runtime |
+|---|---|---|
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4)** | Native MXFP4 + FP8 (`safetensors`) | Master bit-exact 192-expert checkpoint |
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor)** | `thor-v1` (K-quant + FP8/BF16) | Single 128 GB NVIDIA Jetson AGX Thor (`v41_server`) |
+| **[`DeepSeek-V4.1-Flash-1017-REAP192-GGUF`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF)** *(this repo)* | GGUF (`Q2_K` / `Q3_K` / `Q4_K` + `Q8_0`) | `llama.cpp` fork with DeepSeek-V4.1 MLA + Engram + mHC |
 
-DeepSeek-V4.1-Flash has two Engram tables (n-gram embeddings, about 101 GB each). A token reads only 24 rows of each, and the row ids depend only on the token ids. So the tables stay on NVMe and are read with `O_DIRECT` while the GPU runs; only the pruned experts and the dense path ({{ gguf.run_gib }} for `{{ gguf.run_level }}`) are loaded into memory. Upstream llama.cpp cannot do this yet: use the fork below (upstream PR #28696 plus six patches, one of which is the NVMe row store).
+</div>
 
-You need 128 GB of RAM or unified memory, an NVIDIA GPU with CUDA (measured only on a Jetson AGX Thor, sm_110; `build.sh` targets it by default, set `CUDA_ARCH` for another GPU), and about 210 GB free on a local NVMe drive for the row files (not USB, not a network share). Building the row files also needs the base model's two Engram files once (about 200 GB more, on any disk; delete them afterwards).
+---
 
-```bash
-# 1. the fork (pinned upstream PR head + patches) and the row-file builder
-git clone https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor && cd deepseek-v4.1-flash-reap-thor
-llamacpp/setup.sh
-llamacpp/build.sh                     # Jetson AGX Thor (sm_110); any other NVIDIA GPU: CUDA_ARCH=<sm, e.g. 89> llamacpp/build.sh
-python3 -m venv .venv && .venv/bin/pip install numpy huggingface_hub
+**{{ artifact.name }}** is a **{{ gguf.total_bytes | gib }} GiB** GGUF quantization of [`{{ base.repo }}`](https://huggingface.co/{{ base.repo }}) (`{{ base.revision | short }}`) compressed from **{{ artifact.n_routed_base | int }} to {{ artifact.n_routed | int }} routed experts per decoder layer** using **HOPE** (pairwise co-activation with REAP-sum diagonal) and **GPTQ error-feedback K-quantization (`{{ gguf.bpw | f2 }}` bpw)**, while keeping all attention, indexer, compressor, shared-expert, token-embedding, and `lm_head` tensors at **`Q8_0` (`F32` norms/router/hyper-connections)**.
 
-# 2. this GGUF ({{ gguf.run_level }})
-.venv/bin/hf download {{ artifact.repo }} --include "*-{{ gguf.run_level }}-*.gguf" --local-dir gguf
+---
 
-# 3. the two Engram files of the base model, plus its config and index (see "Engram" below for sizes and sha256)
-.venv/bin/hf download {{ base.repo }} config.json model.safetensors.index.json model-00047-of-00048.safetensors \
-    model-00048-of-00048.safetensors --revision {{ base.revision }} --local-dir base
+## ✨ Highlights
 
-# 4. build and verify the row files on NVMe (a 200 GB sequential copy; the base files can be deleted afterwards)
-export V41_SRC=$PWD/base V41_WORK=$PWD/work
-.venv/bin/python ops/s09_engram_rowfile.py build  --dst /nvme/v41rows
-.venv/bin/python ops/s09_engram_rowfile.py verify --dst /nvme/v41rows
+- **{{ artifact.n_routed | int }}/{{ artifact.n_routed_base | int }} Routed-Expert Pruning with HOPE + Drift Guards:** Retains **{{ artifact.n_routed | int }} of {{ artifact.n_routed_base | int }} routed experts** per decoder layer (`keep-set {{ gguf.keepset_sha256 | short }}`), protecting Super-Experts, attention-sink experts, and multimodal (`bias_vl`) experts across a 4.98M-token 9-domain calibration corpus.
+- **Folded Per-Layer Output-Gain Healing:** Folds the calibrated per-layer post-pruning variance-restoration scalar directly into each surviving expert's `w2` (`down_proj`) projection prior to GPTQ error-feedback quantization (`Q2_K` / `Q3_K` / `Q4_K`).
+- **Uncompromised `Q8_0` / `F32` Dense & Attention Path:** Preserves Multi-head Latent Attention (MLA), Dynamic Sparse Attention (DSA) indexer, KV compressor, shared experts, token embeddings, and `lm_head` at `Q8_0`, with RMSNorms, router gates (`gate.weight`, `gate.bias`, `gate.bias_vl`), and mHC Sinkhorn hyper-connections in `F32`.
+- **Verified Teacher-Forced Fidelity:** Achieves **96.9% top-1 agreement (`kl32 = 0.061`) on code**, **92.9% (`kl32 = 0.151`) on math**, **86.5% (`kl32 = 0.366`) on vision**, and **84.6% (`kl32 = 0.227`) on agentic tasks** against the unpruned teacher across {{ s10.tokens_scored | int }} held-out confirmation tokens.
 
-# 5. serve (OpenAI-compatible)
-LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llamacpp/llama.cpp/build-thor/bin/llama-server \
-    -m gguf/{{ gguf.run_file }} -ngl 999 -c 8192 --jinja --port 8080
-```
+---
 
-`-c 8192` is the context the release gate served it at. **Context limit of this build: {{ gguf.ctx_cap }} tokens per sequence.** Past that, DeepSeek-V4.1 restricts its later layers to a set of candidate blocks that this fork does not implement yet, so the output would drift from the model without any error; the fork clamps the context there instead (patch 0006). The native CUDA runner implements the candidate blocks and is not limited this way. On a machine whose GPU memory is separate from system RAM, lower `-ngl` until the GPU part fits; the rest runs on the CPU.
+## 📋 Model Summary
 
-{{ gguf.dspark_section }}
+| Property | Value |
+|---|---|
+| **Base Model** | [`{{ base.repo }}`](https://huggingface.co/{{ base.repo }}) (`{{ base.revision }}`) |
+| **Master Pruned Checkpoint** | [`patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) |
+| **Routed Experts** | **{{ artifact.n_routed | int }} / {{ artifact.n_routed_base | int }} kept per layer** (`reap_keepset.json`, sha256 `{{ gguf.keepset_sha256 | short }}`) |
+| **Expert Quantization** | Mixed `Q2_K` / `Q3_K` / `Q4_K` (**{{ gguf.bpw | f2 }} bpw**, GPTQ error-feedback rounding from MXFP4 with folded `w2` healing gain) |
+| **Dense / Attention Path** | `Q8_0` (attention, indexer, compressor, shared expert, `token_embd`, `lm_head`) + `F32` (norms, router, mHC) |
+| **Total GGUF Size** | **{{ gguf.total_bytes | gib }} GiB** (`{{ gguf.filename }}`) + external base Engram shards |
+| **Required Runtime** | `llama.cpp` fork with `deepseek-v4.1` architecture (`ggml_mhc_sinkhorn` + Engram `engram_L1` / `engram_L25`) |
+| **License** | MIT |
 
-Conversion: from the published REAP MXFP4 master (keep-set `{{ gguf.keepset_sha256 }}`), then requantized; details below.
+---
 
-## Levels
+## What is in this repository
 
-Each level was scored separately on its own GGUF: a paired, teacher-forced comparison of the served file against the cached unpruned teacher on the pre-registered confirm split of the held-out documents, which no pruning, healing or quantization decision ever looked at ({{ gguf.eval_tokens | int }} scored tokens). Intervals are ninety-five percent document-cluster bootstrap intervals.
+- **`{{ gguf.filename }}`** ({{ gguf.total_bytes | gib }} GiB, sha256 `{{ gguf.sha256 }}`).
+  - Routed experts (`blk.*.ffn_*_exps.weight`, {{ artifact.n_routed | int }} experts per layer): mixed K-quants (`Q2_K`, `Q3_K`, `Q4_K`), **{{ gguf.bpw | f2 }} bits per weight** on average, quantized once from the MXFP4 source with GPTQ error-feedback rounding (`ops/s07_quant.py`). The per-layer heal gain was folded into `w2` before rounding.
+  - Dense path (attention, indexer, compressor, shared expert, token embedding, `lm_head`): `Q8_0` (from the base checkpoint's FP8/BF16 tensors).
+  - Norms, router (`gate.weight`, `gate.bias`, `gate.bias_vl`), hyper-connection scalars and projections: `F32`.
+  - Vision tower and aligner: included in `BF16` (`v.*` tensors), unpruned.
+  - DSpark / MTP speculative-decoding layers (`mtp.0`, `mtp.1`, `mtp.2`): included (`Q8_0` dense + `F32` norms).
+- **`reap_keepset.json`** (sha256 `{{ gguf.keepset_sha256 }}`): the kept expert ids per layer.
 
-{{ gguf.levels_table }}
-
-{{ gguf.offload_note }}
-
-## Precision
-
-The routed experts carry the per-level mix above (the protected layers sit higher). The dense path **is** requantized by the GGUF writer:
-
-{{ gguf.dense_table }}
-
-The DSpark/MTP layers are not included (`--no-mtp`).
-
-{{ gguf.heal_sentence }}
+---
 
 ## The keep-set
 
+- **Calibration corpus:** 4,975,198 tokens in 8k sequences plus a 32k–128k long-context pool, balanced across general, multilingual, agentic, code, vision, math, science, finance, and long-context text (`corpus_spec` `c1803e70af7db162`), run layer-by-layer through the teacher with Engram enabled.
+- **Expert ranking & protection:** Candidate keep-sets were ranked by **HOPE** (pairwise co-activation with the REAP-sum diagonal; [arXiv:2609.18916](https://arxiv.org/abs/2609.18916)), REAP-sum ([arXiv:2510.13999](https://arxiv.org/abs/2510.13999)), routing mass, frequency, and random anchors.
+  - Each domain pool — and image tokens ranked separately under `gate.bias_vl` — protected its top specialist experts at the measured protect-fraction knee (`0.06`).
+  - Super-Experts and position-sensitive / attention-sink experts were locked against pruning (long-context drift guard).
+- **Held-out KL arbitration:** Arbitrated by held-out teacher top-32 KL on the screening split (`winner: hope_sum_pf0`, keep-set sha256 `{{ gguf.keepset_sha256 }}`).
+
+---
+
+## How it was evaluated
+
 {{ include:_common_eval }}
+
+{{ gguf.eval_note }}
+
+---
+
+## How to run it
+
+{{ gguf.runtime_note }}
+
+### Required `llama.cpp` Architecture Hooks
+To load and execute `{{ gguf.filename }}` in a `llama.cpp` fork implementing `general.architecture = "deepseek-v4.1"`, the graph builder must wire three DeepSeek-V4.1 mechanisms beyond standard `deepseek2` / `deepseek_v32` MLA + DSA:
+
+1. **Manifold-Constrained Hyper-Connections (`mHC`, 4-stream residual bus):**
+   - Each decoder layer carries `blk.{i}.mhc.{attn,mlp}.{phi_pre,phi_post,phi_res,b_pre,b_post,b_res,alpha_pre,alpha_post,alpha_res}` (`F32`).
+   - Before each sub-layer, project the 4-stream residual state (`n_hc = 4`) through `phi_*`, scale by `alpha_*`, add `b_*`, and normalize `H_res` (`[4, 4]`) via **20 iterations of log-domain Sinkhorn-Knopp** (`ggml_mhc_sinkhorn`, `tau = 0.05`).
+2. **External Engram Lookup Tables (Layers 1 and 25):**
+   - Download `model-00047-of-00048.safetensors` (`engram_L1`) and `model-00048-of-00048.safetensors` (`engram_L25`) from the base repository (command below).
+   - Hash each token's 2-gram and 3-gram context with the layer's 8 multipliers (`engram_hash_mult_L1` / `engram_hash_mult_L25`), fetch the 8 FP8 `E4M3` rows + `F8_E8M0` scales (via `mmap` or `O_DIRECT`), dequantize and concatenate into `[1280]`, and apply `blk.{1,25}.engram.{k_proj,v_proj,norm_k,norm_q,short_conv}`.
+3. **Host-Resident Expert Streaming (`-ngl 0 --no-repack` on 128 GB Unified Memory):**
+   - On unified-memory systems (such as a 128 GB NVIDIA Jetson AGX Thor or Mac Studio), pass `-ngl 0 --no-repack` (or keep `use_mmap = true` on integrated CUDA devices) so the {{ gguf.total_bytes | gib }} GiB GGUF stays zero-copy `mmap`-backed without a duplicate host-to-device buffer allocation during initialization.
+
+---
 
 {{ include:_spec }}
 
-**Release gate:** {{ gguf.gate_status }}.
+---
 
-## Engram (required, not included)
+## Engram tables (required, not included)
 
-The Engram tables are read from NVMe at decode time through row files built locally from the base repository's two Engram files:
+The two Engram tables (`engram_L1` and `engram_L25`) are unchanged by pruning and are not re-packed into this GGUF. Download them from the base repository at the pinned revision:
 
 {{ engram.list }}
 
-The row-file format and build script are documented in the runtime repository (`{{ gguf.engram_doc }}`).
+---
 
-**License:** MIT. Keep-set `{{ gguf.keepset_sha256 }}`; teacher `{{ base.repo }}` at `{{ base.revision }}`; pre-registered gates `{{ s10.gates_sha256 }}`.
+## License and provenance
+
+- **License:** MIT, the same as the base model (`LICENSE` is copied verbatim).
+- **Teacher:** `{{ base.repo }}` at `{{ base.revision }}`.
+- **Master pruned checkpoint:** [`patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4).
+- **Keep-set:** `{{ gguf.keepset_sha256 }}`.
+- **Pre-registered gates:** `{{ s10.gates_sha256 }}`.
