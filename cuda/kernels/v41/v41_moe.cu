@@ -151,17 +151,25 @@ __global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* io
                                                             const float* bias_vl, const uint8_t* img, int E, int topk,
                                                             float route_scale, int* rcnt) {
     constexpr int K = v41::DIM;
-    __shared__ float xs[K];
+    __shared__ __align__(16) float xs[K];
     __shared__ int last;
     const int m = blockIdx.y, warp = threadIdx.x >> 5, lane = threadIdx.x & 31, e = blockIdx.x * RP_WARPS + warp;
-    for (int k = threadIdx.x; k < K; k += blockDim.x) xs[k] = x[(size_t)m * K + k];
-    __syncthreads();
+    // all K/256 = 20 row loads issued before the x staging and the chain: the warp's 20 dependent
+    // 512-B loads (unroll 4) left it latency-bound at ~40 GB/s; the fmaf order is unchanged
+    uint4 wu[K / 256];
     if (e < E) {
         const uint4* wr = reinterpret_cast<const uint4*>(Wg + (size_t)e * K) + lane;
+        #pragma unroll
+        for (int i = 0; i < K / 256; ++i) wu[i] = __ldcs(wr + i * 32);
+    }
+    for (int k = threadIdx.x; k < K / 4; k += blockDim.x)
+        reinterpret_cast<float4*>(xs)[k] = reinterpret_cast<const float4*>(x + (size_t)m * K)[k];
+    __syncthreads();
+    if (e < E) {
         float d = 0.f;
-        #pragma unroll 4
+        #pragma unroll
         for (int i = 0; i < K / 256; ++i) {
-            const uint4 u = wr[i * 32];
+            const uint4 u = wu[i];
             const uint32_t v[4] = {u.x, u.y, u.z, u.w};
             #pragma unroll
             for (int t = 0; t < 8; ++t) {
