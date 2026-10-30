@@ -146,14 +146,18 @@ bool router_permute(uint16_t* Wg, int E, int K, cudaStream_t st) {
     rperm_map()[Wg] = K;
     return true;
 }
+// Prefill: a CTA serves RP_TM tokens with the same register-resident row slice (the gate was re-read from
+// L2 once per token: 2 MB x 256 rows = 2.1 ms a chunk); each (expert, token) chain is the decode one.
+static constexpr int RP_TM = 8;
 __global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* iout, float* sc_out, float* sel_out,
                                                             const float* x, const uint16_t* Wg, const float* bias,
-                                                            const float* bias_vl, const uint8_t* img, int E, int topk,
-                                                            float route_scale, int* rcnt) {
+                                                            const float* bias_vl, const uint8_t* img, int M, int E,
+                                                            int topk, float route_scale, int* rcnt, int tm) {
     constexpr int K = v41::DIM;
     __shared__ __align__(16) float xs[K];
-    __shared__ int last;
-    const int m = blockIdx.y, warp = threadIdx.x >> 5, lane = threadIdx.x & 31, e = blockIdx.x * RP_WARPS + warp;
+    __shared__ int lastf[RP_TM];
+    const int m0 = blockIdx.y * tm, nm = min(tm, M - m0);
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, e = blockIdx.x * RP_WARPS + warp;
     // all K/256 = 20 row loads issued before the x staging and the chain: the warp's 20 dependent
     // 512-B loads (unroll 4) left it latency-bound at ~40 GB/s; the fmaf order is unchanged
     uint4 wu[K / 256];
@@ -162,55 +166,63 @@ __global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* io
         #pragma unroll
         for (int i = 0; i < K / 256; ++i) wu[i] = __ldcs(wr + i * 32);
     }
-    for (int k = threadIdx.x; k < K / 4; k += blockDim.x)
-        reinterpret_cast<float4*>(xs)[k] = reinterpret_cast<const float4*>(x + (size_t)m * K)[k];
-    __syncthreads();
-    if (e < E) {
-        float d = 0.f;
-        #pragma unroll
-        for (int i = 0; i < K / 256; ++i) {
-            const uint4 u = wu[i];
-            const uint32_t v[4] = {u.x, u.y, u.z, u.w};
+    for (int mi = 0; mi < nm; ++mi) {
+        const int m = m0 + mi;
+        if (mi) __syncthreads();                          // the previous token's chains are done with xs
+        for (int k = threadIdx.x; k < K / 4; k += blockDim.x)
+            reinterpret_cast<float4*>(xs)[k] = reinterpret_cast<const float4*>(x + (size_t)m * K)[k];
+        __syncthreads();
+        if (e < E) {
+            float d = 0.f;
             #pragma unroll
-            for (int t = 0; t < 8; ++t) {
-                const float wv = __uint_as_float(t & 1 ? (v[t >> 1] & 0xFFFF0000u) : (v[t >> 1] << 16));
-                d = fmaf(xs[lane + 32 * (8 * i + t)], wv, d);
+            for (int i = 0; i < K / 256; ++i) {
+                const uint4 u = wu[i];
+                const uint32_t v[4] = {u.x, u.y, u.z, u.w};
+                #pragma unroll
+                for (int t = 0; t < 8; ++t) {
+                    const float wv = __uint_as_float(t & 1 ? (v[t >> 1] & 0xFFFF0000u) : (v[t >> 1] << 16));
+                    d = fmaf(xs[lane + 32 * (8 * i + t)], wv, d);
+                }
+            }
+            d = warp_sum(d);
+            if (lane == 0) {
+                const float sp = d > 20.f ? d : log1pf(expf(d));
+                const float s = sqrtf(sp);
+                const float* b = (img && img[m] && bias_vl) ? bias_vl : bias;
+                __stcg(sc_out + (size_t)m * E + e, s);
+                __stcg(sel_out + (size_t)m * E + e, s + b[e]);
             }
         }
-        d = warp_sum(d);
-        if (lane == 0) {
-            const float sp = d > 20.f ? d : log1pf(expf(d));
-            const float s = sqrtf(sp);
-            const float* b = (img && img[m] && bias_vl) ? bias_vl : bias;
-            __stcg(sc_out + (size_t)m * E + e, s);
-            __stcg(sel_out + (size_t)m * E + e, s + b[e]);
-        }
     }
     __threadfence();
     __syncthreads();
-    if (threadIdx.x == 0) last = atomicAdd(rcnt + m, 1) == (int)gridDim.x - 1;
+    if (threadIdx.x < nm) lastf[threadIdx.x] = atomicAdd(rcnt + m0 + threadIdx.x, 1) == (int)gridDim.x - 1;
     __syncthreads();
-    if (!last) return;
-    __threadfence();
     __shared__ float sv[512]; __shared__ int ids[16];
-    for (int j = threadIdx.x; j < E; j += blockDim.x) sv[j] = __ldcg(sel_out + (size_t)m * E + j);
-    __syncthreads();
-    for (int j = threadIdx.x; j < E; j += blockDim.x) {
-        const float v = sv[j]; int rank = 0;
-        for (int q = 0; q < E; ++q) { const float o = sv[q]; rank += (o > v) || (o == v && q < j); }
-        if (rank < topk) ids[rank] = j;
-    }
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        float ws[16], sum = 0.f;
-        for (int k = 0; k < topk; ++k) { ws[k] = __ldcg(sc_out + (size_t)m * E + ids[k]); sum += ws[k]; }
-        for (int k = 0; k < topk; ++k) {
-            float w = ws[k];
-            if (topk > 1) w = w / (sum + 1e-20f);
-            wout[m * topk + k] = w * route_scale;
-            iout[m * topk + k] = ids[k];
+    for (int mi = 0; mi < nm; ++mi) {
+        if (!lastf[mi]) continue;                         // uniform across the CTA (smem flag)
+        const int m = m0 + mi;
+        __threadfence();
+        for (int j = threadIdx.x; j < E; j += blockDim.x) sv[j] = __ldcg(sel_out + (size_t)m * E + j);
+        __syncthreads();
+        for (int j = threadIdx.x; j < E; j += blockDim.x) {
+            const float v = sv[j]; int rank = 0;
+            for (int q = 0; q < E; ++q) { const float o = sv[q]; rank += (o > v) || (o == v && q < j); }
+            if (rank < topk) ids[rank] = j;
         }
-        rcnt[m] = 0;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            float ws[16], sum = 0.f;
+            for (int k = 0; k < topk; ++k) { ws[k] = __ldcg(sc_out + (size_t)m * E + ids[k]); sum += ws[k]; }
+            for (int k = 0; k < topk; ++k) {
+                float w = ws[k];
+                if (topk > 1) w = w / (sum + 1e-20f);
+                wout[m * topk + k] = w * route_scale;
+                iout[m * topk + k] = ids[k];
+            }
+            rcnt[m] = 0;
+        }
+        __syncthreads();                                  // sv / ids reused by the next token
     }
 }
 size_t router_scratch_bytes(int M, int E) { return (size_t)2 * M * E * sizeof(float); }
@@ -219,8 +231,10 @@ void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float*
     if (!scratch) { k_router<<<M, 512, 0, st>>>(w, idx, x, Wg, bias, bias_vl, d_img, E, topk, route_scale); return; }
     if (rperm_map().count(Wg)) {
         if (M > RCNT || E > 512 || topk > 16) { fprintf(stderr, "router: M %d E %d topk %d out of range\n", M, E, topk); abort(); }
-        k_router_p<<<dim3((E + RP_WARPS - 1) / RP_WARPS, M), RP_WARPS * 32, 0, st>>>(
-            w, idx, scratch, scratch + (size_t)M * E, x, Wg, bias, bias_vl, d_img, E, topk, route_scale, g_rcnt);
+        static const int tm_env = [] { const char* e = getenv("V41_ROUTER_TM"); return e ? atoi(e) : RP_TM; }();
+        const int tm = std::max(1, std::min(M == 1 ? 1 : tm_env, RP_TM));
+        k_router_p<<<dim3((E + RP_WARPS - 1) / RP_WARPS, (M + tm - 1) / tm), RP_WARPS * 32, 0, st>>>(
+            w, idx, scratch, scratch + (size_t)M * E, x, Wg, bias, bias_vl, d_img, M, E, topk, route_scale, g_rcnt, tm);
         return;
     }
     float* sc = scratch; float* sel = scratch + (size_t)M * E;
