@@ -5,7 +5,7 @@ It keeps 192 of 384 routed experts per layer and quantizes the survivors to abou
 189 GiB Engram tables are read from NVMe per token, so they need no memory. This repository is the full pipeline and
 the record of every measurement and decision behind the released weights.
 
-## Status (2026-10-26)
+## Status (2026-10-30)
 
 Research release. The weights are usable for evaluation and experimentation. They are not a drop-in replacement for
 the unpruned model: agreement with it is about 80% top-1 on held-out text, and multilingual quality drops the most
@@ -14,13 +14,12 @@ the unpruned model: agreement with it is about 80% top-1 on held-out text, and m
 | Artifact | Format | State |
 |---|---|---|
 | [`REAP192-MXFP4`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-MXFP4) | Safetensors, MXFP4 experts (bit-exact subset of the source) | Public. The master every other build is made from |
-| [`REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | Thor-native layout, Q2_K/Q3_K experts, FP8 dense, 106.9 GiB | Public. Served by the CUDA engine in [`cuda/`](cuda/) |
+| [`REAP192-Thor`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor) | Thor-native layout, Q2_K/Q3_K experts, FP8 dense, 106.9 GiB | Public. Served by the CUDA server [`deepseek-v4.1-flash-cuda-server`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-cuda-server) (source also in [`cuda/`](cuda/)) |
 | [`REAP192-GGUF`](https://huggingface.co/patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF) | GGUF level L3 for llama.cpp, 85.6 GiB in 3 splits, Engram from NVMe | Public, as a near-miss release: KL 0.508 passes (≤ 0.8), top-1 0.7725 is just under the 0.78 floor (95% CI 0.712–0.829); smoke passed. L2 failed both bars and is not published |
-| llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text decode, Engram row store, DSpark drafter. No vision; context capped at 16,384 tokens |
-| NVFP4 dense overlay | — | Held: the V4.1 engine cannot load it yet |
+| llama.cpp support | [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor) | Text and image input (mmproj), Engram row store, DSpark drafter, `thor/start.sh`. Context capped at 16,384 tokens |
+| NVFP4 dense overlay | `overlay_nvfp4/` in `REAP192-Thor` (3.5 GiB, a separate copy; the MXFP4 master is unchanged) | Public, served by default by the CUDA server |
 
-The roadmap is GGUF and llama.cpp first. See [`llamacpp/NEXT.md`](llamacpp/NEXT.md) for long context and vision.
-Speed work on the CUDA engine is parked.
+See [`llamacpp/NEXT.md`](llamacpp/NEXT.md) for what is left on long context.
 
 ## Results
 
@@ -50,15 +49,18 @@ document-cluster bootstrap intervals.
 draws, multilingual-protected variants and 128-expert variants. The shipped `hope_sum_pf0` had the best overall
 kl32 (0.298). All 14 arms are in [`RESULTS.md`](RESULTS.md).
 
-**Serving on Thor** (CUDA engine, greedy, no speculative decoding):
+**Serving on Thor** (measured 2026-10-30 through each runtime's `start.sh`, greedy, one stream):
 
-| Context | Decode | Prefill |
-|---|---|---|
-| Short prompt | 8.10 tok/s, identical across runs | ~20 tok/s |
-| 64k tokens | 6.59 tok/s | ~30 min for 64k tokens |
+| | CUDA server (`REAP192-Thor`) | llama.cpp fork (`REAP192-GGUF` L3) |
+|---|---:|---:|
+| Decode, 256-token chat answers | **25.0 tok/s** | 12.3–12.5 tok/s; 16.6–19.9 with `DSPARK=1` |
+| Prefill, ~1.8K-token prompt | 398 tok/s | 159 tok/s |
+| Prefill, ~6–7K-token prompt | 739 tok/s | 147 tok/s |
+| Image input | no | yes |
 
-This is a first-pass engine at about 40% of the memory-bandwidth limit (11.45 GB read per token, about 20 tok/s
-at 230 GB/s). [`docs/DECODE_PARITY_0731.md`](docs/DECODE_PARITY_0731.md) maps the gap and the levers.
+The CUDA server's decode runs at 78% of the bandwidth roofline for the 8.57 GB it reads per token
+([`docs/zenith/LEDGER.md`](docs/zenith/LEDGER.md)). Every speedup since the first working build (8.10 tok/s) kept
+greedy ids identical. The history is in [`docs/ZENITH_LOOP.md`](docs/ZENITH_LOOP.md) and [`docs/zenith/`](docs/zenith/).
 
 ## Method
 
@@ -91,19 +93,25 @@ DeepSeek-V4.1-Flash-1017 (384 experts/layer, MXFP4 experts, 763B)
 its runtime. You also need about 200 GB of NVMe for the Engram row files.
 
 ```bash
-git clone -b deepseek-v4.1-reap-thor https://github.com/patrickbdevaney/llama.cpp
-cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON && cmake --build llama.cpp/build -j --target llama-server
-# Engram row files: build once from two source shards (see the GGUF model card for the exact commands)
-LLAMA_ENGRAM_ROWFILE_DIR=/nvme/v41rows llama.cpp/build/bin/llama-server \
-    -m <first split of the GGUF level> -ngl 999 -c 8192 --jinja --port 8080
+git clone -b deepseek-v4.1-reap-thor https://github.com/patrickbdevaney/llama.cpp && cd llama.cpp
+thor/build.sh
+hf download patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-GGUF --local-dir ~/models/DeepSeek-V4.1-Flash-1017-REAP192-GGUF
+# Engram row files: build once from two source shards (ops/s09_engram_rowfile.py), then
+thor/start.sh            # text + images;  DSPARK=1 thor/start.sh for speculative decoding
 ```
 
-The GGUF model card carries the full, gate-tested commands. Those include downloading the GGUF, building and
-verifying the row files, and the optional DSpark drafter (`--spec-type draft-dspark`).
+See [`thor/README.md`](https://github.com/patrickbdevaney/llama.cpp/blob/deepseek-v4.1-reap-thor/thor/README.md) on the
+branch and the GGUF model card for the row-file commands and settings.
 
-**Thor CUDA engine.** The engine builds for `sm_110a` ([`cuda/scripts/build_v41.sh`](cuda/scripts/build_v41.sh)) and
-loads the `REAP192-Thor` build together with the row files. The engine's source is not yet part of the published
-Thor repository. See [`cuda/README.md`](cuda/README.md).
+**Thor CUDA server (faster, text only).** It lives in
+[`patrickbdevaney/deepseek-v4.1-flash-cuda-server`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-cuda-server),
+split from [`cuda/`](cuda/) here:
+
+```bash
+git clone https://github.com/patrickbdevaney/deepseek-v4.1-flash-cuda-server && cd deepseek-v4.1-flash-cuda-server
+hf download patrickbdevaney/DeepSeek-V4.1-Flash-1017-REAP192-Thor --local-dir ~/models/DeepSeek-V4.1-Flash-1017-REAP192-Thor
+scripts/build_v41.sh v41_server && ./start.sh      # same Engram row files as llama.cpp
+```
 
 ## Compatibility
 
@@ -111,7 +119,7 @@ Thor repository. See [`cuda/README.md`](cuda/README.md).
 |---|---|
 | Jetson AGX Thor (128 GB, `sm_110a`), CUDA 13 | Tested: CUDA engine and llama.cpp |
 | Other CUDA GPUs with ≥ 110 GB combined GPU memory, or partial offload | Expected to work with llama.cpp (`CUDA_ARCH=<sm>`); not tested |
-| vLLM, SGLang, upstream llama.cpp | Not supported. V4.1 support in upstream llama.cpp is an unmerged PR ([#28696](https://github.com/ggml-org/llama.cpp/pull/28696)); this fork adds six patches on top of it |
+| vLLM, SGLang, upstream llama.cpp | Not supported. V4.1 support in upstream llama.cpp is an unmerged PR ([#28696](https://github.com/ggml-org/llama.cpp/pull/28696)); this fork adds nine commits on top of it |
 
 ## Limitations
 
@@ -122,8 +130,9 @@ Thor repository. See [`cuda/README.md`](cuda/README.md).
 - **Long context is untested for quality.** No confirm-split bin past 8k tokens was adequately sampled. The CUDA
   engine runs a 64k prefill correctly, but retention at long context is unmeasured. llama.cpp is capped at 16,384
   tokens until the candidate-block mask ([`llamacpp/patches-pending/`](llamacpp/patches-pending/)) passes its GPU gate.
-- **Vision.** The source model has a vision tower. It was used for vision-aware expert selection, but no runtime here
-  serves images yet.
+- **Vision.** The llama.cpp fork serves images through the mmproj in the GGUF repository. The encoder was
+  golden-tested against the reference, and end-to-end image QA was spot-checked. Image-domain quality after
+  pruning has not been benchmarked. The CUDA server is text only.
 - **Golden layer gate.** The Thor build's layer-by-layer golden gate failed its pooled near-tie rule
   (46 disagreements, 41 of them near-ties). The owner waived it, and the build shipped on its serving gates
   ([decision record](ops/decisions/2026-10-25-golden-a192-drift-amendment.md)).

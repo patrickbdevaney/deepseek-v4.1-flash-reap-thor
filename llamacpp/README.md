@@ -7,6 +7,8 @@ This is a lean llama.cpp fork that serves two purposes:
 
 The fork is upstream llama.cpp at the **head of PR #28696** (DeepSeek-V4.1), which is still open and unmerged, plus four patches. `PINNED` records the shas.
 
+**To run the GGUF, use the public branch:** [`patrickbdevaney/llama.cpp@deepseek-v4.1-reap-thor`](https://github.com/patrickbdevaney/llama.cpp/tree/deepseek-v4.1-reap-thor). It carries everything here plus vision, the DSpark key fix and `thor/build.sh` + `thor/start.sh`, with numbers measured on Thor in its [`thor/README.md`](https://github.com/patrickbdevaney/llama.cpp/blob/deepseek-v4.1-reap-thor/thor/README.md). The faster, text-only path is the CUDA server, [`patrickbdevaney/deepseek-v4.1-flash-cuda-server`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-cuda-server).
+
 ```
 setup.sh      clone upstream, fetch pull/28696/head, check out 2076412598e9…, git am patches/  (branch v41-thor)
 build.sh      CUDA build, sm_110 (Thor) by default, CUDA_ARCH=<sm> for another GPU; -j4 by default; compile only
@@ -145,6 +147,6 @@ GPU steps run only under `quiet` (no leafllm vLLM, no runner, no other model loa
 
 - **Context:** practical context is about 16K. The PR has no two-level (2048×8) candidate pass. Patch 2 makes reader layers sparse, but the index sources still score every compressed row.
 - **DSpark drafting:** the runtime is upstream (`--spec-type draft-dspark`, `dflash: accept DeepSeek-V4.1 DSpark drafts`). Patch 0005 adds the V4.1 drafter export (`convert_hf_to_gguf.py --dspark`): its own 128 experts, the Markov head names, and target layers written as configured (V4.1 reads layer inputs; V4 is layer + 1). `ops/s09_dspark.py` converts, checks every tensor against a pinned reference drafter, benches it beside the largest level it fits next to, and gates it (`dspark_gguf`).
-- **Vision:** mmproj encoder ported and golden-tested against the reference (`tests/v41_vision_golden.py`); end-to-end image QA not yet run.
+- **Vision:** mmproj encoder ported and golden-tested against the reference (`tests/v41_vision_golden.py`); end-to-end image QA through `thor/start.sh` on the public branch passed a spot check (2026-10-30). The mmproj is in the GGUF repository.
 - **CUDA MMQ:** the PR's notes mention an out-of-bounds read in CUDA MMQ. That bug is upstream, and `backend_ops` and `kld` are where it would show.
 - **ik_llama.cpp:** it has merged `deepseek41` and the IQ*_KT trellis types. They are not used here: they have an open NaN bug (#2519) and are unverified on sm_110.
