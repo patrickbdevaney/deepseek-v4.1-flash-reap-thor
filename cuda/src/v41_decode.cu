@@ -1,7 +1,7 @@
 // v41_decode.cu — command-line greedy generation and tok/s bench over the V4.1 engine.
 //
 //   build/v41_decode --ckpt DIR [--keepset s04/keepset.json] [--engram DIR] [--prompt TEXT | --chat TEXT [--thinking] | --ids 1,2,3 | --ids-file F]
-//                    [--n 128] [--seqmax 8192] [--chunk 256] [--no-graph] [--sw-mxfp4] [--temp T --seed S]
+//                    [--n 128] [--seqmax 8192] [--chunk 1024] [--no-graph] [--sw-mxfp4] [--temp T --seed S]
 //                    [--repeat R] [--json OUT] [--logits OUT]
 //                    [--spec K [--draft HEAD_DIR] [--spec-sweep 1,2,3,4]]
 //
@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = "/home/patrickd/models/DeepSeek-V4.1-Flash-1017-REAP";
-    ec.seqmax = 8192; ec.ext_chunk = 256;            // prefill chunk (8k prefill: 64 -> 79.4, 256 -> 88.0 tok/s, ids identical)
+    ec.seqmax = 8192; ec.ext_chunk = 1024;           // prefill chunk (8k, P8: 512 349, 1024 458 @ 1.97 GiB state, 2048 476 @ 3.76 GiB; ids identical)
     std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, chat_file, trace_gen, trace_dir;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
