@@ -108,6 +108,11 @@ void overlay_register(const uint8_t* codes, const uint8_t* scales, float g, int 
 // P6: repack an FP8 [N, K] weight in place for the fp8 tensor-core path (k_f8m); fp8_linear then serves it
 // with k_f8m at every M (T1 vs k_dense, decode == prefill). N % 32, K % 256.
 bool f8m_register(uint8_t* W, int N, int K);
+// P8 stage 1: NVFP4-overlay GEMM on tcgen05 (CUTLASS mixed input, v41_tc5.cu) on k_nvm-repacked W/S; false = not
+// applicable (caller falls back). V41_TC5=1 enables it in fp8_linear for prefill rows.
+bool tc5_on();
+bool tc5_nvfp4(float* y, const uint8_t* xq, const float* xs, int ldx, const uint8_t* W, const uint8_t* S, float g,
+               int M, int N, int K, int G, bool round, cudaStream_t st);
 // Q2_K/Q3_K routed experts: half2 fast path (default; tolerance-gated by tests/gate_kq_fast.cu) or the
 // bit-exact fp32 decode (V41_KQ_FAST=0). Tests switch it in-process.
 void kq_fast_set(bool on);

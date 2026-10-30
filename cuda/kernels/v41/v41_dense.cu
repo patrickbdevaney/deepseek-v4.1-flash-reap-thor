@@ -367,6 +367,9 @@ void fp8_linear(float* y, const uint8_t* xq, const float* xs, const uint8_t* W, 
     if (!ov_map().empty()) {
         auto it = ov_map().find(W);
         if (it != ov_map().end()) {
+            // P8: prefill rows on tcgen05 (V41_TC5=1, T1); decode / verify stay on k_nvm
+            if (it->second.mma && M >= 64 && tc5_on() && tc5_nvfp4(y, xq, xs, K * G, W, Ws, it->second.g, M, N, K, G, round_bf16, st))
+                return;
             if (it->second.mma) { launch_nvm(y, X, W, Ws, it->second.g, M, N, K, G, round_bf16, st); return; }
             DecNVFP4 d{W, Ws, it->second.g, K};
             launch_dense(y, X, d, M, N, K, G, round_bf16, 1.0f, st);
