@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = getenv("V41_CKPT") ? getenv("V41_CKPT") : ".";
     ec.seqmax = 8192; ec.ext_chunk = 1024;           // prefill chunk (8k, P8: 512 349, 1024 458 @ 1.97 GiB state, 2048 476 @ 3.76 GiB; ids identical)
-    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, chat_file, trace_gen, trace_dir;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, chat_file, trace_gen, trace_dir, route_trace;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
         else if (a == "--chat-file") chat_file = next();
         else if (a == "--trace-gen") trace_gen = next();
         else if (a == "--trace-dir") trace_dir = next();
+        else if (a == "--route-trace") route_trace = next();
         else if (a == "--thinking") thinking = true;
         else if (a == "--ids") ids_arg = next();
         else if (a == "--ids-file") { std::ifstream f(next()); std::stringstream ss; ss << f.rdbuf(); ids_arg = ss.str(); }
@@ -131,6 +132,23 @@ int main(int argc, char** argv) {
 
     dsv4srv::Engine eng(ec);
     eng.load();
+    if (!route_trace.empty()) {                       // M3 probe: prefill every D2 trace seq with V41_ROUTE_DUMP set
+        if (!getenv("V41_ROUTE_DUMP")) { fprintf(stderr, "--route-trace needs V41_ROUTE_DUMP=FILE\n"); return 2; }
+        std::ifstream fk(route_trace + "/tokens.bin", std::ios::binary), fs(route_trace + "/seqs.jsonl");
+        fk.seekg(0, std::ios::end); std::vector<int> all(fk.tellg() / 4); fk.seekg(0); fk.read((char*)all.data(), all.size() * 4);
+        std::string l; int n = 0;
+        while (std::getline(fs, l)) {
+            if (l.empty()) continue;
+            const json j = json::parse(l);
+            const long o = j["offset"], len = j["length"];
+            std::vector<int> sid(all.begin() + o, all.begin() + o + len);
+            eng.debug_prefix_logits(sid); eng.reset();
+            printf("[route] %s %s %ld\n", j["id"].get<std::string>().c_str(), j["domain"].get<std::string>().c_str(), len);
+            fflush(stdout); ++n;
+        }
+        printf("[route] %d seqs\n", n);
+        return 0;
+    }
     if (!score_in.empty() && !score_nll.empty()) {
         std::ifstream fi(score_in); std::vector<int> forced; int v; while (fi >> v) forced.push_back(v);
         std::vector<float> tlp; std::vector<int> tid;

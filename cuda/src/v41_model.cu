@@ -569,6 +569,18 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
     v41k::fp8_linear(out, s.xq, s.xs, w.wo_b, w.wo_b_s, M, DIM, O_GROUPS * O_LORA, true, st);
 }
 
+// V41_ROUTE_DUMP=FILE (M3 probe, prefill only): append {int32 L, int32 M, int32 ridx[M][N_ACT]} per MoE
+// call with M > 1. Syncs the stream, so never on in serving; v41_decode --route-trace drives it.
+static void route_dump(int L, const int* ridx, int M, cudaStream_t st) {
+    static FILE* f = [] { const char* e = getenv("V41_ROUTE_DUMP"); return e && *e ? fopen(e, "ab") : (FILE*)nullptr; }();
+    if (!f || M <= 1) return;
+    std::vector<int> h((size_t)M * N_ACT);
+    CK(cudaMemcpyAsync(h.data(), ridx, h.size() * 4, cudaMemcpyDeviceToHost, st));
+    CK(cudaStreamSynchronize(st));
+    const int hdr[2] = {L, M};
+    fwrite(hdr, 4, 2, f); fwrite(h.data(), 4, h.size(), f); fflush(f);
+}
+
 // MoE.forward: router (bias_vl on image rows), routed experts in ascending order, + shared
 static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float* out, cudaStream_t st, bool xq_ready = false) {
     const int M = R.M;
@@ -578,6 +590,7 @@ static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float*
         v41k::moe_shared(s.sh_o, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.sh_scratch, s.side);
         CK(cudaEventRecord(s.ev_join, s.side));
         v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+        route_dump(w.L, s.ridx, M, st);
         cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
         v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
         CK(cudaStreamWaitEvent(st, s.ev_join, 0));
@@ -585,6 +598,7 @@ static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float*
         return;
     }
     v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+    route_dump(w.L, s.ridx, M, st);
     if (!xq_ready) v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
     cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
     v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
