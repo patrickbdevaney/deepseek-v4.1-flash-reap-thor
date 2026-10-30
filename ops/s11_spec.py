@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -554,12 +555,78 @@ def cmd_refit(a):
     val_seqs = set(rng.choice(seqs, max(1, int(len(seqs) * g["val_frac"])), replace=False).tolist())
     tr = [x for x in items if x[0] not in val_seqs]
     va = [x for x in items if x[0] in val_seqs][: g["val_anchors"]]
+    if g.get("shuffle"):                                 # anchors come in sequence order: unshuffled, a batch is
+        tr = [tr[i] for i in rng.permutation(len(tr))]   # b ADJACENT positions of one sequence (one correlated sample)
+    if g.get("freeze_1d"):                               # norms, hc scales/bases, sinks: Adam's ~lr step is
+        for b_ in d.blocks:                               # a large relative move at their 0.03-0.2 scale
+            for p_ in b_.parameters():
+                if p_.ndim < 2:
+                    p_.requires_grad_(False)
     params = [p for b in d.blocks for p in b.parameters() if p.requires_grad]
     # fp32 masters: an AdamW step of ~lr on a bf16 weight (8-bit mantissa) mostly rounds away, so the bf16
     # params alone drift by rounding noise instead of learning (D3: val accepted fell at every checkpoint)
     masters = [p.detach().float().clone().requires_grad_(True) for p in params]
     opt = torch.optim.AdamW(masters, lr=g["lr"], weight_decay=0.0, betas=(0.9, 0.95))
-    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / g["warmup"]))
+    # Recipe options ported from the 0731 drafter programme (deepseek-v4-flash-0731-cuda train/train_head.py,
+    # docs/HEAD_REGISTRY.md: its promoted head s3recap-p25-b0.1, suite tau 3.54 -> 3.84). All default OFF, so
+    # an S11_TRAIN without them is the registered recipe:
+    #   epochs  E      steps = E passes over the train anchors (overrides steps), cosine decay after warmup
+    #   decay   gamma  per-slot weight exp(-k / gamma) (DSpark / NeMo default gamma = block size)
+    #   slots   n      train only the first n slots (the served K; slots past it never get verified)
+    #   a_conf  x      confidence-BCE weight (registered 0.1; 0731 found it confidently wrong on teacher-forced data)
+    #   deficit c      row loss x min((1 - r) / mean(1 - r), c), r = the row's accepted fraction (P2.5)
+    #   beta    b      + b * r^anchor_pow * KL(q_new || q_frozen) to an untouched copy of the native head (P2.5)
+    if g.get("epochs"):
+        g["steps"] = int(g["epochs"] * (len(tr) // g["batch"]))
+    if g.get("cosine"):
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / g["warmup"])
+                                                  * 0.5 * (1 + math.cos(math.pi * min(1.0, s / g["steps"]))))
+    else:
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / g["warmup"]))
+    S = d.S
+    slot_w = torch.ones(S, device="cuda")
+    if g.get("decay"):
+        slot_w = torch.exp(-torch.arange(S, device="cuda", dtype=torch.float32) / g["decay"])
+    if g.get("slots"):
+        slot_w[g["slots"]:] = 0
+    a_conf, deficit, beta, apow = g.get("a_conf", 0.1), g.get("deficit"), g.get("beta", 0.0), g.get("anchor_pow", 1.0)
+    frozen, dsum = None, [0.0, 0]
+    if beta > 0:
+        import copy
+        memo = {id(p): p for b in d.blocks for p in b.parameters() if not p.requires_grad}
+        memo.update({id(d.embed): d.embed, id(d.head): d.head})
+        with torch.no_grad():
+            fblocks = copy.deepcopy(d.blocks, memo)    # frozen experts/embed/head shared, not copied
+        for fb in fblocks:
+            fb.eval()
+            for p_ in fb.parameters():
+                p_.requires_grad_(False)
+        frozen = dspark.Drafter(d.M, d.args, fblocks, d.embed, d.head)
+    env.log(f"refit {a.arm}: recipe {json.dumps({k: g[k] for k in sorted(g) if k not in ('frozen',)})}", STAGE)
+
+    def recipe_loss(lg, cf, tg, mh, ti):
+        import torch.nn.functional as F
+        ce = F.cross_entropy(lg.float().flatten(0, 1), tg.flatten(), reduction="none").view(-1, S)
+        with torch.no_grad():
+            ok = torch.cumprod((lg.argmax(-1) == tg).float(), dim=1)
+        bce = F.binary_cross_entropy_with_logits(cf.float(), ok, reduction="none")
+        wsum = slot_w.sum()
+        row = (ce * slot_w).sum(1) / wsum + a_conf * (bce * slot_w).sum(1) / wsum
+        if deficit or frozen is not None:
+            n_live = int((slot_w > 0).sum())
+            r = ok[:, :n_live].mean(1)
+        if deficit:
+            dsum[0] += float((1 - r).sum()); dsum[1] += r.numel()
+            mean1 = dsum[0] / dsum[1] if dsum[1] >= 256 else 0.41
+            row = row * ((1 - r) / max(mean1, 1e-6)).clamp(max=float(deficit))
+        if frozen is not None:
+            with torch.no_grad():
+                flg, _, _ = dspark.step(frozen, mh, ti, targets=tg)
+                lpf = torch.log_softmax(flg.float(), -1)
+            lpn = torch.log_softmax(lg.float(), -1)
+            kl = ((lpn.exp() * (lpn - lpf)).sum(-1) * slot_w).sum(1) / wsum
+            row = row + beta * r.pow(apow) * kl
+        return row.mean(), ce.mean(0).detach()
     log = env.Ledger(OUT / f"refit_{a.arm}.json")
 
     def val():
@@ -586,11 +653,12 @@ def cmd_refit(a):
         for k in rng.permutation(len(tr) // g["batch"]):
             mh, ti, tg = T.batch(tr[k * g["batch"]:(k + 1) * g["batch"]], "cuda")
             lg, _, cf = dspark.step(d, mh, ti, targets=tg)
-            loss, per = dspark.loss_fn(lg, cf, tg)
+            loss, per = recipe_loss(lg, cf, tg, mh, ti)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             for p, mp in zip(params, masters):
                 mp.grad = None if p.grad is None else p.grad.float()
+                p.grad = None                            # opt.zero_grad clears only the masters
             torch.nn.utils.clip_grad_norm_(masters, g["clip"])
             opt.step()
             sched.step()
