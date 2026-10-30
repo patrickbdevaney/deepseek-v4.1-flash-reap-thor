@@ -208,6 +208,7 @@ size_t topk_scratch_bytes(int M);
 // Scratch for the split decode/verify form (M <= 8); without it sparse_attn uses the one-kernel form.
 void sparse_attn_reserve(int max_m);
 void topk_serial_set(bool on);           // gate use: the thread-0 scan form of topk_rows
+void sam_row_set(int min_m);                 // P7a row form for passes of >= min_m rows (gate)
 void sparse_attn_split_set(bool on);
 void sparse_attn(float* o, const float* q, const float* win_ring, int ring, const uint8_t* ccodes,
                  const uint8_t* cscales, const int* cidx, int ncomp, int coff, const float* sink,

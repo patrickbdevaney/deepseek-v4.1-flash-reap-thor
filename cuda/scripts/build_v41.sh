@@ -28,6 +28,7 @@ if want "$1" gate_v41_units; then $NVCC tests/gate_v41_units.cu kernels/v41/kt_v
 # KT2/KT3 encoder for s07 thor-trellis (ops/lib/kt.py loads it through ctypes)
 if want "$1" libkt_viterbi; then $NVCC -shared -Xcompiler -fPIC kernels/v41/kt_viterbi.cu -o build/libkt_viterbi.so; echo "built build/libkt_viterbi.so"; fi
 if want "$1" gate_sa_split; then $NVCC tests/gate_sa_split.cu $KOBJ $LIBS -o build/gate_sa_split; echo "built build/gate_sa_split"; fi
+if want "$1" gate_sam_row; then $NVCC -I kernels/v41 tests/gate_sam_row.cu $KOBJ $LIBS -o build/gate_sam_row; echo "built build/gate_sam_row"; fi
 if want "$1" gate_units_par; then $NVCC tests/gate_units_par.cu $KOBJ $LIBS -o build/gate_units_par; echo "built build/gate_units_par"; fi
 if want "$1" gate_lpr; then $NVCC tests/gate_lpr.cu $KOBJ $LIBS -o build/gate_lpr; echo "built build/gate_lpr"; fi
 if want "$1" gate_nvm; then $NVCC tests/gate_nvm.cu $KOBJ $LIBS -o build/gate_nvm; echo "built build/gate_nvm"; fi

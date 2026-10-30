@@ -500,6 +500,11 @@ static constexpr int SA_SPLIT_M = 8;
 static float* g_sa_e = nullptr;  static float* g_sa_s = nullptr;  static int* g_sa_n = nullptr;  static int g_sa_m = 0;
 // tensor-core path scratch (v41_sa_mma.cuh): SAM_ROWS rows of bf16 entries + fp32 scores
 static uint16_t* g_sam_e = nullptr; static float* g_sam_s = nullptr; static int* g_sam_n = nullptr;
+// P7a row form (k_sam_scores_row + k_sam_out_p, bitwise with K2 + K3) for passes of >= g_sam_row_min rows:
+// one CTA per row is too few CTAs for decode / verify widths, which keep K2 + K3
+static uint16_t* g_sam_p = nullptr; static float* g_sam_d = nullptr;
+static int g_sam_row_min = [] { const char* e = getenv("V41_SAM_ROW_MIN"); return e ? atoi(e) : 16; }();
+void sam_row_set(int min_m) { g_sam_row_min = min_m; }
 static constexpr int SAM_K2_SMEM = 2 * 64 * v41g::SAM_QS * 2;
 static constexpr int SAM_K3_SMEM = 64 * v41g::SAM_PS * 2 + 64 * v41g::SAM_K3S * 2;
 void sparse_attn_reserve(int max_m) {
@@ -509,6 +514,10 @@ void sparse_attn_reserve(int max_m) {
             cudaMalloc(&g_sam_s, (size_t)R * v41::N_HEADS * v41g::SAM_E * 4) == cudaSuccess &&
             cudaMalloc(&g_sam_n, (size_t)R * 4) == cudaSuccess) {
             cudaMemset(g_sam_e, 0, (size_t)R * v41g::SAM_E * v41g::SAM_D * 2);
+            if (cudaMalloc(&g_sam_p, (size_t)R * v41::N_HEADS * v41g::SAM_PS * 2) != cudaSuccess ||
+                cudaMalloc(&g_sam_d, (size_t)R * v41::N_HEADS * 4) != cudaSuccess) { g_sam_p = nullptr; (void)cudaGetLastError(); }
+            cudaFuncSetAttribute(v41g::k_sam_scores_row, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K2_SMEM);
+            cudaFuncSetAttribute(v41g::k_sam_out_p, cudaFuncAttributeMaxDynamicSharedMemorySize, v41g::SAM_K3P_SMEM);
             cudaFuncSetAttribute(v41g::k_sam_scores, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K2_SMEM);
             cudaFuncSetAttribute(v41g::k_sam_out, cudaFuncAttributeMaxDynamicSharedMemorySize, SAM_K3_SMEM);
         } else { g_sam_e = nullptr; (void)cudaGetLastError(); }
@@ -650,8 +659,15 @@ void sparse_attn(float* o, const float* q, const float* win_ring, int ring, cons
     if (sam && g_sam_e) {
         for (int a = 0; a < M; a += v41g::SAM_ROWS) {
             const int mm = std::min(v41g::SAM_ROWS, M - a);
-            v41g::k_sam_gather<<<dim3(v41g::SAM_E / 16, mm), 256, 0, st>>>(g_sam_e, g_sam_n, win_ring, ring, ccodes, cscales,
+            v41g::k_sam_gather<<<dim3(v41g::SAM_E / v41g::SAM_GE, mm), 256, 0, st>>>(g_sam_e, g_sam_n, win_ring, ring, ccodes, cscales,
                                                                           cidx ? cidx + (size_t)a * ncomp : nullptr, ncomp, d_pos + a);
+            if (g_sam_p && mm >= g_sam_row_min) {             // P7a row form
+                v41g::k_sam_scores_row<<<mm, 256, SAM_K2_SMEM, st>>>(g_sam_s, g_sam_p, g_sam_d, g_sam_e, g_sam_n,
+                                                                     q + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, sink, scale);
+                v41g::k_sam_out_p<<<dim3(v41g::SAM_D / v41g::SAM_K3PD, mm), 256, v41g::SAM_K3P_SMEM, st>>>(
+                    o + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, g_sam_p, g_sam_d, g_sam_e, g_sam_n);
+                continue;
+            }
             v41g::k_sam_scores<<<dim3(v41g::SAM_E / 64, mm), 128, SAM_K2_SMEM, st>>>(g_sam_s, g_sam_e, g_sam_n,
                                                                                     q + (size_t)a * v41::N_HEADS * v41::HEAD_DIM, scale);
             v41g::k_sam_out<<<dim3(v41g::SAM_D / v41g::SAM_K3D, mm), 128, SAM_K3_SMEM, st>>>(
