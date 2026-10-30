@@ -34,7 +34,7 @@ __device__ __forceinline__ int kqt_swz64(int o) { return o ^ ((o >> 3) & 0x18); 
 constexpr int KQT_PROD = 256;                      // producer warps 0..7 (decode, B, UMMA issue by warp 0)
 constexpr int KQT_THREADS = KQT_PROD + 128;         // + drain warps 8..11 (TMEM lane quadrant = warp % 4)
 #ifndef KQT_DBG
-#define KQT_DBG 0                                  // timing breakdown only: 1 A, 2 B, 8 drain math, 16 UMMA skipped
+#define KQT_DBG 0                                  // timing breakdown only: 2 B tile loads, 8 drain math, 16 UMMA skipped
 #endif
 
 // operand type per K-quant: Q2_K bf16, Q3_K f16 (1280 + sc*c needs 11 significant bits)
@@ -184,7 +184,7 @@ __global__ void __launch_bounds__(KQT_THREADS, 1) k_kqt(float* __restrict__ out,
                 #pragma unroll
                 for (int i = 0; i < NBR; ++i) {
                     const int n = warp + i * (KQT_PROD / 32);
-                    if (n < ncol) kqt_cp16(Bs + kqt_swz(n * 64 + (k & 63) + (k >> 6) * 64 * NT), brow[i] + ((size_t)s * 256 + k) * 2);
+                    if (n < ncol && !(KQT_DBG & 2)) kqt_cp16(Bs + kqt_swz(n * 64 + (k & 63) + (k >> 6) * 64 * NT), brow[i] + ((size_t)s * 256 + k) * 2);
                 }
                 if (tid < ncol * 4) kqt_cp16(Bms + kqt_swz64(tid * 8), bmrow + ((size_t)s * 32 + (tid & 3) * 8) * 2);   // (tid / 4, 8 (tid % 4))
                 if (tid < ncol)

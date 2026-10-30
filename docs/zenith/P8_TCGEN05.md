@@ -134,3 +134,15 @@ tc5 helpers vectorized (k_tc5_act8: 8 e4m3 -> bf16 per thread; k_tc5_round4): th
 4 B per thread (~64 GB/s, 0.78 s of 8k prefill). Same per-element math, gate_tc5 maxerr unchanged.
 8k prefill (chunk 1024) 549.8 -> **580.7 tok/s**, ids IDENTICAL. Re-check of the stage 1 default at chunk
 1024: V41_TC5=0 = 335.7 tok/s (gate_tc5's M=256 timings, ~1.0x, do not reflect the engine).
+
+REJECTED: k_kqt NT = 128 (2026-10-30). Chunk 2048 vs 1024 barely moved k_kqt (3.33 vs 3.61 s at half the
+launches) because units cap at 64 tokens, so the idea was one A decode per 128 tokens. Built it with
+half-superblock stages (K 128: A 32 KB + B 32 KB + Am/Bm per stage, 2 x 80 KB smem; TMEM 2 x (C + Cmin) x
+128 = 512 cols; drain 8 warps x 64 columns; an mdone[2] barrier because mbar[1] could complete twice before
+drain(S) looked). gate PASS, sanitizer clean, but per token NT 128 = 2.16 ms / 1536 tok vs NT 64 2.08: a
+128-column unit costs 2.07x a 64-column one, and the half stages made NT 64 itself 1.57x slower (per-step
+barrier / UMMA latency paid twice per superblock). The skip-bit breakdown (B skipped -0.22 ms; B + UMMA +
+drain skipped 1.58 of 2.08 ms) overstated the A share: stages overlap, removing one exposes the next.
+Kept: KQT_DBG bit 2 (skip B loads). Code: scratchpad umma/kqt_v6_nt128_rejected.cuh.
+KQT_MIN sweep at chunk 1024: 3 / 5 / 9 / 13 = 565.4 / 568.3 / 580.7 / 570.7 tok/s -> 9 stays.
+Chunk 2048 vs 1024 now (fused attention, vectorized tc5): 588.3 vs 576.4 (+2%, +1.8 GiB) -> 1024 stays.
