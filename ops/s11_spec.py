@@ -541,7 +541,8 @@ def cmd_refit(a):
     import torch
     from ops.lib import dspark
     env.assert_no_gpu_server(STAGE)
-    g = gates()["train"]
+    g = dict(gates()["train"])
+    g.update(json.loads(os.environ.get("S11_TRAIN", "{}")))   # zenith D3 sweeps; the locked gates file stays as registered
     torch.manual_seed(g["seed"])
     M, args, tk = reference("torch")                    # differentiable kernels (STE fake-quant)
     d, raws = load_head(M, args, a.arm, "native", "cuda")
@@ -554,7 +555,10 @@ def cmd_refit(a):
     tr = [x for x in items if x[0] not in val_seqs]
     va = [x for x in items if x[0] in val_seqs][: g["val_anchors"]]
     params = [p for b in d.blocks for p in b.parameters() if p.requires_grad]
-    opt = torch.optim.AdamW(params, lr=g["lr"], weight_decay=0.0, betas=(0.9, 0.95))
+    # fp32 masters: an AdamW step of ~lr on a bf16 weight (8-bit mantissa) mostly rounds away, so the bf16
+    # params alone drift by rounding noise instead of learning (D3: val accepted fell at every checkpoint)
+    masters = [p.detach().float().clone().requires_grad_(True) for p in params]
+    opt = torch.optim.AdamW(masters, lr=g["lr"], weight_decay=0.0, betas=(0.9, 0.95))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / g["warmup"]))
     log = env.Ledger(OUT / f"refit_{a.arm}.json")
 
@@ -585,9 +589,14 @@ def cmd_refit(a):
             loss, per = dspark.loss_fn(lg, cf, tg)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, g["clip"])
+            for p, mp in zip(params, masters):
+                mp.grad = None if p.grad is None else p.grad.float()
+            torch.nn.utils.clip_grad_norm_(masters, g["clip"])
             opt.step()
             sched.step()
+            with torch.no_grad():
+                for p, mp in zip(params, masters):
+                    p.copy_(mp)
             step += 1
             if step % g["val_every"] == 0 or step == g["steps"]:
                 v = val()
@@ -602,6 +611,9 @@ def cmd_refit(a):
                         step = g["steps"]
             if step >= g["steps"]:
                 break
+    if best_state is None:                               # never beat native: export nothing (the last state is worse)
+        env.log(f"refit {a.arm}: no checkpoint beat native val {best:.3f}; tuned head NOT written", STAGE)
+        raise SystemExit(3)
     if best_state is not None:
         with torch.no_grad():
             for b in d.blocks:

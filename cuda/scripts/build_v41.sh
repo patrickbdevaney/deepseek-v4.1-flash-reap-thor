@@ -31,6 +31,7 @@ if want "$1" gate_units_par; then $NVCC tests/gate_units_par.cu $KOBJ $LIBS -o b
 if want "$1" gate_lpr; then $NVCC tests/gate_lpr.cu $KOBJ $LIBS -o build/gate_lpr; echo "built build/gate_lpr"; fi
 if want "$1" gate_nvm; then $NVCC tests/gate_nvm.cu $KOBJ $LIBS -o build/gate_nvm; echo "built build/gate_nvm"; fi
 if want "$1" bench_dense; then $NVCC tests/bench_dense.cu $KOBJ $LIBS -o build/bench_dense; echo "built build/bench_dense"; fi
+if want "$1" gate_is_mma; then $NVCC tests/gate_is_mma.cu $KOBJ $LIBS -o build/gate_is_mma; echo "built build/gate_is_mma"; fi
 if want "$1" gate_topk; then $NVCC tests/gate_topk.cu $KOBJ $LIBS -o build/gate_topk; echo "built build/gate_topk"; fi
 if want "$1" gate_kq_fast; then $NVCC -I kernels/v41 tests/gate_kq_fast.cu $KOBJ $LIBS -o build/gate_kq_fast; echo "built build/gate_kq_fast"; fi
 if want "$1" gate_v41_golden; then $NVCC tests/gate_v41_golden.cu $KOBJ $LIBS -o build/gate_v41_golden; echo "built build/gate_v41_golden"; fi

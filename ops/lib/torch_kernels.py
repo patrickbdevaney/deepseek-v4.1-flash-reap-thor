@@ -126,7 +126,7 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, q_chunk: int = 256):
     out = torch.empty_like(q)
     for s0 in range(0, m, q_chunk):
         s1 = min(m, s0 + q_chunk)
-        idx = topk_idxs[:, s0:s1].long()                       # [b, c, k]
+        idx = topk_idxs[:, s0:s1].to(kv.device).long()          # [b, c, k]; index helpers build on cpu
         valid = idx >= 0
         g = torch.gather(kv.unsqueeze(1).expand(b, s1 - s0, *kv.shape[1:]), 2,
                          idx.clamp_min(0).unsqueeze(-1).expand(-1, -1, -1, d))  # [b, c, k, d]

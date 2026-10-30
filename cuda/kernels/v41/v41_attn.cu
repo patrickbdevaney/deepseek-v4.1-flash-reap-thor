@@ -13,6 +13,7 @@
 #include "v41_dev.cuh"
 namespace v41g { using namespace v41d; }
 #include "v41_sa_mma.cuh"
+#include "v41_is_mma.cuh"
 #include <cstdio>
 
 using namespace v41d;
@@ -140,10 +141,18 @@ __global__ void __launch_bounds__(256) k_index_scores(float* score, const float*
         srow[t] = v;
     }
 }
+bool is_mma_on() { static const bool on = [] { const char* e = getenv("V41_IS_MMA"); return !(e && *e == '0'); }(); return on; }   // P3 default (bitwise); V41_IS_MMA=0 = scalar
 void index_scores(float* score, const float* q, const float* w, const uint8_t* kcodes, const uint8_t* kscales,
-                  const uint8_t* cand, const int* d_pos, int ratio, int M, int ld_score, cudaStream_t st) {
-    dim3 grid(M, (ld_score + IS_TILE - 1) / IS_TILE);
+                  const uint8_t* cand, const int* d_pos, int ratio, int M, int ld_score, cudaStream_t st,
+                  const uint8_t* qcodes, const uint8_t* qscales) {
     const int ldc = (ld_score + v41::CAND_BLOCK - 1) / v41::CAND_BLOCK;
+    if (qcodes && is_mma_on()) {
+        dim3 g((M + v41g::IM_ROWS - 1) / v41g::IM_ROWS, (ld_score + v41g::IM_KEYS - 1) / v41g::IM_KEYS);
+        v41g::k_index_mma<v41::INDEX_N_HEADS, v41::INDEX_HEAD_DIM><<<g, 256, 0, st>>>(score, qcodes, qscales, w, kcodes, kscales,
+                                                                                    cand, d_pos, ratio, M, ld_score, ldc, v41::CAND_BLOCK);
+        return;
+    }
+    dim3 grid(M, (ld_score + IS_TILE - 1) / IS_TILE);
     k_index_scores<<<grid, 256, 0, st>>>(score, q, w, kcodes, kscales, cand, d_pos, ratio, ld_score, ldc);
 }
 

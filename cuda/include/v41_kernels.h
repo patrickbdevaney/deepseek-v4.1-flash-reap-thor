@@ -181,7 +181,11 @@ void store_packed_rows(uint8_t* cache_codes, uint8_t* cache_scales, const uint8_
 // candidate blocks when cand != null). q[M,32,128] fp4-sim values, w[M,32] (pre-scaled, bf16),
 // keys packed [T,64]+[T,4]. Score arithmetic mirrors the reference's bf16 einsum.
 void index_scores(float* score, const float* q, const float* w, const uint8_t* kcodes, const uint8_t* kscales,
-                  const uint8_t* cand, const int* d_pos, int ratio, int M, int ld_score, cudaStream_t st);
+                  const uint8_t* cand, const int* d_pos, int ratio, int M, int ld_score, cudaStream_t st,
+                  const uint8_t* qcodes = nullptr, const uint8_t* qscales = nullptr);
+// qcodes/qscales: q as fp4_sim's packed codes [M,32,64] + e8m0 [M,32,4]; with V41_IS_MMA=1 the scores run on
+// fp8 tensor cores (v41_is_mma.cuh, P3), else (or without them) k_index_scores on q.
+bool is_mma_on();
 // Level-one candidate blocks (layer 20): cand[m][block] = 1 for the kept 2048 blocks of 8.
 void candidate_blocks(uint8_t* cand, const float* score, const int* d_pos, int ratio, int M, int ld_score,
                       int ld_cand, void* scratch, cudaStream_t st);

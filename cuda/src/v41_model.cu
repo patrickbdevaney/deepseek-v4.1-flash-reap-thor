@@ -262,6 +262,17 @@ void bind_layer(Model& m, int L, bool hw) {
     lin("ffn.shared_experts.w3", w.sh_w3, w.sh_w3s);
     if (engram_slot(L) >= 0) {
         w.eg_wkv = u8("engram.wkv.weight"); w.eg_wkv_s = u8("engram.wkv.scale");
+        // V41_ENGRAM_NV=1 (T2, opt-in): an NVFP4 copy of the Engram KV projection (25600 x 6144 FP8, 157 MB, the
+        // last FP8 k_dense of the step: 1.36 ms AR, 45 ms per 256-row prefill chunk), served by k_nvm
+        static const bool eg_nv = [] { const char* e = getenv("V41_ENGRAM_NV"); return e && *e == '1'; }();
+        if (eg_nv) {
+            const size_t nk = (size_t)ENGRAM_KV_OUT * ENGRAM_KV_IN;
+            uint8_t *c = nullptr, *sc = nullptr;
+            CK(cudaMalloc(&c, nk / 2)); CK(cudaMalloc(&sc, nk / 16));
+            const float g = v41k::nvfp4_from_fp8(c, sc, w.eg_wkv, w.eg_wkv_s, ENGRAM_KV_OUT, ENGRAM_KV_IN, 0);
+            v41k::overlay_register(c, sc, g, ENGRAM_KV_OUT, ENGRAM_KV_IN);
+            w.eg_wkv = c; w.eg_wkv_s = sc;
+        }
         w.eg_q = b16("engram.q_weight"); w.eg_k = b16("engram.k_weight");
     }
     const std::string ep = p + "ffn.experts.";
@@ -394,6 +405,7 @@ void alloc_state(State& s, int seqmax, int max_rows, size_t score_budget, int sh
     s.ck = dalloc<float>(s, (size_t)R * HEAD_DIM); s.cs = dalloc<float>(s, (size_t)R * HEAD_DIM);
     s.lat = dalloc<float>(s, (size_t)R * HEAD_DIM); s.ik = dalloc<float>(s, (size_t)R * INDEX_HEAD_DIM);
     s.iq = dalloc<float>(s, (size_t)R * INDEX_N_HEADS * INDEX_HEAD_DIM); s.iw = dalloc<float>(s, (size_t)R * INDEX_N_HEADS);
+    s.iqp = dalloc<uint8_t>(s, (size_t)R * INDEX_N_HEADS * INDEX_HEAD_DIM / 2); s.iqs = dalloc<uint8_t>(s, (size_t)R * INDEX_N_HEADS * INDEX_HEAD_DIM / 32);
     s.rw = dalloc<float>(s, (size_t)R * N_ACT); s.ridx = dalloc<int>(s, (size_t)R * N_ACT);
     s.rscr = dalloc<float>(s, v41k::router_scratch_bytes(R, 512) / sizeof(float));
     s.eg_e = dalloc<float>(s, (size_t)R * ENGRAM_KV_IN); s.eg_kv = dalloc<float>(s, (size_t)R * ENGRAM_KV_OUT);
@@ -512,7 +524,8 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
         v41k::act_quant_fp8(qxq, qxs, s.qr, M, Q_LORA, st);
         v41k::fp8_linear(s.iq, qxq, qxs, w.idx_wq_b, w.idx_wq_b_s, M, INDEX_N_HEADS * INDEX_HEAD_DIM, Q_LORA, true, st);
         v41k::rope(s.iq, M * INDEX_N_HEADS, INDEX_N_HEADS, INDEX_HEAD_DIM, INDEX_HEAD_DIM - ROPE_DIM, R.pos, 0, false, true, st);
-        v41k::fp4_sim(s.iq, M * INDEX_N_HEADS, INDEX_HEAD_DIM, IDX_FP4_GRP, false, nullptr, nullptr, st);
+        const bool ism = v41k::is_mma_on();
+        v41k::fp4_sim(s.iq, M * INDEX_N_HEADS, INDEX_HEAD_DIM, IDX_FP4_GRP, false, ism ? s.iqp : nullptr, ism ? s.iqs : nullptr, st);
         v41k::bf16_linear(s.iw, x, w.idx_wproj, M, INDEX_N_HEADS, DIM, true, st);
         v41k::scale_bf16(s.iw, (size_t)M * INDEX_N_HEADS,
                          1.0f / std::sqrt((float)INDEX_HEAD_DIM) / std::sqrt((float)INDEX_N_HEADS), st);
@@ -523,7 +536,9 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
             const int mm = std::min(rs, M - a);
             v41k::index_scores(s.score, s.iq + (size_t)a * INDEX_N_HEADS * INDEX_HEAD_DIM, s.iw + (size_t)a * INDEX_N_HEADS,
                                own.ik, own.ik_s, w.uses_cand ? cand + (size_t)a * s.ld_cand : nullptr, R.pos + a,
-                               w.ratio, mm, s.ld_score, st);
+                               w.ratio, mm, s.ld_score, st,
+                               ism ? s.iqp + (size_t)a * INDEX_N_HEADS * INDEX_HEAD_DIM / 2 : nullptr,
+                               ism ? s.iqs + (size_t)a * INDEX_N_HEADS * INDEX_HEAD_DIM / 32 : nullptr);
             if (w.cand_src)
                 v41k::candidate_blocks(cand + (size_t)a * s.ld_cand, s.score, R.pos + a, w.ratio, mm, s.ld_score,
                                        s.ld_cand, s.cand_scratch, st);

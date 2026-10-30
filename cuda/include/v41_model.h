@@ -126,6 +126,7 @@ struct State {
     float *h = nullptr, *h2 = nullptr, *pre = nullptr, *post = nullptr, *comb = nullptr, *pre_next = nullptr;
     float *x = nullptr, *xa = nullptr, *qa = nullptr, *qr = nullptr, *q = nullptr, *kv = nullptr, *o = nullptr;
     float *og = nullptr, *ck = nullptr, *cs = nullptr, *lat = nullptr, *ik = nullptr, *iq = nullptr, *iw = nullptr;
+    uint8_t *iqp = nullptr, *iqs = nullptr;            // q as fp4 codes + e8m0 (V41_IS_MMA, P3)
     float *score = nullptr; int ld_score = 0, score_rows_ = 0;   // indexer scores [score_rows_, seqmax]
     float *rw = nullptr; int* ridx = nullptr; float* y = nullptr; float* rscr = nullptr;
     float *eg_e = nullptr, *eg_kv = nullptr;
