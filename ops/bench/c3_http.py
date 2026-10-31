@@ -51,8 +51,11 @@ RF = {"type": "json_schema", "json_schema": {"name": "city", "schema": SCHEMA, "
 # thinking: the constraint engages after </think> (as vLLM's), so the prompt must say what it wants, like real clients
 MSG_T = [{"role": "user", "content": "Tell me about Lisbon. Answer as a JSON object with city, country, population_millions and up to 3 landmarks."}]
 for mode, mt in (("chat", 256), ("thinking", 8192)):
-    st, o, dt = post({"messages": MSG if mode == "chat" else MSG_T, "response_format": RF, "temperature": 0, "max_tokens": mt,
-                      "thinking_mode": mode})
+    # thinking at T=0.6: greedy reasoning loops on this model ("Let's use: ...? No. ... Hmm." to any budget, q16),
+    # which is the model's chain of thought, not the constraint (inactive until </think>); DeepSeek samples thinking
+    samp = {"temperature": 0} if mode == "chat" else {"temperature": 0.6, "top_p": 0.95, "seed": 7}
+    st, o, dt = post({"messages": MSG if mode == "chat" else MSG_T, "response_format": RF, "max_tokens": mt,
+                      "thinking_mode": mode, **samp})
     c = o.get("choices", [{}])[0].get("message", {}).get("content", "") if st == 200 else ""
     try: parsed = json.loads(c); ok = valid(parsed)
     except Exception: parsed, ok = None, False

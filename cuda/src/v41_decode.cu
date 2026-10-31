@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = getenv("V41_CKPT") ? getenv("V41_CKPT") : ".";
     ec.seqmax = 8192; ec.ext_chunk = 1024;           // prefill chunk (8k, P8: 512 349, 1024 458 @ 1.97 GiB state, 2048 476 @ 3.76 GiB; ids identical)
-    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, score_seqs, chat_file, trace_gen, trace_dir, route_trace, c1_test, image_path;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, score_seqs, score_prompts, chat_file, trace_gen, trace_dir, route_trace, c1_test, image_path;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -106,7 +106,8 @@ int main(int argc, char** argv) {
         else if (a == "--score") score_in = next();
         else if (a == "--score-out") score_out = next();
         else if (a == "--score-nll") score_nll = next();
-        else if (a == "--score-seqs") score_seqs = next();   // D5: with --score-nll, every D2 trace seq (tokens.bin + seqs.jsonl)   // with --score: -log p per forced token (f32) instead of logits
+        else if (a == "--score-seqs") score_seqs = next();
+        else if (a == "--score-prompts") score_prompts = next();   // the --trace-gen prompts file: full prompt context   // D5: with --score-nll, every D2 trace seq (tokens.bin + seqs.jsonl)   // with --score: -log p per forced token (f32) instead of logits
         else { fprintf(stderr, "unknown arg %s (see the header of src/v41_decode.cu)\n", a.c_str()); return 2; }
     }
     gp.max_tokens = n;
@@ -171,7 +172,21 @@ int main(int argc, char** argv) {
         printf("[route] %d seqs\n", n);
         return 0;
     }
-    if (!score_seqs.empty() && !score_nll.empty()) {  // D5 soft targets: per seq, prefill [0, gen_start), force the rest
+    if (!score_seqs.empty() && !score_nll.empty()) {  // D5 soft targets: per seq, prefill the FULL prompt, force the rest
+        // tokens.bin keeps only the last WINDOW prompt tokens, but the trace (and its taps) ran on the whole prompt:
+        // scoring from the stored tail alone agreed with the greedy trace on 77% of positions (q17). Rebuild the prompt
+        // as --trace-gen did and check its tail against the stored one.
+        if (score_prompts.empty()) { fprintf(stderr, "--score-seqs needs --score-prompts (the --trace-gen file)\n"); return 2; }
+        std::map<std::string, std::vector<int>> prompt_of;
+        { std::ifstream fp(score_prompts); std::string l;
+          while (std::getline(fp, l)) {
+              if (l.empty()) continue;
+              const json q = json::parse(l);
+              const std::string mode = q.value("mode", std::string("chat"));
+              prompt_of[q["id"]] = q.contains("ids") ? q["ids"].get<std::vector<int>>()
+                  : tok.encode(dsv41enc::encode_messages(json::array({json{{"role", "user"}, {"content", q["content"]}}}),
+                                                         mode == "thinking" ? "thinking" : "chat"));
+          } }
         std::ifstream fk(score_seqs + "/tokens.bin", std::ios::binary), fs(score_seqs + "/seqs.jsonl");
         fk.seekg(0, std::ios::end); std::vector<int> all(fk.tellg() / 4); fk.seekg(0); fk.read((char*)all.data(), all.size() * 4);
         std::ofstream fn(score_nll, std::ios::binary), fl(score_nll + ".lp", std::ios::binary), fi(score_nll + ".id", std::ios::binary);
@@ -181,7 +196,13 @@ int main(int argc, char** argv) {
             if (l.empty()) continue;
             const json j = json::parse(l);
             const long o = j["offset"], len = j["length"], g0 = j["gen_start"];
-            std::vector<int> pre(all.begin() + o, all.begin() + o + g0), forced(all.begin() + o + g0, all.begin() + o + len);
+            auto it = prompt_of.find(j["id"].get<std::string>());
+            if (it == prompt_of.end()) { fprintf(stderr, "[d5] %s: no prompt\n", j["id"].get<std::string>().c_str()); return 2; }
+            const std::vector<int>& pre = it->second;
+            if ((long)pre.size() < g0 || !std::equal(pre.end() - g0, pre.end(), all.begin() + o)) {
+                fprintf(stderr, "[d5] %s: rebuilt prompt tail != stored tokens\n", j["id"].get<std::string>().c_str()); return 2;
+            }
+            std::vector<int> forced(all.begin() + o + g0, all.begin() + o + len);
             std::vector<float> tlp; std::vector<int> tid;
             const std::vector<float> nl = eng.debug_forced_nll(pre, forced, &tlp, &tid);
             fn.write((const char*)nl.data(), nl.size() * 4);
