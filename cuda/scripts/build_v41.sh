@@ -9,13 +9,13 @@ KOBJ=""
 obj() {  # obj <src> -> build/obj/<name>.o, only when stale
   local o=build/obj/$(basename "${1%.*}").o
   if [ ! -f "$o" ] || [ "$1" -nt "$o" ] || [ -n "$(find include kernels/v41 -newer "$o" -name '*.h*' -print -quit)" ]; then
-    local extra=""; case "$1" in *v41_tc5.cu|*v41_kqt.cu) extra="-I $HOME/cutlass/include -I $HOME/cutlass/tools/util/include --expt-relaxed-constexpr -Xcompiler -Wno-all";; esac
+    local extra=""; case "$1" in *v41_tc5.cu|*v41_kqt.cu|*v41_vision.cu) extra="-I $HOME/cutlass/include -I $HOME/cutlass/examples/41_fused_multi_head_attention -I $HOME/cutlass/tools/util/include --expt-relaxed-constexpr -Xcompiler -Wno-all";; esac
     echo "  nvcc $1"; $NVCC $extra -c "$1" -o "$o" || exit 255      # 255 stops xargs, and so the build
   fi
   KOBJ="$KOBJ $o"
 }
 # kernels + model + engram (in parallel, at most 4)
-SRCS="kernels/v41/v41_dense.cu kernels/v41/v41_tc5.cu kernels/v41/v41_kqt.cu kernels/v41/v41_moe.cu kernels/v41/v41_attn.cu kernels/v41/v41_engram.cu
+SRCS="kernels/v41/v41_dense.cu kernels/v41/v41_tc5.cu kernels/v41/v41_kqt.cu kernels/v41/v41_moe.cu kernels/v41/v41_attn.cu kernels/v41/v41_engram.cu kernels/v41/v41_vision.cu
       src/v41_model.cu src/v41_draft.cu src/v41_engine.cu src/engram_store.cpp src/engram_hash.cpp"
 export -f obj; export NVCC
 echo $SRCS | tr ' ' '\n' | grep . | xargs -P4 -I{} bash -c 'obj {}'
@@ -23,7 +23,16 @@ for s in $SRCS; do KOBJ="$KOBJ build/obj/$(basename "${s%.*}").o"; done
 LIBS="-lcuda"
 want() { [ -z "$1" ] || [ "$1" = "$2" ]; }
 if want "$1" v41_decode; then $NVCC src/v41_decode.cu $KOBJ $LIBS -o build/v41_decode; echo "built build/v41_decode"; fi
-if want "$1" v41_server; then $NVCC -Xcompiler -pthread server/server.cpp $KOBJ $LIBS -o build/v41_server; echo "built build/v41_server"; fi
+# C3: llguidance (Rust, MIT) as a static library; crates pinned by third_party/llg/Cargo.lock
+LLG=third_party/llg/target/release/libllg_ffi.a
+if want "$1" v41_server; then
+  [ -f $LLG ] || (cd third_party/llg && cargo build --release --locked)
+  $NVCC -Xcompiler -pthread server/server.cpp $KOBJ $LLG $LIBS -ldl -lm -o build/v41_server; echo "built build/v41_server"
+fi
+if want "$1" gate_llg; then   # CPU only: build/gate_llg <tokenizer.json>
+  [ -f $LLG ] || (cd third_party/llg && cargo build --release --locked)
+  g++ -O2 -std=c++17 -I include -I /usr/local/cuda/include tests/gate_llg.cpp $LLG -ldl -lpthread -lm -o build/gate_llg; echo "built build/gate_llg"
+fi
 if want "$1" gate_v41_units; then $NVCC tests/gate_v41_units.cu kernels/v41/kt_viterbi.cu $KOBJ $LIBS -o build/gate_v41_units; echo "built build/gate_v41_units"; fi
 # KT2/KT3 encoder for s07 thor-trellis (ops/lib/kt.py loads it through ctypes)
 if want "$1" libkt_viterbi; then $NVCC -shared -Xcompiler -fPIC kernels/v41/kt_viterbi.cu -o build/libkt_viterbi.so; echo "built build/libkt_viterbi.so"; fi
@@ -45,6 +54,8 @@ if want "$1" gemv_format_bench; then $NVCC tools/gemv_format_bench.cu $LIBS -o b
 if want "$1" nvm_bench; then $NVCC tools/nvm_bench.cu $LIBS -o build/nvm_bench; echo "built build/nvm_bench"; fi
 if want "$1" router_bench; then $NVCC tools/router_bench.cu $KOBJ $LIBS -o build/router_bench; echo "built build/router_bench"; fi
 if want "$1" gate_gumbel; then $NVCC tests/gate_gumbel.cu $KOBJ $LIBS -o build/gate_gumbel; echo "built build/gate_gumbel"; fi
+if want "$1" gate_vision; then $NVCC tests/gate_vision.cu $KOBJ $LIBS -o build/gate_vision; echo "built build/gate_vision"; fi
+if want "$1" gate_cnq_cl; then $NVCC tests/gate_cnq_cl.cu $KOBJ $LIBS -o build/gate_cnq_cl; echo "built build/gate_cnq_cl"; fi
 
 # CPU gates
 if want "$1" cpu_gates; then

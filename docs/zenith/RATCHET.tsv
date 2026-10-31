@@ -1,0 +1,5 @@
+metric	dir	value	date	evidence
+ar_tok_s	max	26.35	2026-10-31	A2 V41_NVT_KS=5 + A3e default, ops/logs/q15/q15.out round 1 B
+edit_nospec_tok_s	max	35.15	2026-10-31	S8 kmax 7 (exact; supersedes the kmax-8 33.87, which broke spec==AR), ops/logs/q14/edit_sfx1.log
+edit_spec3_tok_s	max	48.75	2026-10-31	S8 kmax 7 + K=3: 35.15 x 1.387, ops/logs/q14/edit_sfx1.log
+prefill_8k_tok_s	max	580.7	2026-10-31	P8 tcgen05 experts + fused sparse attn + tc5 act/round, chunk 1024, ops/logs/bench/tcv.out (8k ids identical)

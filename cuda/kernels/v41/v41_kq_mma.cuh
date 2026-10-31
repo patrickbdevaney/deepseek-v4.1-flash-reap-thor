@@ -89,7 +89,34 @@ __device__ __forceinline__ void kqm_mt_acc(float (&m)[MT], const float (&c)[4], 
 // RT: each warp runs RT 16-row tiles (grid x = ceil(N / (128 RT))), so prefill stages its MT token rows once
 // per 128 RT rows (the 16-token stage is 113 KB at K = 5120, half the bytes of a 128-row weight slice).
 // Per-element arithmetic is unchanged: bitwise for every RT.
-template <int QT, int MT, class UnitT, int RT = 1>
+// A1b: one superblock's weight words for one lane (codes, Q3_K high bits, this lane's two rows' scale words)
+struct KqmLd { uint32_t cw[8], hw[4], sa[2], sb[2], sc[2]; };
+template <int QT>
+__device__ __forceinline__ void kqm_load(KqmLd& L, const uint8_t* W, size_t idx, size_t cnt, int lane, int g, int t) {
+    const uint4* c4 = reinterpret_cast<const uint4*>(W + idx * 1024 + lane * 32);
+    const uint4 a = c4[0], b = c4[1];
+    L.cw[0] = a.x; L.cw[1] = a.y; L.cw[2] = a.z; L.cw[3] = a.w; L.cw[4] = b.x; L.cw[5] = b.y; L.cw[6] = b.z; L.cw[7] = b.w;
+    if (QT == 3) {
+        const uint4 h = *reinterpret_cast<const uint4*>(W + 1024 * cnt + idx * 512 + lane * 16);
+        L.hw[0] = h.x; L.hw[1] = h.y; L.hw[2] = h.z; L.hw[3] = h.w;
+    }
+    #pragma unroll
+    for (int h = 0; h < 2; ++h) {
+        const int r = g + 8 * h;
+        if (QT == 2) {
+            L.sa[h] = *reinterpret_cast<const uint32_t*>(W + 1024 * cnt + idx * 256 + r * 16 + 4 * t);
+            L.sb[h] = *reinterpret_cast<const uint32_t*>(W + 1280 * cnt + idx * 64 + r * 4);
+        } else {
+            const uint32_t* s12 = reinterpret_cast<const uint32_t*>(W + 1536 * cnt + idx * 192 + r * 12);
+            L.sa[h] = s12[t & 1]; L.sb[h] = s12[2];
+            L.sc[h] = *reinterpret_cast<const unsigned short*>(W + 1728 * cnt + idx * 32 + r * 2);
+        }
+    }
+}
+
+// PF (A1b): the next superblock's weight words are loaded before this one's math (register double buffer);
+// the arithmetic is the same instruction sequence on the same values, so PF changes no output bit.
+template <int QT, int MT, class UnitT, int RT = 1, bool PF = false>
 __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, XSrc X, bool x_by_pair,
                                              const UnitT* units, const int* units_n, const int* pair_tok,
                                              KQTab tab, int N, int K, int cmin = 1, int cmax = 1 << 30) {
@@ -140,26 +167,20 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
         for (int n = 0; n < MT; ++n) mt[h][n] = 0.f;
     }
     const int src_q = lane & ~3;
+    KqmLd cur, nxt;
+    if (PF) kqm_load<QT>(cur, W, (size_t)lt * nsb, cnt, lane, g, t);
     for (int s = 0; s < nsb; ++s) {
         const size_t idx = (size_t)lt * nsb + s;
-        uint32_t cw[8], hw[4];
-        {
-            const uint4* c4 = reinterpret_cast<const uint4*>(W + idx * 1024 + lane * 32);
-            const uint4 a = c4[0], b = c4[1];
-            cw[0] = a.x; cw[1] = a.y; cw[2] = a.z; cw[3] = a.w; cw[4] = b.x; cw[5] = b.y; cw[6] = b.z; cw[7] = b.w;
-        }
-        if (QT == 3) {
-            const uint4 a = *reinterpret_cast<const uint4*>(W + 1024 * cnt + idx * 512 + lane * 16);
-            hw[0] = a.x; hw[1] = a.y; hw[2] = a.z; hw[3] = a.w;
-        }
+        if (PF) { if (s + 1 < nsb) kqm_load<QT>(nxt, W, idx + 1, cnt, lane, g, t); }
+        else kqm_load<QT>(cur, W, idx, cnt, lane, g, t);
+        const uint32_t* cw = cur.cw; const uint32_t* hw = cur.hw;
         // this lane's scales: sub-blocks 4t + i, rows g + 8h
         float scf[2][4];
         #pragma unroll
         for (int h = 0; h < 2; ++h) {
-            const int r = g + 8 * h;
             if (QT == 2) {
-                const uint32_t sw = *reinterpret_cast<const uint32_t*>(W + 1024 * cnt + idx * 256 + r * 16 + 4 * t);
-                const uint32_t dd = *reinterpret_cast<const uint32_t*>(W + 1280 * cnt + idx * 64 + r * 4);
+                const uint32_t sw = cur.sa[h];
+                const uint32_t dd = cur.sb[h];
                 const float d = f16_lo(dd), dm = f16_lo(dd >> 16);
                 float mm[4];
                 #pragma unroll
@@ -169,9 +190,8 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
                 }
                 kqm_mt_acc<MT>(mt[h], mm, xm0 + s * 16 + 4 * t, (int)(SB / 4));
             } else {
-                const uint32_t* s12 = reinterpret_cast<const uint32_t*>(W + 1536 * cnt + idx * 192 + r * 12);
-                const uint32_t lo = s12[t & 1] >> (4 * (t >> 1)), hi = s12[2] >> (2 * t);
-                const float d = __half2float(__ushort_as_half(*reinterpret_cast<const unsigned short*>(W + 1728 * cnt + idx * 32 + r * 2)));
+                const uint32_t lo = cur.sa[h] >> (4 * (t >> 1)), hi = cur.sb[h] >> (2 * t);
+                const float d = __half2float(__ushort_as_half((unsigned short)cur.sc[h]));
                 #pragma unroll
                 for (int i = 0; i < 4; ++i) {
                     const int sc = (int)(((lo >> (8 * i)) & 0xF) | (((hi >> (8 * i)) & 3) << 4)) - 32;
@@ -215,6 +235,7 @@ __global__ void __launch_bounds__(256) k_kqm(float* __restrict__ out, int ldo, X
                 }
             }
         }
+        if (PF) cur = nxt;
     }
     // code-free term: quad reduction (fixed order), then every lane holds all MT columns
     #pragma unroll

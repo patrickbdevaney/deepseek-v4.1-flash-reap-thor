@@ -366,6 +366,25 @@ static bool run(int pass, int P, int MT_units, std::mt19937& g, bool bench) {
                 cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
             }
             printf("  bench MMA M=1 x6: %.1f GB/s (%.0f us per launch)\n", bytes / ms / 1e6, 1e3 * ms / REPS);
+            {   // A1b: next-superblock prefetch, same sets; must be bitwise to the plain kernel
+                auto kp = k_kqm<QT, 1, Unit, 1, true>;
+                for (int w = 0; w < 2; ++w) {
+                    cudaEventRecord(a);
+                    for (int i = 0; i < REPS; ++i) kp<<<dim3(gm.x, 6), 256, kqm_stage_bytes(K)>>>(mo, N, X, true, sets[i % SETS], dnu, ptok, tabm, N, K, 1, 1 << 30);
+                    cudaEventRecord(b); CU(cudaEventSynchronize(b)); cudaEventElapsedTime(&ms, a, b);
+                }
+                printf("  bench MMA M=1 x6 PF: %.1f GB/s (%.0f us per launch)\n", bytes / ms / 1e6, 1e3 * ms / REPS);
+                float* o2; CU(cudaMalloc(&o2, (size_t)P * N * 4));
+                CU(cudaMemset(mo, 0, (size_t)P * N * 4)); CU(cudaMemset(o2, 0, (size_t)P * N * 4));
+                launch_m(mo, sets[0], dim3(gm.x, 6), 1);
+                kp<<<dim3(gm.x, 6), 256, kqm_stage_bytes(K)>>>(o2, N, X, true, sets[0], dnu, ptok, tabm, N, K, 1, 1 << 30);
+                CU(cudaDeviceSynchronize());
+                std::vector<float> h1((size_t)P * N), h2((size_t)P * N);
+                CU(cudaMemcpy(h1.data(), mo, h1.size() * 4, cudaMemcpyDeviceToHost)); CU(cudaMemcpy(h2.data(), o2, h2.size() * 4, cudaMemcpyDeviceToHost));
+                const bool same = memcmp(h1.data(), h2.data(), h1.size() * 4) == 0;
+                printf("  MMA PF vs plain: %s\n", same ? "bitwise ok" : "FAIL");
+                ok = ok && same; cudaFree(o2);
+            }
             CU(cudaMemcpy(dnu, &nu, 4, cudaMemcpyHostToDevice));
         }
         for (int e = 0; e < POOL; ++e) { cudaFree(m1[e]); cudaFree(m3[e]); cudaFree(m2[e]); }

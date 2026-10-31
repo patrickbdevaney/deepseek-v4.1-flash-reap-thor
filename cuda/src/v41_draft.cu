@@ -225,6 +225,7 @@ void alloc_drafter(Drafter& D, int max_rows) {
     D.xq = dal<uint8_t>(D, xk); D.xs = dal<float>(D, xk / 32);
     D.d_ids = dal<int>(D, NB); D.d_pos = dal<int>(D, NB); D.d_anchor = dal<int>(D, 1); D.d_tok = dal<int>(D, 1);
     D.d_out = dal<int>(D, NB + 1);
+    D.d_conf = dal<float>(D, NB);
     D.h = dal<float>(D, (size_t)NB * HC_DIM); D.h2 = dal<float>(D, (size_t)NB * HC_DIM);
     D.pre = dal<float>(D, NB * 4); D.post = dal<float>(D, NB * 4); D.comb = dal<float>(D, NB * 16); D.pre_next = dal<float>(D, NB * 4);
     D.x = dal<float>(D, (size_t)NB * DIM); D.xa = dal<float>(D, (size_t)NB * DIM); D.y = dal<float>(D, (size_t)NB * DIM);
@@ -364,6 +365,21 @@ static void dblock(const DBlock& w, int bi, Drafter& D, cudaStream_t st) {
     v41k::hc_post(D.h, D.y, D.h2, D.post, D.comb, M, st);
 }
 
+// S9: the drafter's own probability of its greedy token, 1 / sum_j exp(l_j - l_max)
+__global__ static void k_draft_conf(float* conf, const float* l, const int* top) {
+    const float mx = l[*top];
+    float s = 0.f;
+    for (int j = threadIdx.x; j < VOCAB; j += blockDim.x) s += __expf(l[j] - mx);
+    __shared__ float red[32];
+    for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = s;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        float v = red[threadIdx.x];
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+        if (threadIdx.x == 0) *conf = 1.f / v;
+    }
+}
 void draft_body(const Model& m, Drafter& D, cudaStream_t st, int K) {
     K = (K <= 0 || K > NB) ? NB : K;                     // slots the caller reads; the trunk always runs all NB
     k_draft_inputs<<<1, 32, 0, st>>>(D.d_ids, D.d_pos, D.d_out, D.d_anchor, D.d_tok);
@@ -381,6 +397,7 @@ void draft_body(const Model& m, Drafter& D, cudaStream_t st, int K) {
         v41k::bf16_linear(D.mk_bias, D.mk_e, D.mk_head, 1, VOCAB, DSPARK_MARKOV_RANK, false, st);
         k_add<<<(VOCAB + 255) / 256, 256, 0, st>>>(D.logits + (size_t)i * VOCAB, D.mk_bias, VOCAB);
         v41k::argmax(D.d_out + i + 1, D.logits + (size_t)i * VOCAB, VOCAB, st);
+        if (D.conf_on) k_draft_conf<<<1, 1024, 0, st>>>(D.d_conf + i, D.logits + (size_t)i * VOCAB, D.d_out + i + 1);
     }
 }
 

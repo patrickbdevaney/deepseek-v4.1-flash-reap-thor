@@ -59,6 +59,8 @@ struct Drafter {
     // draft scratch (5 rows)
     int *d_ids = nullptr, *d_pos = nullptr, *d_anchor = nullptr, *d_tok = nullptr;
     int* d_out = nullptr;                // [6]: out[0] = the committed token, out[1..5] = drafts
+    float* d_conf = nullptr;             // S9 [5]: the drafter's softmax probability of draft i+1 (conf_on)
+    bool conf_on = false;
     float *h = nullptr, *h2 = nullptr, *pre = nullptr, *post = nullptr, *comb = nullptr, *pre_next = nullptr;
     float *x = nullptr, *xa = nullptr, *qa = nullptr, *qr = nullptr, *q = nullptr, *kv = nullptr, *o = nullptr;
     float *og = nullptr, *y = nullptr, *rw = nullptr; int* ridx = nullptr; float* rscr = nullptr;

@@ -99,8 +99,8 @@ inline ChatRequest parse_chat_request(const json& b) {
     return r;
 }
 
-inline std::string build_prompt(const ChatRequest& r) {
-    return dsv41enc::encode_messages(r.messages, r.thinking_mode, json::array(), true, true, r.reasoning_effort);
+inline std::string build_prompt(const ChatRequest& r, json* images = nullptr) {
+    return dsv41enc::encode_messages(r.messages, r.thinking_mode, json::array(), true, true, r.reasoning_effort, images);
 }
 
 // Non-streaming response. `parsed` comes from dsv41enc::parse_message_from_completion_text.

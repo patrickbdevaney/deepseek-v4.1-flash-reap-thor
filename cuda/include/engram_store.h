@@ -50,6 +50,8 @@ class EngramHasher {
 public:
     explicit EngramHasher(const EngramHashTables& t) : t_(t) {}
     void truncate(int len) { if ((int)hist_.size() > len) hist_.resize(len); }
+    // C1 prefix-cache restore: the history of a text-only sequence (no image rows)
+    void set_history(const int* tokens, int n) { hist_.resize(n); for (int i = 0; i < n; ++i) hist_[i] = (int64_t)t_.tokmap[tokens[i]]; }
     void hash(const int* tokens, const uint8_t* is_image, int n, int pos0, int64_t* ids);
     int size() const { return (int)hist_.size(); }
 private:

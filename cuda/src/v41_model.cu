@@ -569,12 +569,19 @@ static void attention(const LayerW& w, State& s, const Rows& R, const float* x, 
     v41k::fp8_linear(out, s.xq, s.xs, w.wo_b, w.wo_b_s, M, DIM, O_GROUPS * O_LORA, true, st);
 }
 
-// V41_ROUTE_DUMP=FILE (M3 probe, prefill only): append {int32 L, int32 M, int32 ridx[M][N_ACT]} per MoE
+// V41_ROUTE_DUMP=FILE (M3 probe, prefill only): append {int32 L, int32 M, int32 ridx[M][topk]} per MoE
 // call with M > 1. Syncs the stream, so never on in serving; v41_decode --route-trace drives it.
+// A8 (lossy, opt-in): V41_TOPK=k routes each token to its top k < N_ACT experts, weights renormalised over
+// the k (k_router_select / k_router_p normalise over whatever topk they are given). Default N_ACT = exact.
+static int route_topk() {
+    static const int k = [] { const char* e = getenv("V41_TOPK"); const int v = e && *e ? atoi(e) : N_ACT;
+                              return v >= 1 && v <= N_ACT ? v : N_ACT; }();
+    return k;
+}
 static void route_dump(int L, const int* ridx, int M, cudaStream_t st) {
     static FILE* f = [] { const char* e = getenv("V41_ROUTE_DUMP"); return e && *e ? fopen(e, "ab") : (FILE*)nullptr; }();
     if (!f || M <= 1) return;
-    std::vector<int> h((size_t)M * N_ACT);
+    std::vector<int> h((size_t)M * route_topk());
     CK(cudaMemcpyAsync(h.data(), ridx, h.size() * 4, cudaMemcpyDeviceToHost, st));
     CK(cudaStreamSynchronize(st));
     const int hdr[2] = {L, M};
@@ -589,19 +596,27 @@ static void moe(const LayerW& w, State& s, const Rows& R, const float* x, float*
         CK(cudaEventRecord(s.ev_fork, st)); CK(cudaStreamWaitEvent(s.side, s.ev_fork, 0));
         v41k::moe_shared(s.sh_o, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.sh_scratch, s.side);
         CK(cudaEventRecord(s.ev_join, s.side));
-        v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+        v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, route_topk(), ROUTE_SCALE, st, s.rscr);
+        if (s.route_budget) v41k::route_budget(s.rw, s.ridx, s.rscr, M, w.ex.n_routed, route_topk(), s.route_budget, ROUTE_SCALE, st);
         route_dump(w.L, s.ridx, M, st);
+        // A3e (default on, V41_COMBINE_ADD=0 disables; q8: ids identical, AR +0.8%): the combine adds the shared expert itself -- no memset, no add launch
+        static const bool cadd = [] { const char* e = getenv("V41_COMBINE_ADD"); return !(e && *e == '0'); }();
+        if (cadd) {
+            v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, route_topk(), s.moe_scratch, st, s.sh_o, s.ev_join);
+            return;
+        }
         cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
-        v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
+        v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, route_topk(), s.moe_scratch, st);
         CK(cudaStreamWaitEvent(st, s.ev_join, 0));
         v41k::add_bf16(out, s.sh_o, (size_t)M * DIM, st);
         return;
     }
-    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, N_ACT, ROUTE_SCALE, st, s.rscr);
+    v41k::router(s.rw, s.ridx, x, w.gate_w, w.gate_bias, w.gate_bias_vl, R.img, M, w.ex.n_routed, route_topk(), ROUTE_SCALE, st, s.rscr);
+    if (s.route_budget) v41k::route_budget(s.rw, s.ridx, s.rscr, M, w.ex.n_routed, route_topk(), s.route_budget, ROUTE_SCALE, st);
     route_dump(w.L, s.ridx, M, st);
     if (!xq_ready) v41k::act_quant_fp8(s.xq, s.xs, x, M, DIM, st);
     cudaMemsetAsync(out, 0, (size_t)M * DIM * 4, st);
-    v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, N_ACT, s.moe_scratch, st);
+    v41k::moe_routed(out, s.xq, s.xs, s.rw, s.ridx, w.ex.tab, M, route_topk(), s.moe_scratch, st);
     v41k::moe_shared_add(out, s.xq, s.xs, w.sh_w1, w.sh_w1s, w.sh_w3, w.sh_w3s, w.sh_w2, w.sh_w2s, M, s.moe_scratch, st);
 }
 
@@ -622,7 +637,10 @@ static void engram(const LayerW& w, State& s, const Rows& R, const Engram& eg, c
 }
 
 // Block.forward with the deferred pre-mix: attention collapses with the mix the previous FFN made.
-static void block(const LayerW& w, State& s, const Rows& R, const Engram& eg, cudaStream_t st) {
+// next: fuse this block's last hc_post with the NEXT block's attention collapse/norm/quant (A9, M <= 8 rows
+// that stay the same rows); attn_ready: the previous block did that for this one.
+static void block(const LayerW& w, State& s, const Rows& R, const Engram& eg, cudaStream_t st,
+                  const LayerW* next = nullptr, bool attn_ready = false) {
     const int M = R.M;
     if (engram_slot(w.L) >= 0) engram(w, s, R, eg, st);
     float* h2 = s.h2;                                                       // rows [0, M) of this call
@@ -635,25 +653,32 @@ static void block(const LayerW& w, State& s, const Rows& R, const Engram& eg, cu
     v41k::hc_mixes(s.pre_next, s.post, s.comb, R.h, w.hc_attn_fn, w.hc_attn_scale, w.hc_attn_base, M, hst);
     // V41_CNQ=0: the three separate kernels (bit-identical either way)
     static const bool cnq = [] { const char* e = getenv("V41_CNQ"); return !(e && *e == '0'); }();
-    if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, R.h, R.pre, w.attn_norm, M, NORM_EPS, st);
+    if (attn_ready) {}                                                     // s.x / s.xq / s.xs from the previous block
+    else if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, R.h, R.pre, w.attn_norm, M, NORM_EPS, st);
     else { v41k::hc_collapse(s.x, R.h, R.pre, M, st); v41k::rmsnorm(s.x, s.x, w.attn_norm, M, DIM, NORM_EPS, st); }
-    attention(w, s, R, s.x, s.xa, st, cnq);
+    attention(w, s, R, s.x, s.xa, st, cnq || attn_ready);
     join();
-    v41k::hc_post(h2, s.xa, R.h, s.post, s.comb, M, st);
     // FFN: its own mixes from h2; collapses with the ATTENTION's pre
     float* attn_pre = s.pre_next;
+    const bool fuse = cnq && v41k::post_cnq_ok(M);
+    if (fuse) v41k::hc_post_cnq(h2, s.xa, R.h, s.post, s.comb, s.x, s.xq, s.xs, attn_pre, w.ffn_norm, M, NORM_EPS, st);
+    else v41k::hc_post(h2, s.xa, R.h, s.post, s.comb, M, st);
     fork();
     v41k::hc_mixes(R.pre, s.post, s.comb, h2, w.hc_ffn_fn, w.hc_ffn_scale, w.hc_ffn_base, M, hst);   // R.pre <- ffn_pre
-    if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, h2, attn_pre, w.ffn_norm, M, NORM_EPS, st);
+    if (fuse) {}
+    else if (cnq) v41k::collapse_norm_quant(s.x, s.xq, s.xs, h2, attn_pre, w.ffn_norm, M, NORM_EPS, st);
     else { v41k::hc_collapse(s.x, h2, attn_pre, M, st); v41k::rmsnorm(s.x, s.x, w.ffn_norm, M, DIM, NORM_EPS, st); }
     moe(w, s, R, s.x, s.y, st, cnq);
     join();
-    v41k::hc_post(R.h, s.y, h2, s.post, s.comb, M, st);
+    if (next && fuse) v41k::hc_post_cnq(R.h, s.y, h2, s.post, s.comb, s.x, s.xq, s.xs, R.pre, next->attn_norm, M, NORM_EPS, st);
+    else v41k::hc_post(R.h, s.y, h2, s.post, s.comb, M, st);
 }
 
 int forward_layers(const Model& m, State& s, int lo, int hi, int M, int prompt_end, int pos0, const Engram& eg,
                    cudaStream_t st, const LayerHook& hook, int dec_margin) {
     int r0 = 0;
+    bool ready = false;                                      // layer L's attention input was made by L-1's last kernel
+    static const bool cnq_on = [] { const char* e = getenv("V41_CNQ"); return !(e && *e == '0'); }();
     for (int L = lo; L <= hi; ++L) {
         if (!m.loaded[L]) throw std::runtime_error("layer " + std::to_string(L) + " not loaded");
         if (prompt_end > 0 && L > ENC_LAST) {
@@ -663,7 +688,11 @@ int forward_layers(const Model& m, State& s, int lo, int hi, int M, int prompt_e
         if (r0 >= M) continue;
         Rows R{M - r0, r0, s.d_pos + r0, s.d_ids + r0, s.d_img + r0, s.d_noimg + r0,
                s.h + (size_t)r0 * HC_DIM, s.pre + (size_t)r0 * 4};
-        block(m.layers[L], s, R, eg, st);
+        // A9 cross-layer fusion: decode / verify rows only (prompt_end == 0: the rows never shrink), and not into
+        // an Engram layer (its gate updates the stream before the collapse)
+        const bool fnext = cnq_on && prompt_end == 0 && L < hi && m.loaded[L + 1] && engram_slot(L + 1) < 0 && v41k::post_cnq_ok(R.M);
+        block(m.layers[L], s, R, eg, st, fnext ? &m.layers[L + 1] : nullptr, ready);
+        ready = fnext;
         if (hook) hook(L, R.h, R.pre, R.M, st);
     }
     return r0;

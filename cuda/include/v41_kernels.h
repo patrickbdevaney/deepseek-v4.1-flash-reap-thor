@@ -105,6 +105,11 @@ void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float*
 size_t router_scratch_bytes(int M, int E);
 // Reorder a [E, K] bf16 gate in place for router()'s coalesced path (same sums bit for bit). Load time only.
 // hc_collapse(y, x, pre) + rmsnorm(y, y, w, DIM) + act_quant_fp8(q, qs, y) in one launch, bit-identical.
+// A9: hc_post(hout, f, res, post, comb) then collapse_norm_quant(y, q, qs, hout, pre, w) in one launch (M <= 8,
+// bit-identical to the pair); post_cnq_ok(M): enabled (V41_POST_CNQ, V41_CNQ_CL) and M fits
+bool post_cnq_ok(int M);
+void hc_post_cnq(float* hout, const float* f, const float* res, const float* post, const float* comb, float* y, uint8_t* q,
+                 float* qs, const float* pre, const uint16_t* w, int M, float eps, cudaStream_t st);
 void collapse_norm_quant(float* y, uint8_t* q, float* qs, const float* x, const float* pre, const uint16_t* w, int M,
                          float eps, cudaStream_t st);
 bool router_permute(uint16_t* Wg, int E, int K, cudaStream_t st);
@@ -173,8 +178,14 @@ size_t moe_scratch_bytes(int M, int topk);
 // KT activation rotation (exposed for tests/gate_v41_units.cu): out[r] = FWHT_256(x[r] * sign) / 16,
 // the butterfly order of ops/lib/kt.py::rht_rows, bit-exact. K a multiple of 256.
 void rht_rows(float* out, const float* x, const uint8_t* sign, int M, int K, cudaStream_t st);
+// S7 (lossy, opt-in): after router() on M > 1 verify rows, cap the rows' expert union at B (see v41_moe.cu).
+// scratch = the router's (scores then selection scores, M x E each).
+void route_budget(float* w, int* idx, const float* scratch, int M, int E, int topk, int B, float route_scale, cudaStream_t st);
+// y += routed(x). With `add` (A3e): y = bf16(routed(x) + add) instead, y not read (no memset needed), the
+// combine waiting on `add_ready` (the side stream's shared expert) -- moe_shared_add's arithmetic, one launch.
 void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, const int* idx,
-                const ExpertTab& T, int M, int topk, void* scratch, cudaStream_t st);
+                const ExpertTab& T, int M, int topk, void* scratch, cudaStream_t st,
+                const float* add = nullptr, cudaEvent_t add_ready = nullptr);
 // Shared expert (fp8) added on top: y = bf16(y + bf16(shared(x))). Uses the fp8 linears.
 void moe_shared_add(float* y, const uint8_t* xq, const float* xs,
                     const uint8_t* w1, const uint8_t* w1s, const uint8_t* w3, const uint8_t* w3s,
@@ -246,6 +257,11 @@ void engram_gate(float* h, const float* kv, const uint16_t* qw, const uint16_t* 
 // gate/up rows have leading dimension `ld` (2*inter when they come out of one fused w1|w3 GEMV).
 void swiglu(float* act, const float* gate, const float* up, const float* w_row, int M, int inter, float limit,
             int ld, cudaStream_t st);
+// A3e: swiglu then act_quant_fp8 in one launch (bit-identical; the bf16 act is never stored).
+// Default on (q8 A/B); V41_SWQ=0 falls back to the two kernels.
+void swiglu_quant(uint8_t* q, float* s, const float* gate, const float* up, const float* w_row, int M, int inter,
+                  float limit, int ld, cudaStream_t st);
+bool swq_on();
 void add_bf16(float* y, const float* a, size_t n, cudaStream_t st);
 
 } // namespace v41k

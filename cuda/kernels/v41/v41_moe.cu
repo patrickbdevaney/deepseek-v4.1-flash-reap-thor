@@ -238,6 +238,60 @@ __global__ void __launch_bounds__(RP_WARPS * 32) k_router_p(float* wout, int* io
     }
 }
 size_t router_scratch_bytes(int M, int E) { return (size_t)2 * M * E * sizeof(float); }
+
+// S7 (lossy, opt-in): expert-budgeted verify. Row 0 keeps its experts; rows 1.. in order may bring experts of
+// their own top-k into the union only while it holds < B; a row that wanted an expert outside the union then
+// takes its top-k of `sel` inside it (repeated argmax, ties to the lower index) with the weights renormalised
+// over those (k_router_select's arithmetic). Rows whose top-k already sits in the union are left untouched.
+__global__ void k_route_budget(float* wout, int* iout, const float* sc, const float* sel, int M, int E, int topk, int B,
+                               float route_scale) {
+    if (blockIdx.x) return;
+    const int lane = threadIdx.x;
+    uint32_t un[16] = {0}; int nu = 0;                        // the union, bit per expert (E <= 512)
+    for (int k = 0; k < topk; ++k) { const int e = iout[k]; if (!((un[e >> 5] >> (e & 31)) & 1u)) { un[e >> 5] |= 1u << (e & 31); ++nu; } }
+    for (int m = 1; m < M; ++m) {
+        bool inside = true;
+        for (int k = 0; k < topk; ++k) {
+            const int e = iout[m * topk + k];
+            if ((un[e >> 5] >> (e & 31)) & 1u) continue;
+            if (nu < B) { un[e >> 5] |= 1u << (e & 31); ++nu; }
+            else inside = false;
+        }
+        if (inside) continue;
+        const float* sm = sel + (size_t)m * E;
+        uint32_t taken[16] = {0};
+        int ids[16]; float ws[16]; float sum = 0.f;
+        for (int k = 0; k < topk; ++k) {
+            int best = -1; float bv = -INFINITY;
+            for (int e = lane; e < E; e += 32) {
+                if (!((un[e >> 5] >> (e & 31)) & 1u) || ((taken[e >> 5] >> (e & 31)) & 1u)) continue;
+                const float v = sm[e];
+                if (best < 0 || v > bv) { bv = v; best = e; }
+            }
+            #pragma unroll
+            for (int o = 16; o > 0; o >>= 1) {
+                const float ov = __shfl_xor_sync(0xffffffffu, bv, o);
+                const int ob = __shfl_xor_sync(0xffffffffu, best, o);
+                if (ob >= 0 && (best < 0 || ov > bv || (ov == bv && ob < best))) { bv = ov; best = ob; }
+            }
+            taken[best >> 5] |= 1u << (best & 31);
+            ids[k] = best; ws[k] = sc[(size_t)m * E + best]; sum += ws[k];
+        }
+        __syncwarp();
+        if (lane == 0)
+            for (int k = 0; k < topk; ++k) {
+                float w = ws[k];
+                if (topk > 1) w = w / (sum + 1e-20f);
+                wout[m * topk + k] = w * route_scale;
+                iout[m * topk + k] = ids[k];
+            }
+        __syncwarp();
+    }
+}
+void route_budget(float* w, int* idx, const float* scratch, int M, int E, int topk, int B, float route_scale, cudaStream_t st) {
+    if (M < 2 || B <= 0) return;
+    k_route_budget<<<1, 32, 0, st>>>(w, idx, scratch, scratch + (size_t)M * E, M, E, topk, B, route_scale);
+}
 void router(float* w, int* idx, const float* x, const uint16_t* Wg, const float* bias, const float* bias_vl,
             const uint8_t* d_img, int M, int E, int topk, float route_scale, cudaStream_t st, float* scratch) {
     if (!scratch) { k_router<<<M, 512, 0, st>>>(w, idx, x, Wg, bias, bias_vl, d_img, E, topk, route_scale); return; }
@@ -503,7 +557,9 @@ void rht_rows(float* out, const float* x, const uint8_t* sign, int M, int K, cud
 }
 
 // combine: y[m] += sum over this token's slots in ascending expert order of down[pair]
-__global__ void k_combine(float* y, const float* down, const int* idx, const int* inv, int M, int topk, const float* gain) {
+// add (A3e): y = bf16(routed + add[i]), y not read -- the memset + k_add_bf16 that followed, bit for bit
+__global__ void k_combine(float* y, const float* down, const int* idx, const int* inv, int M, int topk, const float* gain,
+                          const float* add) {
     size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; if (i >= (size_t)M * v41::DIM) return;
     const int m = (int)(i / v41::DIM), d = (int)(i % v41::DIM);
     int e[16], p[16];
@@ -512,9 +568,10 @@ __global__ void k_combine(float* y, const float* down, const int* idx, const int
         while (k > 0 && e[k - 1] > ej) { e[k] = e[k - 1]; p[k] = p[k - 1]; --k; }
         e[k] = ej; p[k] = pj;
     }
-    float s = y[i];
+    float s = add ? 0.f : y[i];
     for (int j = 0; j < topk; ++j) s += down[(size_t)p[j] * v41::DIM + d];
-    y[i] = gain ? s * *gain : s;          // y is zeroed by the caller: s is the routed sum
+    s = gain ? s * *gain : s;             // y is zeroed by the caller: s is the routed sum
+    y[i] = add ? bf16r(s + add[i]) : s;
 }
 
 // scratch layout (bytes, 256-aligned): units, n, pair_tok, pair_slot, gu [P,4608], act [P,2304],
@@ -585,7 +642,10 @@ static void launch_kqm_(float* out, int ldo, const XSrc& X, bool by_pair, const 
                         const KQTab& tab, int N, int K, int max_units, cudaStream_t st, int cmin, int cmax) {
     dim3 grid((N + KQM_ROWS_PER_CTA * RT - 1) / (KQM_ROWS_PER_CTA * RT), max_units);
     const size_t smem = (size_t)MT * kqm_stage_bytes(K);
-    auto kf = k_kqm<QT, MT, Unit, RT>;
+    // A1b V41_KQM_PF: 2 (default) = next-superblock prefetch at MT <= 8 (decode + verify), 1 = MT = 1 only, 0 = off; bitwise
+    // (AR 25.08 -> 25.87 tok/s, spec 3 28.15 -> 28.52 vs off, paired)
+    static const int pf = [] { const char* e = getenv("V41_KQM_PF"); return e ? atoi(e) : 2; }();
+    auto kf = (MT == 1 && pf >= 1) || (MT <= 8 && pf >= 2) ? k_kqm<QT, MT, Unit, RT, true> : k_kqm<QT, MT, Unit, RT>;
     if (smem + 1024 > 48 * 1024) cudaFuncSetAttribute(kf, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     kf<<<grid, 256, smem, st>>>(out, ldo, X, by_pair, units, nu, ptok, tab, N, K, cmin, cmax);
 }
@@ -709,7 +769,7 @@ static void dispatch_pass(int pass, const ExpertTab& T, float* out, int ldo, con
 }
 
 void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, const int* idx, const ExpertTab& T,
-                int M, int topk, void* scratch, cudaStream_t st) {
+                int M, int topk, void* scratch, cudaStream_t st, const float* add, cudaEvent_t add_ready) {
     // Prefill on the tensor-core path: an mma tile holds 8 tokens, so 8-token units halve the expert weight
     // reads. Per-element arithmetic does not depend on the unit size, so prefill still equals decode.
     static const bool mt8 = [] { const char* e = getenv("V41_KQ_MT8"); return !(e && *e == '0'); }();
@@ -777,8 +837,11 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
         kqt_prep(T.bits13, xt13, X.xq, X.xs, X.ldx, M, v41::DIM, st);
         kqt_pass(0, gu, 2 * v41::MOE_INTER, X, xt13, false, 2 * v41::MOE_INTER, v41::DIM);
     } else dispatch_pass(0, T, gu, 2 * v41::MOE_INTER, X, false, units, nu, ptok, 2 * v41::MOE_INTER, v41::DIM, P, mt, st);
-    swiglu(act, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
-    act_quant_fp8(aq, as, act, P, v41::MOE_INTER, st);
+    if (swq_on()) swiglu_quant(aq, as, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
+    else {
+        swiglu(act, gu, gu + v41::MOE_INTER, wp, P, v41::MOE_INTER, v41::SWIGLU_LIMIT, 2 * v41::MOE_INTER, st);
+        act_quant_fp8(aq, as, act, P, v41::MOE_INTER, st);
+    }
     XSrc A; A.xq = aq; A.xs = as; A.ldx = v41::MOE_INTER;
     if (T.fmt2 == ExpertFmt::KT) {
         k_rht_rows<<<dim3(v41::MOE_INTER / 256, P), 256, 0, st>>>(xr2, A, T.rht2, v41::MOE_INTER);
@@ -790,7 +853,8 @@ void moe_routed(float* y, const uint8_t* xq, const float* xs, const float* w, co
         kqt_pass(1, down, v41::DIM, A, xt2, true, v41::DIM, v41::MOE_INTER);
     } else dispatch_pass(1, T, down, v41::DIM, A, true, units, nu, ptok, v41::DIM, v41::MOE_INTER, P, mt, st);
     size_t n = (size_t)M * v41::DIM;
-    k_combine<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, down, idx, inv, M, topk, T.heal_gain);
+    if (add_ready) cudaStreamWaitEvent(st, add_ready, 0);
+    k_combine<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(y, down, idx, inv, M, topk, T.heal_gain, add);
 }
 
 // Shared expert: fp8 linears (32x32 blocks). moe_shared: o = shared(x) (o may be null: then it lives
@@ -808,8 +872,8 @@ float* moe_shared(float* o, const uint8_t* xq, const float* xs, const uint8_t* w
     if (!o) o = (float*)b;
     fp8_linear(g, xq, xs, w1, w1s, M, I, v41::DIM, true, st);
     fp8_linear(u, xq, xs, w3, w3s, M, I, v41::DIM, true, st);
-    swiglu(a, g, u, nullptr, M, I, v41::SWIGLU_LIMIT, I, st);
-    act_quant_fp8(aq, as, a, M, I, st);
+    if (swq_on()) swiglu_quant(aq, as, g, u, nullptr, M, I, v41::SWIGLU_LIMIT, I, st);
+    else { swiglu(a, g, u, nullptr, M, I, v41::SWIGLU_LIMIT, I, st); act_quant_fp8(aq, as, a, M, I, st); }
     fp8_linear(o, aq, as, w2, w2s, M, v41::DIM, I, true, st);
     return o;
 }

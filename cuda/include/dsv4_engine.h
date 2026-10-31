@@ -27,6 +27,19 @@
 
 namespace dsv4srv {
 
+// V4.1 (V2): one image of a prompt. Every position of the span [start, start + types.size()) carries
+// IMAGE_TOKEN_ID in the ids; types = image_token_types (0 start, 1 image, 2 newline, 3 end). patches: bf16
+// [n_vit_h * n_vit_w, 3, 14, 14] (include/v41_image.h). hash: the pixels' identity for the prefix cache.
+struct ImageSpan {
+    int start = 0;
+    std::vector<uint16_t> patches;
+    int n_vit_h = 0, n_vit_w = 0;
+    std::vector<int> types;
+    uint64_t hash = 0;
+};
+
+inline constexpr int kMaskWords = (129280 + 31) / 32;   // GenParams::mask buffer: the V4.1 vocab in bits
+
 struct GenParams {
     float temperature = 0.0f;      // 0 => greedy (bit-identical to the measured decode path)
     float top_p       = 1.0f;
@@ -34,6 +47,12 @@ struct GenParams {
     uint64_t seed     = 0;
     bool  has_seed    = false;
     std::vector<int> stop_ids;     // in addition to EOS
+    std::vector<ImageSpan> images; // V4.1 vision (needs a build with vision.safetensors)
+    // C3 constrained decoding (V4.1 engine): called before each token is picked, after on_token() saw the
+    // previous one. Set the allowed tokens in `bits` (kMaskWords words, zeroed, bit t = token t allowed) and
+    // return true, or return false to leave this token unconstrained. A request with a mask runs plain AR
+    // on the full head (no speculation, no suffix drafts, no two-stage head); masked logits are -inf.
+    std::function<bool(uint32_t* bits)> mask;
 };
 
 // Per-request speculation telemetry. `tok_per_verify` is one number summarising a chain of
@@ -64,6 +83,8 @@ struct GenStats {
     double tok_per_s         = 0;
     double tok_per_verify    = 0;
     int    head2_fallbacks   = 0;  // V41_HEAD2 rows recomputed with the full head (too many candidates)
+    int    sfx_rounds        = 0;  // S8: verifies whose drafts came from the suffix index (no drafter run)
+    int    sfx_accepted      = 0;  // S8: drafts accepted in those rounds
     SpecProfile spec;              // always-on; see SpecProfile
 };
 
@@ -113,6 +134,7 @@ public:
     // Exposed for gate_engine: force a full prefill rather than a prefix-cached extension, so the
     // two paths can be compared on the same prompt in one process.
     void set_prefix_cache(bool on);
+    bool has_vision() const;       // V4.1: the vision tower is loaded (GenParams::images accepted)
     // Also for gate_engine. Varying the extension batch shape while holding everything else fixed
     // separates "my offset arithmetic is wrong" from "these kernels reassociate at different M".
     void set_ext_chunk(int n);

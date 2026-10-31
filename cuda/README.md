@@ -18,12 +18,15 @@ Measured 2026-10-30 on a Jetson AGX Thor (CUDA 13.0, Linux 6.8.12-tegra). The se
 | **prefill**, 1.8K-token prompt | **398 tok/s** | 159 tok/s |
 | **prefill**, 7.2K-token prompt (5.9K for llama.cpp) | **739 tok/s** | 147 tok/s |
 | memory left while serving | 9 GiB of 122 (32K context; 17 GiB with `SPEC=0`) | 25 GiB (16K context) |
-| image input | no (text only) | yes (mmproj) |
+| image input | yes (the checkpoint's own vision tower, in CUDA) | yes (mmproj) |
 
 - **Speculative decoding is on by default** (`SPEC=3`: the checkpoint's own DSpark drafter proposes 3 tokens, the model verifies them in one pass). Greedy output is token-identical to plain decoding (0 divergences on 27 held-out prompts), and sampled output keeps the model's exact distribution. On the held-out set it averages 1.345× over plain decoding: chat 1.09×, agentic 1.23×, code 1.40×, long context 1.40×, math 1.63×. No prompt type is slower.
+- **Draft length per round adapts to the drafter's confidence** (S9): after drafting K tokens the engine verifies only the prefix with the best expected tokens per millisecond. On the held-out set the mean speedup rises from 1.30× to 1.32×, and no prompt is slower than plain decoding (the worst went from 0.96× to 1.06×).
 - **Sampling runs at greedy speed.** At temperature 0.7 it decodes at 27.1 / 22.7 / 34.9 tok/s on the same three prompts with speculation, and at 25.0–25.2 without (25.3 greedy). Sampled rows use a two-stage head: NVFP4 logits for the whole vocabulary, recomputed exactly in bf16 for every token within T·ln(10⁹) + 4 logits of the maximum, with a full-head fallback. The sampling distribution differs from the full bf16 head by a total variation of at most 2×10⁻⁹ (331 rows measured). With `top_p` = 1 the draw is a Gumbel-max on the GPU; with `top_p` < 1 the nucleus is sorted on the host.
 - **Decode** without speculation is at about 74% of the reachable bandwidth roofline: about 7.6 GB per token in 40 ms, against a 31 ms floor at 247 GB/s. That ceiling is measured with TMA bulk copies (`tools/bw_sweep.cu`); plain loads top out at 227–243 GB/s. The per-kernel breakdown is in the pipeline repo's [`docs/zenith/`](https://github.com/patrickbdevaney/deepseek-v4.1-flash-reap-thor/tree/main/docs/zenith).
 - **Prefill.** `v41_decode` reaches 580.7 tok/s on the fixed 8,192-token benchmark prompt. The server's 739 tok/s is for a different, more regular prompt. Every prefill change in the history below kept the greedy token ids identical to the previous build.
+- **Suffix drafting** (S8, on by default, at most 7 tokens a round). Each round looks up the longest earlier match of the last three tokens in the context and proposes what followed it, when that is expected to beat the DSpark round or a plain step in tokens per millisecond. It costs nothing when there is no match. On edit-style prompts it lifts plain decoding from 25.8 to 35.2 tok/s and DSpark K=3 from 43.9 to 48.8; on long-context prompts, 36.9 to 44.8 with K=3; other domains are within 1%. Every round width up to 7 is exact against plain decoding in forced-width tests. An 8-draft round needs 9 verify rows, which leaves the kernels that match single-token decoding bit for bit, so `V41_SFX_K` is capped at 7.
+- **Session cache** (C1, on by default). At the end of every text request the engine keeps a 2 GiB-budget snapshot of the attention state (KV-source caches, compressor state, the last 512 window positions, drafter rings). A later request that extends an earlier session restores it even after another session ran in between: a 3.5K-token follow-up prefills in 165 ms instead of 7.65 s, with identical ids. `V41_C1_DIR=dir` adds an NVMe tier for snapshots evicted from RAM (`V41_C1_DISK_GB`, default 64), which also survives a restart: the same follow-up restored from disk prefills in 160 ms, in-process or after restarting the engine.
 - **Greedy output** is deterministic run to run. It is also identical between the 64- and 1024-row prefill chunks (all six bench prompts were checked on 2026-10-30).
 
 ## Quick start
@@ -63,6 +66,9 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 - `GET /` serves a self-contained web UI.
 - `/health`, `/metrics` (Prometheus format) and `/v1/models` are available.
 - `POST /v1/chat/completions` supports streaming and non-streaming, tool calls in DeepSeek's DSML format, and thinking blocks (`reasoning_content`).
+- Images: `{"type":"image_url","image_url":{"url":"data:image/...;base64,..."}}` parts in user messages (JPEG/PNG/BMP/GIF). `http(s)` URLs are refused; local paths only with `V41_IMAGE_FILES=1`. The vision tower (32-layer ViT + aligner, 1.4 GiB) runs on tensor cores; a 640x488 page costs about 0.8 s including its prefill, and encoder outputs are cached by image hash (`V41_VCACHE`, 8 images).
+- Constrained output: `response_format` `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"schema":{...}}}`, or the `grammar` extension `{"type":"lark"|"regex"|"json","data":...}` ([llguidance](https://github.com/guidance-ai/llguidance) syntax). In thinking mode the constraint starts after `</think>`, so give the request enough `max_tokens` (or `reasoning_effort: "low"`) to finish reasoning. Masks cost about 8 µs a token; a constrained request decodes without speculation. A malformed grammar is a 400.
+- A non-streaming request whose client disconnects stops generating at the next token.
 - `POST /v1/completions` takes a raw prompt.
 - Requests are served one at a time; the queue depth is in `/metrics`.
 
@@ -106,7 +112,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 
 ## Limits
 
-- **Text only.** The vision tower ships in the weights (`vision.safetensors`), but this server does not load it. For image input, use the llama.cpp fork with the mmproj.
+- **Images and the session cache.** Requests with images are not snapshotted by C1 (snapshots are keyed by token ids); they still reuse the resident prefix, and re-sent images hit the encoder cache.
 - **One stream.** One request at a time, by design: a bandwidth-bound decode at batch 1 has nothing to gain from batching on this box.
 - **Thor only.** The kernels target sm_110a. Some paths, tcgen05 for example, do not exist on sm_120/121.
 

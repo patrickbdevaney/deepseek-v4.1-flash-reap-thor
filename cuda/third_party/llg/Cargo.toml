@@ -1,0 +1,17 @@
+[package]
+name = "llg_ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# C3: llguidance's C API (llguidance.h) as one static library for the v41 server
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+llguidance = "=1.9.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"

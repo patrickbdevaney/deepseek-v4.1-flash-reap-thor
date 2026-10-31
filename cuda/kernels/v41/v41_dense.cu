@@ -7,6 +7,8 @@
 #include "v41_nv_mma.cuh"
 #include "v41_f8_mma.cuh"
 #include <cuda_fp4.h>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
@@ -327,8 +329,11 @@ static void launch_nvm(float* y, const XSrc& X, const uint8_t* W, const uint8_t*
     // S2 C2; the rest stay on k_nvm. V41_NVT=0 = k_nvm everywhere; V41_PDL=0 = plain launches.
     static const int nvt_env = [] { const char* e = getenv("V41_NVT"); return e ? atoi(e) : 1; }();
     static const bool pdl_env = [] { const char* e = getenv("V41_PDL"); return !(e && *e == '0'); }();
+    // A2: the split threshold. nvm_bench (ops/logs/a10/nvm2.out): ks 5 shapes (wq_a, wkv) gain 1.23-1.26x on k_nvt,
+    // but sh_w1/w3 (ks 4) lose 0.88x there, so they stay on k_nvm. V41_NVT_KS overrides (bitwise either way).
+    static const int nvt_ks = [] { const char* e = getenv("V41_NVT_KS"); return e ? atoi(e) : 5; }();
     const size_t codes = (size_t)N * K / 2;
-    const int nvt_cfg = nvt_env == 0 || mt > 8 ? 0 : ks >= 4 ? 1 : codes >= (12u << 20) ? 2 : nvt_env == 2 ? 1 : 0;
+    const int nvt_cfg = nvt_env == 0 || mt > 8 ? 0 : ks >= nvt_ks ? 1 : codes >= (12u << 20) ? 2 : nvt_env == 2 ? 1 : 0;
     if (nvt_cfg) {
         const int ns = 2, ch = nvt_cfg;
         const size_t smem_t = v41g::nvt_ring_bytes(ns, ch) + smem;
@@ -734,9 +739,130 @@ __global__ void __launch_bounds__(512) k_cnq(float* y, uint8_t* q, float* qs, co
         if ((t & 31) == 0) qs[(size_t)m * (D / 32) + 16 * j + (t >> 5)] = sc;
     }
 }
+// A9: the same row on a cluster of 8 CTAs x 64 threads. CTA c runs k_cnq's threads 64c .. 64c+63 (its warps
+// 2c, 2c+1) on the same elements; every CTA pushes its two warp sums into all 8 CTAs' red[] over DSMEM, so each
+// finishes k_cnq's 16-way warp_sum in the same order: bit-identical, and the row's 80 KB come in on 8 SMs.
+__global__ void __cluster_dims__(8, 1, 1) __launch_bounds__(64) k_cnq_cl(float* y, uint8_t* q, float* qs, const float* x,
+                                                                         const float* pre, const uint16_t* w, float eps) {
+    constexpr int D = v41::DIM, NJ = D / 512;
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+    cg::cluster_group cl = cg::this_cluster();
+    const int m = blockIdx.x >> 3, c = (int)cl.block_rank(), t = c * 64 + threadIdx.x;
+    const float* xr = x + (size_t)m * v41::HC_DIM;
+    __shared__ float red[16];
+    float p[4];
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) p[j] = pre[m * 4 + j];
+    float v[NJ]; uint16_t wv[NJ];
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        float s = 0.f;
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) s += p[k] * xr[(size_t)k * D + i];
+        v[j] = bf16r(s); wv[j] = w[i];
+    }
+    float ss = 0.f;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) ss = fmaf(v[j], v[j], ss);
+    ss = warp_sum(ss);
+    if ((threadIdx.x & 31) == 0)
+        for (int r = 0; r < 8; ++r) *cl.map_shared_rank(&red[t >> 5], r) = ss;
+    cl.sync();
+    float u = (threadIdx.x & 31) < 16 ? red[threadIdx.x & 31] : 0.f;
+    u = warp_sum(u);
+    const float r = rsqrtf(u / D + eps);
+    float* yr = y + (size_t)m * D;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        const float o = bf16r(bf16f(wv[j]) * (v[j] * r));
+        yr[i] = o;
+        const float amax = fmaxf(warp_max(fabsf(o)), 1e-4f);
+        const float sc = pow2_ceil(amax / 448.f);
+        q[(size_t)m * D + i] = f2e4m3(fminf(fmaxf(o / sc, -448.f), 448.f));
+        if ((threadIdx.x & 31) == 0) qs[(size_t)m * (D / 32) + 16 * j + (t >> 5)] = sc;
+    }
+}
+// A9: hc_post into hout, then collapse_norm_quant of hout with `pre`, in one cluster launch (k_hc_post's and
+// k_cnq_cl's arithmetic unchanged: the collapse reads the bf16 values hc_post stores, from registers).
+__global__ void __cluster_dims__(8, 1, 1) __launch_bounds__(64) k_post_cnq_cl(float* hout, const float* f, const float* res,
+        const float* post, const float* comb, float* y, uint8_t* q, float* qs, const float* pre, const uint16_t* w, float eps) {
+    constexpr int D = v41::DIM, NJ = D / 512;
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+    cg::cluster_group cl = cg::this_cluster();
+    const int m = blockIdx.x >> 3, c = (int)cl.block_rank(), t = c * 64 + threadIdx.x;
+    __shared__ float red[16];
+    float p[4], po[4], cb[16];
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) { p[j] = pre[m * 4 + j]; po[j] = post[m * 4 + j]; }
+    #pragma unroll
+    for (int j = 0; j < 16; ++j) cb[j] = comb[m * 16 + j];
+    const float* rr = res + (size_t)m * v41::HC_DIM;
+    float* ho = hout + (size_t)m * v41::HC_DIM;
+    float v[NJ]; uint16_t wv[NJ];
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        const float fv = f[(size_t)m * D + i];
+        float r[4];
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) r[k] = rr[(size_t)k * D + i];
+        float hv[4];
+        #pragma unroll
+        for (int jj = 0; jj < 4; ++jj) {
+            float a = 0.f;
+            #pragma unroll
+            for (int k = 0; k < 4; ++k) a += cb[k * 4 + jj] * r[k];
+            hv[jj] = bf16r(po[jj] * fv + a);
+            ho[(size_t)jj * D + i] = hv[jj];
+        }
+        float sm = 0.f;
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) sm += p[k] * hv[k];
+        v[j] = bf16r(sm); wv[j] = w[i];
+    }
+    float ss = 0.f;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) ss = fmaf(v[j], v[j], ss);
+    ss = warp_sum(ss);
+    if ((threadIdx.x & 31) == 0)
+        for (int r = 0; r < 8; ++r) *cl.map_shared_rank(&red[t >> 5], r) = ss;
+    cl.sync();
+    float u = (threadIdx.x & 31) < 16 ? red[threadIdx.x & 31] : 0.f;
+    u = warp_sum(u);
+    const float rs = rsqrtf(u / D + eps);
+    float* yr = y + (size_t)m * D;
+    #pragma unroll
+    for (int j = 0; j < NJ; ++j) {
+        const int i = t + 512 * j;
+        const float o = bf16r(bf16f(wv[j]) * (v[j] * rs));
+        yr[i] = o;
+        const float amax = fmaxf(warp_max(fabsf(o)), 1e-4f);
+        const float sc = pow2_ceil(amax / 448.f);
+        q[(size_t)m * D + i] = f2e4m3(fminf(fmaxf(o / sc, -448.f), 448.f));
+        if ((threadIdx.x & 31) == 0) qs[(size_t)m * (D / 32) + 16 * j + (t >> 5)] = sc;
+    }
+}
+// V41_CNQ_CL: 0 off, 1 every M <= 8, 2 (default) verify widths 2..8 only. A cluster needs 8 SMs free at once while
+// the side streams' GEMVs hold SMs: at M = 1 that wait cost AR 0.9% (26.17 -> 25.91, 3 rounds, ids identical),
+// at M = 4 the 8-SM row read wins (spec3 28.56 -> 28.81, 2 rounds).
+static bool cnq_cl_ok(int M) {
+    static const int cl = [] { const char* e = getenv("V41_CNQ_CL"); return e ? atoi(e) : 2; }();
+    return M <= 8 && (cl == 1 || (cl == 2 && M >= 2));
+}
+bool post_cnq_ok(int M) {
+    static const int on = [] { const char* e = getenv("V41_POST_CNQ"); return e ? atoi(e) : 1; }();
+    return on && cnq_cl_ok(M);
+}
+void hc_post_cnq(float* hout, const float* f, const float* res, const float* post, const float* comb, float* y, uint8_t* q,
+                 float* qs, const float* pre, const uint16_t* w, int M, float eps, cudaStream_t st) {
+    k_post_cnq_cl<<<M * 8, 64, 0, st>>>(hout, f, res, post, comb, y, q, qs, pre, w, eps);
+}
 void collapse_norm_quant(float* y, uint8_t* q, float* qs, const float* x, const float* pre, const uint16_t* w, int M,
                          float eps, cudaStream_t st) {
-    k_cnq<<<M, 512, 0, st>>>(y, q, qs, x, pre, w, eps);
+    if (cnq_cl_ok(M)) k_cnq_cl<<<M * 8, 64, 0, st>>>(y, q, qs, x, pre, w, eps);
+    else k_cnq<<<M, 512, 0, st>>>(y, q, qs, x, pre, w, eps);
 }
 // y[j] = post[j]*f + sum_i comb[i][j]*res[i]  (the reference sums over the FIRST comb index)
 __global__ void k_hc_post(float* y, const float* f, const float* res, const float* post, const float* comb, int M) {
@@ -785,6 +911,30 @@ void swiglu(float* act, const float* gate, const float* up, const float* w_row, 
             cudaStream_t st) {
     size_t n = (size_t)M * inter;
     k_swiglu<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(act, gate, up, w_row, M, inter, limit, ld);
+}
+// A3e: k_swiglu's element then k_act_quant's 32-group (inter % 32 == 0, so a group never spans rows)
+__global__ void k_swiglu_quant(uint8_t* q, float* s, const float* gate, const float* up, const float* wr, int M,
+                               int inter, float L, int ld_in) {
+    asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+    const size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if ((i >> 5) >= (size_t)M * inter / 32) return;
+    const int lane = threadIdx.x & 31;
+    const int m = (int)(i / inter), k = (int)(i % inter);
+    float g = gate[(size_t)m * ld_in + k], u = up[(size_t)m * ld_in + k];
+    if (L > 0.f) { u = fminf(fmaxf(u, -L), L); g = fminf(g, L); }
+    float a = g / (1.f + expf(-g)) * u;
+    if (wr) a *= wr[m];
+    const float v = bf16r(a);
+    const float amax = fmaxf(warp_max(fabsf(v)), 1e-4f);
+    const float sc = pow2_ceil(amax / 448.f);
+    q[i] = f2e4m3(fminf(fmaxf(v / sc, -448.f), 448.f));
+    if (lane == 0) s[i >> 5] = sc;
+}
+bool swq_on() { static const bool on = [] { const char* e = getenv("V41_SWQ"); return !(e && *e == '0'); }(); return on; }   // default on (q8 A/B); V41_SWQ=0 disables
+void swiglu_quant(uint8_t* q, float* s, const float* gate, const float* up, const float* w_row, int M, int inter,
+                  float limit, int ld, cudaStream_t st) {
+    const size_t n = (size_t)M * inter;
+    k_swiglu_quant<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(q, s, gate, up, w_row, M, inter, limit, ld);
 }
 
 } // namespace v41k

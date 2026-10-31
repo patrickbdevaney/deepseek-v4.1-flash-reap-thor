@@ -256,6 +256,28 @@ class Taps:
         mh = torch.from_numpy(np.stack(mh).view(np.int16)).to(device).view(torch.bfloat16)
         return mh, torch.tensor(ti, device=device), torch.from_numpy(np.stack(tg).astype(np.int64)).to(device)
 
+    def load_soft(self, prefix: str):
+        """D5: v41_decode --score-seqs output: top-32 log-probs/ids per generated position of every seq."""
+        self.slp = np.memmap(prefix + ".lp", dtype=np.float32, mode="r").reshape(-1, 32)
+        self.sid = np.memmap(prefix + ".id", dtype=np.int32, mode="r").reshape(-1, 32)
+        first = {}
+        for line in open(prefix + ".idx"):
+            k, r0, n = line.split()
+            first[k] = (int(r0), int(n))
+        self.soft_row0 = []
+        for s in self.seqs:
+            r0, n = first[s["id"]]
+            if n != s["length"] - s["gen_start"]:
+                raise SystemExit(f"{s['id']}: {n} soft rows vs {s['length'] - s['gen_start']} generated")
+            self.soft_row0.append(r0 - s["gen_start"])     # row of the token at seq position t = row0 + t
+
+    def soft(self, items, device):
+        """-> top-32 log-probs [b, S, 32] f32 and ids [b, S, 32] for the targets of `batch` (token p + 2 + j)."""
+        import torch
+        rows = np.array([[self.soft_row0[si] + p + 2 + j for j in range(S)] for si, p in items])
+        return (torch.from_numpy(np.asarray(self.slp[rows.ravel()]).reshape(len(items), S, 32)).to(device),
+                torch.from_numpy(np.asarray(self.sid[rows.ravel()]).astype(np.int64).reshape(len(items), S, 32)).to(device))
+
 
 # ----------------------------------------------------------------------------- head loading
 def raw_source(i: int) -> dict:
@@ -549,6 +571,8 @@ def cmd_refit(a):
     d, raws = load_head(M, args, a.arm, "native", "cuda")
     trained = dspark.make_trainable(d, tk)
     T = Taps("train")
+    if g.get("soft"):
+        T.load_soft(g["soft_dir"])
     items = T.anchors()
     rng = np.random.default_rng(g["seed"])
     seqs = np.unique([si for si, _ in items])
@@ -576,6 +600,8 @@ def cmd_refit(a):
     #   a_conf  x      confidence-BCE weight (registered 0.1; 0731 found it confidently wrong on teacher-forced data)
     #   deficit c      row loss x min((1 - r) / mean(1 - r), c), r = the row's accepted fraction (P2.5)
     #   beta    b      + b * r^anchor_pow * KL(q_new || q_frozen) to an untouched copy of the native head (P2.5)
+    #   soft    a      D5: per slot (1 - a) * CE(greedy token) + a * CE(target top-32 distribution, renormalised),
+    #                  the target's own probabilities from v41_decode --score-seqs (soft_dir = its --score-nll prefix)
     if g.get("epochs"):
         g["steps"] = int(g["epochs"] * (len(tr) // g["batch"]))
     if g.get("cosine"):
@@ -604,9 +630,16 @@ def cmd_refit(a):
         frozen = dspark.Drafter(d.M, d.args, fblocks, d.embed, d.head)
     env.log(f"refit {a.arm}: recipe {json.dumps({k: g[k] for k in sorted(g) if k not in ('frozen',)})}", STAGE)
 
-    def recipe_loss(lg, cf, tg, mh, ti):
+    soft_a = float(g.get("soft", 0.0))
+
+    def recipe_loss(lg, cf, tg, mh, ti, soft=None):
         import torch.nn.functional as F
         ce = F.cross_entropy(lg.float().flatten(0, 1), tg.flatten(), reduction="none").view(-1, S)
+        if soft is not None and soft_a > 0:
+            slp, sid = soft
+            pt = torch.softmax(slp, -1)                                   # top-32 renormalised
+            lq = torch.log_softmax(lg.float(), -1).gather(-1, sid)        # [b, S, 32]
+            ce = (1 - soft_a) * ce + soft_a * -(pt * lq).sum(-1)
         with torch.no_grad():
             ok = torch.cumprod((lg.argmax(-1) == tg).float(), dim=1)
         bce = F.binary_cross_entropy_with_logits(cf.float(), ok, reduction="none")
@@ -653,7 +686,8 @@ def cmd_refit(a):
         for k in rng.permutation(len(tr) // g["batch"]):
             mh, ti, tg = T.batch(tr[k * g["batch"]:(k + 1) * g["batch"]], "cuda")
             lg, _, cf = dspark.step(d, mh, ti, targets=tg)
-            loss, per = recipe_loss(lg, cf, tg, mh, ti)
+            sb = T.soft(tr[k * g["batch"]:(k + 1) * g["batch"]], "cuda") if soft_a > 0 else None
+            loss, per = recipe_loss(lg, cf, tg, mh, ti, sb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             for p, mp in zip(params, masters):

@@ -827,6 +827,7 @@ Engine::Engine(const EngineConfig& cfg) : p_(new Impl()) { p_->cfg = cfg; }
 Engine::~Engine() { delete p_; }
 void Engine::load() { p_->load(); }
 bool Engine::loaded() const { return p_->is_loaded; }
+bool Engine::has_vision() const { return false; }
 void Engine::reset() { p_->rewind_to(0); }
 int  Engine::context_len() const { return p_->cpos; }
 const std::vector<int>& Engine::context_ids() const { return p_->ctx; }

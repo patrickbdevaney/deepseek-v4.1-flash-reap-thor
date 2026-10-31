@@ -35,6 +35,7 @@
 #include "v41_config.h"
 #include "encoding_dsv41.h"
 #include "tokenizer_dsv4.h"
+#include "v41_image.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -61,7 +62,7 @@ int main(int argc, char** argv) {
     dsv4srv::EngineConfig ec;
     ec.ckpt_dir = getenv("V41_CKPT") ? getenv("V41_CKPT") : ".";
     ec.seqmax = 8192; ec.ext_chunk = 1024;           // prefill chunk (8k, P8: 512 349, 1024 458 @ 1.97 GiB state, 2048 476 @ 3.76 GiB; ids identical)
-    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, chat_file, trace_gen, trace_dir, route_trace;
+    std::string prompt, chat, ids_arg, json_out, logits_out, score_in, score_out, score_nll, score_seqs, chat_file, trace_gen, trace_dir, route_trace, c1_test, image_path;
     bool thinking = false;
     int n = 128, repeat = 1, consistency = 0;
     std::vector<int> sweep;
@@ -75,6 +76,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt") prompt = next();
         else if (a == "--chat") chat = next();
         else if (a == "--chat-file") chat_file = next();
+        else if (a == "--c1-test") c1_test = next();
+        else if (a == "--image") image_path = next();       // V2: with --chat, one image before the text
         else if (a == "--trace-gen") trace_gen = next();
         else if (a == "--trace-dir") trace_dir = next();
         else if (a == "--route-trace") route_trace = next();
@@ -102,7 +105,8 @@ int main(int argc, char** argv) {
         else if (a == "--logits") logits_out = next();
         else if (a == "--score") score_in = next();
         else if (a == "--score-out") score_out = next();
-        else if (a == "--score-nll") score_nll = next();   // with --score: -log p per forced token (f32) instead of logits
+        else if (a == "--score-nll") score_nll = next();
+        else if (a == "--score-seqs") score_seqs = next();   // D5: with --score-nll, every D2 trace seq (tokens.bin + seqs.jsonl)   // with --score: -log p per forced token (f32) instead of logits
         else { fprintf(stderr, "unknown arg %s (see the header of src/v41_decode.cu)\n", a.c_str()); return 2; }
     }
     gp.max_tokens = n;
@@ -118,7 +122,25 @@ int main(int argc, char** argv) {
         }
     } else {
         std::string text = prompt;
-        if (!chat.empty()) {
+        if (!chat.empty() && !image_path.empty()) {
+            json content = json::array({json{{"type", "image_url"}, {"image_url", json{{"url", image_path}}}},
+                                        json{{"type", "text"}, {"text", chat}}});
+            json msgs = json::array({json{{"role", "user"}, {"content", content}}});
+            json imgs;
+            text = dsv41enc::encode_messages(msgs, thinking ? "thinking" : "chat", json::array(), true, true, json(), &imgs);
+            std::ifstream fimg(image_path, std::ios::binary); std::stringstream sb; sb << fimg.rdbuf();
+            const v41img::Prepared P = v41img::prepare(v41img::decode(sb.str()));
+            for (int t : tok.encode(text)) {
+                if (t != v41::IMAGE_TOKEN_ID) { ids.push_back(t); continue; }
+                dsv4srv::ImageSpan sp;
+                sp.start = (int)ids.size(); sp.patches = P.patches; sp.n_vit_h = P.n_vit_h; sp.n_vit_w = P.n_vit_w;
+                sp.types = P.types; sp.hash = P.hash;
+                ids.insert(ids.end(), P.types.size(), v41::IMAGE_TOKEN_ID);
+                gp.images.push_back(sp);
+            }
+            printf("[v41] image %s: %dx%d patches -> %dx%d tokens (span %zu)\n", image_path.c_str(), P.n_vit_h, P.n_vit_w,
+                   P.n_llm_h, P.n_llm_w, P.types.size());
+        } else if (!chat.empty()) {
             json msgs = json::array({json{{"role", "user"}, {"content", chat}}});
             text = dsv41enc::encode_messages(msgs, thinking ? "thinking" : "chat");
             ids = tok.encode(text);                  // BOS is a literal added token in the encoded text
@@ -147,6 +169,30 @@ int main(int argc, char** argv) {
             fflush(stdout); ++n;
         }
         printf("[route] %d seqs\n", n);
+        return 0;
+    }
+    if (!score_seqs.empty() && !score_nll.empty()) {  // D5 soft targets: per seq, prefill [0, gen_start), force the rest
+        std::ifstream fk(score_seqs + "/tokens.bin", std::ios::binary), fs(score_seqs + "/seqs.jsonl");
+        fk.seekg(0, std::ios::end); std::vector<int> all(fk.tellg() / 4); fk.seekg(0); fk.read((char*)all.data(), all.size() * 4);
+        std::ofstream fn(score_nll, std::ios::binary), fl(score_nll + ".lp", std::ios::binary), fi(score_nll + ".id", std::ios::binary);
+        std::ofstream fx(score_nll + ".idx");             // per seq: id, first row, rows (row r predicts token gen_start + r)
+        std::string l; long rows = 0, top1 = 0; double s = 0; int n = 0;
+        while (std::getline(fs, l)) {
+            if (l.empty()) continue;
+            const json j = json::parse(l);
+            const long o = j["offset"], len = j["length"], g0 = j["gen_start"];
+            std::vector<int> pre(all.begin() + o, all.begin() + o + g0), forced(all.begin() + o + g0, all.begin() + o + len);
+            std::vector<float> tlp; std::vector<int> tid;
+            const std::vector<float> nl = eng.debug_forced_nll(pre, forced, &tlp, &tid);
+            fn.write((const char*)nl.data(), nl.size() * 4);
+            fl.write((const char*)tlp.data(), tlp.size() * 4); fi.write((const char*)tid.data(), tid.size() * 4);
+            fx << j["id"].get<std::string>() << " " << rows << " " << nl.size() << "\n";
+            for (size_t i = 0; i < nl.size(); ++i) { s += nl[i]; top1 += tid[i * 32] == forced[i]; }
+            rows += (long)nl.size(); ++n;
+            if (n % 25 == 0) { printf("[d5] %d seqs, %ld rows, mean NLL %.4f, top1 == trace %.4f\n", n, rows, s / rows, (double)top1 / rows); fflush(stdout); }
+        }
+        printf("[d5] done: %d seqs, %ld rows, mean NLL %.5f, top1 == trace %.4f -> %s\n", n, rows, s / std::max(rows, 1L),
+               (double)top1 / std::max(rows, 1L), score_nll.c_str());
         return 0;
     }
     if (!score_in.empty() && !score_nll.empty()) {
@@ -221,6 +267,36 @@ int main(int argc, char** argv) {
         printf("[trace] %d new seqs, %.0f gen tok at %.1f tok/s; T=%ld rows\n", cnt, gen_tok, gen_s > 0 ? gen_tok / gen_s : 0.0, T);
         return 0;
     }
+    if (!c1_test.empty()) {
+        // C1 gate: sessions A, B, then A's follow-up turn (A + its reply + a new user turn). The follow-up must
+        // hit the snapshot of A (cached rows >> 0) and emit exactly the ids of a cold run without any cache.
+        std::ifstream fi(c1_test); std::string line; std::vector<std::vector<int>> P;
+        while (P.size() < 2 && std::getline(fi, line)) {
+            if (line.empty()) continue;
+            const json q = json::parse(line);
+            std::string content = q["content"];
+            if (q.contains("file")) { std::ifstream ff(q["file"].get<std::string>()); std::stringstream ss; ss << ff.rdbuf(); content = ss.str() + "\n\n" + content; }
+            P.push_back(tok.encode(dsv41enc::encode_messages(json::array({json{{"role", "user"}, {"content", content}}}), "chat")));
+        }
+        if (P.size() < 2) { fprintf(stderr, "--c1-test needs two prompts\n"); return 2; }
+        auto run = [&](const std::vector<int>& in, std::vector<int>& out) {
+            out.clear(); return eng.generate(in, gp, [&](int t) { out.push_back(t); return true; });
+        };
+        std::vector<int> oa, ob, o2, oc;
+        eng.set_prefix_cache(true); eng.reset();
+        run(P[0], oa); run(P[1], ob);
+        std::vector<int> a2 = P[0];
+        a2.insert(a2.end(), oa.begin(), oa.end());
+        for (int t : tok.encode("\n\nNow summarise that in two sentences.")) a2.push_back(t);
+        const auto g2 = run(a2, o2);
+        eng.set_prefix_cache(false); eng.reset();
+        const auto gc = run(a2, oc);
+        eng.set_prefix_cache(true);
+        const bool same = o2 == oc;
+        printf("[c1] A %zu tok, B %zu tok, follow-up %zu tok: cached %d rows, prefill %.1f ms vs cold %.1f ms; ids %s\n",
+               P[0].size(), P[1].size(), a2.size(), g2.cached_tokens, g2.prefill_ms, gc.prefill_ms, same ? "IDENTICAL" : "DIFFER");
+        return same && g2.cached_tokens > (int)P[0].size() / 2 ? 0 : 1;
+    }
     if (!chat_file.empty()) {
         // held-out set: one jsonl line per prompt {id, domain, content[, file]} ("file" is prepended, relative
         // to the cwd); greedy no-spec, then each --spec-sweep K on the same prompt; per-prompt rows to --json
@@ -239,7 +315,7 @@ int main(int argc, char** argv) {
             eng.set_spec_k(0); eng.reset();
             const dsv4srv::GenStats g0 = eng.generate(pid, gp, [&](int t) { ref.push_back(t); return true; });
             json row{{"id", q["id"]}, {"domain", dom}, {"prompt_tokens", (int)pid.size()}, {"tok_s", g0.tok_per_s}, {"ids", ref},
-                     {"head2_fallbacks", g0.head2_fallbacks}};
+                     {"head2_fallbacks", g0.head2_fallbacks}, {"sfx_rounds", g0.sfx_rounds}, {"sfx_accepted", g0.sfx_accepted}};
             dom_rate[dom].push_back(g0.tok_per_s);
             std::string ks_txt;
             json ks = json::array();
@@ -255,12 +331,12 @@ int main(int argc, char** argv) {
                 dom_k[dom][k].first += ratio; dom_k[dom][k].second += g.tok_per_verify;
                 json kh = json::array();                    // rounds per realised width (adaptive K)
                 for (int w = 0; w < dsv4srv::SpecProfile::MAXW; ++w) { int c = 0; for (int a = 0; a < dsv4srv::SpecProfile::MAXW; ++a) c += g.spec.accept_joint[w][a]; kh.push_back(c); }
-                ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tok_per_verify", g.tok_per_verify}, {"first_diff", diff}, {"width_rounds", kh}});
-                char b[96]; snprintf(b, sizeof b, "  K=%d %.2f (x%.3f, %.2f/verify%s)", k, g.tok_per_s, ratio, g.tok_per_verify, diff >= 0 ? ", DIFF" : "");
+                ks.push_back(json{{"k", k}, {"tok_s", g.tok_per_s}, {"tok_per_verify", g.tok_per_verify}, {"first_diff", diff}, {"width_rounds", kh}, {"sfx_rounds", g.sfx_rounds}, {"sfx_accepted", g.sfx_accepted}});
+                char b[128]; snprintf(b, sizeof b, "  K=%d %.2f (x%.3f, %.2f/verify, sfx %d/%d%s)", k, g.tok_per_s, ratio, g.tok_per_verify, g.sfx_accepted, g.sfx_rounds, diff >= 0 ? ", DIFF" : "");
                 ks_txt += b;
             }
             row["spec"] = ks; rows.push_back(row); ++cnt;
-            printf("[held] %-9s %5zu tok  no-spec %.2f tok/s%s%s\n", q["id"].get<std::string>().c_str(), pid.size(), g0.tok_per_s,
+            printf("[held] %-9s %5zu tok  no-spec %.2f tok/s (sfx %d/%d)%s%s\n", q["id"].get<std::string>().c_str(), pid.size(), g0.tok_per_s, g0.sfx_accepted, g0.sfx_rounds,
                    g0.head2_fallbacks ? (" (head2 fallbacks " + std::to_string(g0.head2_fallbacks) + ")").c_str() : "", ks_txt.c_str());
         }
         for (auto& [d, v] : dom_rate) {

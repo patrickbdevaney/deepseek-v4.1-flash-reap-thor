@@ -130,6 +130,7 @@ struct State {
     uint8_t *iqp = nullptr, *iqs = nullptr;            // q as fp4 codes + e8m0 (V41_IS_MMA, P3)
     float *score = nullptr; int ld_score = 0, score_rows_ = 0;   // indexer scores [score_rows_, seqmax]
     float *rw = nullptr; int* ridx = nullptr; float* y = nullptr; float* rscr = nullptr;
+    int route_budget = 0;          // S7: > 0 caps the expert union of an M > 1 call (verify rows); set by the engine
     float *eg_e = nullptr, *eg_kv = nullptr;
     float *logits = nullptr;                          // [max_rows, VOCAB]: head_row writes row 0, head_rows rows 0..n-1
     v41k::H2Scr hd2; int* d_hfb = nullptr;

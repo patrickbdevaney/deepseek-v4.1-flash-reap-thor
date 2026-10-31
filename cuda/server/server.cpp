@@ -25,6 +25,8 @@
 #include "stream_parse.h"
 #include "webui_dsv4.h"
 #include "dsv4_engine.h"
+#include "v41_image.h"
+#include "llg_constraint.h"
 
 #include <atomic>
 #include <chrono>
@@ -47,6 +49,7 @@ static std::string tokenizer_path(const std::string& ckpt) {
 
 static dsv4tok::Tokenizer g_tok;
 static dsv4srv::Engine*   g_eng = nullptr;
+static dsv4llg::Vocab*    g_llg = nullptr;   // C3: grammar vocabulary (null: constrained requests get a 400)
 static std::mutex         g_lock;
 static std::string        g_model_name = "deepseek-v4.1-flash-reap";
 
@@ -55,6 +58,73 @@ static std::atomic<long> m_requests{0}, m_prompt_tok{0}, m_cached_tok{0}, m_comp
 static std::atomic<long long> m_decode_us{0}, m_prefill_us{0};
 
 static long now_s() { return (long)std::time(nullptr); }
+
+// ---- V2 image input ------------------------------------------------------------------------------
+static int v41img_token_id() { return 129264; }        // <｜deepseek_image｜> (v41_config.h IMAGE_TOKEN_ID)
+static std::string b64decode(const std::string& in) {
+    static int T[256]; static bool init = false;
+    if (!init) {
+        for (int& t : T) t = -1;
+        const char* a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; ++i) T[(unsigned char)a[i]] = i;
+        T['-'] = 62; T['_'] = 63; init = true;
+    }
+    std::string out; int val = 0, bits = -8;
+    for (unsigned char c : in) {
+        if (T[c] < 0) { if (c == '=') break; continue; }
+        val = (val << 6) + T[c]; bits += 6;
+        if (bits >= 0) { out.push_back(char((val >> bits) & 0xFF)); bits -= 8; }
+    }
+    return out;
+}
+// an encoder image record -> bytes: data: URLs (base64), {"data"} / {"source": {"data"}} base64, and local paths
+// only with V41_IMAGE_FILES=1 (a server should not read its own disk for a remote client by default)
+static std::string image_bytes(const json& rec) {
+    auto from_url = [](const std::string& u) -> std::string {
+        if (u.rfind("data:", 0) == 0) {
+            const size_t c = u.find(',');
+            if (c == std::string::npos || u.substr(0, c).find(";base64") == std::string::npos)
+                throw std::runtime_error("image data URL must be base64");
+            return b64decode(u.substr(c + 1));
+        }
+        if (u.rfind("http://", 0) == 0 || u.rfind("https://", 0) == 0)
+            throw std::runtime_error("remote image URLs are not fetched; send the image as a data: URL");
+        const char* e = getenv("V41_IMAGE_FILES");
+        if (!(e && *e == '1')) throw std::runtime_error("local image paths are disabled (V41_IMAGE_FILES=1 enables them)");
+        FILE* f = fopen(u.c_str(), "rb");
+        if (!f) throw std::runtime_error("cannot open image " + u);
+        std::string b; char buf[65536]; size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) b.append(buf, n);
+        fclose(f);
+        return b;
+    };
+    if (rec.contains("data") && rec["data"].is_string()) return b64decode(rec["data"].get<std::string>());
+    if (rec.contains("source") && rec["source"].is_object()) {
+        const json& s = rec["source"];
+        if (s.contains("data") && s["data"].is_string()) return b64decode(s["data"].get<std::string>());
+        if (s.contains("url") && s["url"].is_string()) return from_url(s["url"].get<std::string>());
+    }
+    if (rec.contains("url") && rec["url"].is_string()) return from_url(rec["url"].get<std::string>());
+    throw std::runtime_error("image record has no usable source");
+}
+// expand every image placeholder token into its span; fills gp.images (start, patches, types, hash)
+static void expand_images(std::vector<int>& ids, const json& images, dsv4srv::GenParams& gp) {
+    if (images.empty()) return;
+    if (!g_eng->has_vision()) throw std::runtime_error("this server has no vision tower (the build has no vision.safetensors)");
+    std::vector<int> out; size_t k = 0;
+    for (int t : ids) {
+        if (t != v41img_token_id()) { out.push_back(t); continue; }
+        if (k >= images.size()) throw std::runtime_error("more image placeholders than images");
+        const v41img::Prepared P = v41img::prepare(v41img::decode(image_bytes(images[k++])));
+        dsv4srv::ImageSpan sp;
+        sp.start = (int)out.size(); sp.patches = P.patches; sp.n_vit_h = P.n_vit_h; sp.n_vit_w = P.n_vit_w;
+        sp.types = P.types; sp.hash = P.hash;
+        out.insert(out.end(), P.types.size(), v41img_token_id());
+        gp.images.push_back(std::move(sp));
+    }
+    if (k != images.size()) throw std::runtime_error("image placeholders and images differ in number");
+    ids.swap(out);
+}
 
 static std::string rand_id() {
     static std::mt19937_64 rng{ (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count() };
@@ -85,7 +155,8 @@ struct RunResult {
 // `on_delta(reasoning, content)` is called as text becomes final; return false to stop.
 static RunResult run_generation(const std::vector<int>& ids, const dsv4srv::GenParams& gp,
                                 bool thinking, const std::vector<std::string>& stops,
-                                const std::function<bool(const std::string&, const std::string&)>& on_delta) {
+                                const std::function<bool(const std::string&, const std::string&)>& on_delta,
+                                dsv4llg::Matcher* gm = nullptr, const std::function<bool()>& cancelled = nullptr) {
     RunResult out;
     dsv4srv::StreamSplitter sp(thinking);
     std::vector<int> gen;
@@ -93,6 +164,11 @@ static RunResult run_generation(const std::vector<int>& ids, const dsv4srv::GenP
     bool stopped = false;
 
     out.stats = g_eng->generate(ids, gp, [&](int tok) -> bool {
+        if (gm) gm->commit(tok);                        // before the engine asks for the next mask
+        if (cancelled && cancelled()) return false;     // non-streaming client hung up
+        // EOS ends the turn: the final parse wants it in `raw`, but it is not text -- fed to the splitter it
+        // went out as the last content delta of every stream ("...}<｜end▁of▁sentence｜>")
+        if (tok == g_eng->eos_id()) { out.ids.push_back(tok); sp.raw += dsv41enc::EOS; return true; }
         gen.push_back(tok);
         size_t nb = 0;
         // skip_special=FALSE on purpose: `</think>` and the DSML tool markers are added tokens, and
@@ -116,7 +192,7 @@ static RunResult run_generation(const std::vector<int>& ids, const dsv4srv::GenP
       if ((!r.empty() || !c.empty()) && on_delta) on_delta(r, c); }
 
     out.raw = sp.raw;
-    out.ids = gen;
+    out.ids.insert(out.ids.begin(), gen.begin(), gen.end());   // + the EOS pushed above, last
     size_t cut = 0;
     if (!stops.empty() && hit_stop(out.raw, stops, cut)) out.raw = out.raw.substr(0, cut);
     return out;
@@ -209,6 +285,8 @@ int main(int argc, char** argv) {
 
     printf("[server] tokenizer %s\n", tokenizer_path(ckpt).c_str());
     g_tok.load(tokenizer_path(ckpt));
+    try { g_llg = new dsv4llg::Vocab(tokenizer_path(ckpt), &g_tok); }
+    catch (const std::exception& e) { fprintf(stderr, "[server] grammar disabled: %s\n", e.what()); }
     { // The same gate the rest of the repo uses. If this ever fails, every prompt is silently wrong.
         const std::vector<int> want{671, 6102, 294, 8760, 344};
         if (g_tok.encode("The capital of France is") != want) {
@@ -292,9 +370,10 @@ int main(int argc, char** argv) {
 
         dsv4api::ChatRequest cr;
         std::string prompt;
+        json images = json::array();
         try {
             cr = dsv4api::parse_chat_request(body);
-            prompt = dsv4api::build_prompt(cr);
+            prompt = dsv4api::build_prompt(cr, &images);
         } catch (const std::exception& e) {
             ++m_errors;
             res.status = 400;
@@ -303,17 +382,40 @@ int main(int argc, char** argv) {
             return;
         }
 
-        const std::vector<int> ids = g_tok.encode(prompt);
+        std::vector<int> ids = g_tok.encode(prompt);
         const bool thinking = (cr.thinking_mode == "thinking");
         const std::string id = rand_id();
         const long created = now_s();
 
         dsv4srv::GenParams gp;
+        try { expand_images(ids, images, gp); }
+        catch (const std::exception& e) {
+            ++m_errors;
+            res.status = 400;
+            res.set_content(json{{"error", {{"message", e.what()}, {"type", "invalid_request_error"}}}}.dump(), "application/json");
+            return;
+        }
         gp.temperature = (float)cr.sampling.temperature;
         gp.top_p = (float)cr.sampling.top_p;
         gp.max_tokens = cr.sampling.max_tokens;
         gp.seed = cr.sampling.seed;
         gp.has_seed = cr.sampling.has_seed;
+
+        // C3: response_format json_object / json_schema, or the `grammar` extension (lark / regex / json)
+        std::shared_ptr<dsv4llg::Matcher> gm;
+        try {
+            const auto c = dsv4llg::request_constraint(body);
+            if (!c.first.empty()) {
+                if (!g_llg) throw std::invalid_argument("constrained output is unavailable (llguidance vocabulary failed to load)");
+                gm = std::make_shared<dsv4llg::Matcher>(*g_llg, c.first, c.second, thinking);
+                gp.mask = [gm](uint32_t* bits) { return gm->mask(bits, dsv4srv::kMaskWords); };
+            }
+        } catch (const std::exception& e) {
+            ++m_errors;
+            res.status = 400;
+            res.set_content(json{{"error", {{"message", e.what()}, {"type", "invalid_request_error"}}}}.dump(), "application/json");
+            return;
+        }
 
         if ((int)ids.size() + gp.max_tokens + 8 > g_eng->seqmax()) {
             ++m_errors;
@@ -339,7 +441,8 @@ int main(int argc, char** argv) {
             // 198-item benchmark was lost to it, and the empty body is why it took three sessions
             // to find. Catch it, say what it was, and log it.
             try {
-                const RunResult r = run_generation(ids, gp, thinking, cr.sampling.stop, nullptr);
+                const RunResult r = run_generation(ids, gp, thinking, cr.sampling.stop, nullptr, gm.get(),
+                                                   [&req] { return req.is_connection_closed(); });
                 account(r.stats);
                 const json parsed = dsv41enc::parse_message_from_completion_text(r.raw, cr.thinking_mode);
                 json out = dsv4api::chat_completion_response(id, cr.model, parsed,
@@ -350,6 +453,7 @@ int main(int argc, char** argv) {
                                       {"tokens_per_second", r.stats.tok_per_s},
                                       {"tokens_per_verify", r.stats.tok_per_verify}};
                 out["spec_profile"] = spec_profile_json(r.stats.spec);
+                if (gm && !gm->error().empty()) out["grammar_error"] = gm->error();
                 res.set_content(dump_lossy(out), "application/json");
             } catch (const std::exception& e) {
                 ++m_errors;
@@ -369,7 +473,7 @@ int main(int argc, char** argv) {
         res.set_header("Connection", "keep-alive");
         res.set_header("X-Accel-Buffering", "no");
         res.set_chunked_content_provider("text/event-stream",
-            [id, created, ids, gp, thinking, cr](size_t, httplib::DataSink& sink) -> bool {
+            [id, created, ids, gp, thinking, cr, gm](size_t, httplib::DataSink& sink) -> bool {
                 std::lock_guard<std::mutex> lk(g_lock);
                 ++m_requests;
                 bool alive = true;
@@ -392,7 +496,7 @@ int main(int argc, char** argv) {
                             if (!rr.empty() || !cc.empty())
                                 send(dsv4api::sse_chunk(id, cr.model, created, cc, rr, nullptr));
                             return alive;
-                        });
+                        }, gm.get());
                 } catch (const std::exception& e) {
                     ++m_errors;
                     send(std::string("data: ") + json{{"error", {{"message", e.what()}}}}.dump() + "\n\n");
